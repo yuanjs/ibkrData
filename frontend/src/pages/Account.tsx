@@ -16,9 +16,10 @@ export function Account() {
           { label: '可用资金', key: 'available_funds' },
           { label: '今日盈亏', key: 'daily_pnl' },
         ].map(({ label, key }) => (
-          <div key={key} className="bg-gray-800 rounded-lg p-4">
-            <div className="text-gray-400 text-xs mb-1">{label}</div>
-            <div className={`text-lg font-mono font-bold ${key.includes('pnl') ? pnlColor(summary[key]) : ''}`}>
+          <div key={key} className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-surface)' }}>
+            <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>{label}</div>
+            <div className={`text-lg font-mono font-bold ${key.includes('pnl') ? pnlColor(summary[key]) : ''}`}
+              style={{ color: key.includes('pnl') ? undefined : 'var(--text-primary)' }}>
               {fmt(summary[key])}
             </div>
           </div>
@@ -26,10 +27,10 @@ export function Account() {
       </div>
 
       <div className="overflow-x-auto">
-        <h2 className="text-gray-400 text-sm mb-2">当前持仓</h2>
+        <h2 className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>当前持仓</h2>
         <table className="w-full text-sm min-w-[600px] md:min-w-0">
           <thead>
-            <tr className="text-gray-400 border-b border-gray-700">
+            <tr className="border-b" style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>
               <th className="text-left py-2 px-3">标的</th>
               <th className="text-right py-2 px-3">数量</th>
               <th className="text-right py-2 px-3">均价</th>
@@ -39,11 +40,11 @@ export function Account() {
           </thead>
           <tbody>
             {positions.map((p, i) => (
-              <tr key={i} className="border-b border-gray-800">
-                <td className="py-2 px-3 font-mono font-bold">{p.symbol as string}</td>
-                <td className="py-2 px-3 text-right font-mono">{p.quantity as number}</td>
-                <td className="py-2 px-3 text-right font-mono">{fmt(p.avg_cost as number)}</td>
-                <td className="py-2 px-3 text-right font-mono">{fmt(p.market_value as number)}</td>
+              <tr key={i} className="border-b" style={{ borderColor: 'var(--border-light)' }}>
+                <td className="py-2 px-3 font-mono font-bold" style={{ color: 'var(--text-primary)' }}>{p.symbol as string}</td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{p.quantity as number}</td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.avg_cost as number)}</td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.market_value as number)}</td>
                 <td className={`py-2 px-3 text-right font-mono ${pnlColor(p.unrealized_pnl as number)}`}>
                   {fmt(p.unrealized_pnl as number)}
                 </td>

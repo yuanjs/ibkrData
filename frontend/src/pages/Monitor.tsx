@@ -3,14 +3,7 @@ import { QuoteTable } from '../components/QuoteTable'
 import { CandleChart } from '../components/CandleChart'
 import { api } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
-
-interface HistoryRow {
-  time: string
-  open: number
-  high: number
-  low: number
-  close: number
-}
+import { getSymbolDescription } from '../config/productConfig'
 
 export function Monitor() {
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
@@ -90,37 +83,53 @@ export function Monitor() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <div className="w-80 flex-shrink-0 border-r border-[#1f2937] overflow-y-auto hidden md:block bg-[#0f1117]">
+      <div className="w-80 flex-shrink-0 border-r overflow-y-auto hidden md:block" style={{ backgroundColor: 'var(--bg-base)', borderRightColor: 'var(--border)' }}>
         <QuoteTable onSelect={handleSelectSymbol} activeSymbol={activeSymbol} />
       </div>
-      <div className="flex-1 flex flex-col min-w-0 bg-[#0b0e14]">
+      <div className="flex-1 flex flex-col min-w-0" style={{ backgroundColor: 'var(--bg-base)' }}>
         <div className="p-3 md:p-4 flex-1 overflow-y-auto">
-          {error && <div className="text-red-500 bg-red-900/20 p-3 rounded mb-4 text-sm">{error}</div>}
+          {error && (
+            <div className="p-3 rounded mb-4 text-sm" style={{
+              color: '#ef4444',
+              backgroundColor: 'var(--bg-danger-bg)',
+            }}>{error}</div>
+          )}
 
           {/* Mobile Symbol Selector */}
           <div className="md:hidden mb-3">
-            <label className="block text-xs text-gray-500 mb-1 ml-1">选择监控标的</label>
+            <label className="block text-xs mb-1 ml-1" style={{ color: 'var(--text-muted)' }}>选择监控标的</label>
             <select
               value={activeSymbol || ''}
               onChange={(e) => handleSelectSymbol(e.target.value)}
-              className="w-full bg-[#151924] text-gray-100 border border-gray-700 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 appearance-none font-mono"
+              className="w-full border rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 appearance-none font-mono"
+              style={{
+                backgroundColor: 'var(--bg-elevated)',
+                color: 'var(--text-primary)',
+                borderColor: 'var(--border)',
+              }}
             >
               <option value="" disabled>-- 请选择标的 --</option>
               {symbols.map(sym => (
                 <option key={sym} value={sym}>
-                  {sym} {quotes[sym].last ? `(@${quotes[sym].last.toFixed(2)})` : ''}
+                  {getSymbolDescription(sym) ? `${sym} (${getSymbolDescription(sym)})` : sym}{' '}
+                  {quotes[sym].last ? `@${quotes[sym].last.toFixed(2)}` : ''}
                 </option>
               ))}
             </select>
           </div>
 
-          <div className="bg-[#151924] rounded-lg p-3 md:p-4 mb-4 ring-1 ring-white/5">
+          <div className="rounded-lg p-3 md:p-4 mb-4" style={{
+            backgroundColor: 'var(--bg-elevated)',
+            boxShadow: '0 0 0 1px var(--ring-subtle)',
+          }}>
             <div className="flex items-baseline justify-between mb-4">
               <h2 className="text-lg md:text-xl font-bold bg-gradient-to-r from-blue-400 to-cyan-300 bg-clip-text text-transparent truncate mr-2">
-                {activeSymbol || '未选择标的'}
+                {activeSymbol
+                  ? `${activeSymbol}${getSymbolDescription(activeSymbol) ? ' (' + getSymbolDescription(activeSymbol) + ')' : ''}`
+                  : '未选择标的'}
               </h2>
               {quote && (
-                <div className="text-xl md:text-2xl font-mono text-gray-100 tabular-nums">
+                <div className="text-xl md:text-2xl font-mono tabular-nums" style={{ color: 'var(--text-primary)' }}>
                   {quote.last?.toFixed(2)}
                 </div>
               )}
@@ -134,7 +143,10 @@ export function Monitor() {
                 onIntervalChange={handleIntervalChange}
               />
             ) : (
-              <div className="h-64 flex items-center justify-center text-gray-500 border border-dashed border-gray-700 rounded-lg">
+              <div className="h-64 flex items-center justify-center border border-dashed rounded-lg" style={{
+                color: 'var(--text-muted)',
+                borderColor: 'var(--border)',
+              }}>
                 请从{window.innerWidth < 768 ? '上方下拉列表' : '左侧列表'}选择一个标的开始监控
               </div>
             )}

@@ -140,13 +140,11 @@ async def main():
     redis_client = aioredis.from_url(REDIS_URL)
 
     settings = await load_settings(pool)
-    host = settings.get("ib_host", IB_HOST)
-    port = int(settings.get("ib_port", IB_PORT))
-    client_id = int(settings.get("ib_client_id", IB_CLIENT_ID))
     account_interval = int(settings.get("account_refresh_interval", "30"))
     health_port = int(settings.get("health_port", "8001"))
 
-    client = IBKRClient(host, port, client_id)
+    # IBKR 连接参数直接从 .env 读取，不从数据库覆盖
+    client = IBKRClient(IB_HOST, IB_PORT, IB_CLIENT_ID)
     writer = DataWriter(pool)
     pub = Publisher(redis_client)
     aggregator = TickAggregator(writer)

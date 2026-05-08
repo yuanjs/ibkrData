@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef } from 'react'
 
 const TOKEN = import.meta.env.VITE_TOKEN || 'dev-token'
 

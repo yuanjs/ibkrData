@@ -109,9 +109,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const [showGoToLatest, setShowGoToLatest] = useState(false)
   // Ref to suppress false detections during programmatic scroll/fit operations
   const programmaticScrollRef = useRef(false)
-  // Ref to hold the initial data length snapshot when data is first loaded
-  // This avoids the button flickering when live ticks increase dataLength
-  const initialDataLengthRef = useRef(0)
+
+  /** Read a CSS custom property from :root */
+  const cssVar = useCallback((name: string): string => {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || ''
+  }, [])
 
   const isLineChart = interval === '1s' || interval === '5s'
 
@@ -142,10 +144,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
 
     const tz = getTimezone()
 
+    // Read theme colors from CSS variables
+    const bgColor = cssVar('--bg-elevated') || '#0f1117'
+    const textColor = cssVar('--text-secondary') || '#9ca3af'
+    const gridColor = cssVar('--border') || '#1f2937'
+
     // Create main chart
     const chart = createChart(mainContainerRef.current, {
-      layout: { background: { color: '#0f1117' }, textColor: '#9ca3af' },
-      grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } },
+      layout: { background: { color: bgColor }, textColor },
+      grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
       width: mainContainerRef.current.clientWidth,
       height: 320,
       // 左键拖动 = 平移；滚轮 = 缩放
@@ -242,8 +249,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     let kdjChart: IChartApi | undefined
     if (!isLineChart && kdjContainerRef.current) {
       kdjChart = createChart(kdjContainerRef.current, {
-        layout: { background: { color: '#0f1117' }, textColor: '#9ca3af' },
-        grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } },
+        layout: { background: { color: bgColor }, textColor },
+        grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
         width: mainContainerRef.current.clientWidth,
         height: 120,
         handleScroll: {
@@ -427,7 +434,22 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     })
     resizeObserver.observe(mainContainerRef.current)
 
+    // Watch for theme changes and update chart colors
+    const themeObserver = new MutationObserver(() => {
+      const newBg = getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated').trim() || '#0f1117'
+      const newText = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() || '#9ca3af'
+      const newGrid = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#1f2937'
+      const opts = {
+        layout: { background: { color: newBg }, textColor: newText },
+        grid: { vertLines: { color: newGrid }, horzLines: { color: newGrid } },
+      }
+      chart.applyOptions(opts)
+      if (kdjChart) kdjChart.applyOptions(opts)
+    })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+
     return () => {
+      themeObserver.disconnect()
       resizeObserver.disconnect()
       chart.remove()
       chartRef.current = undefined
@@ -442,7 +464,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       dSeriesRef.current = undefined
       jSeriesRef.current = undefined
     }
-  }, [interval, symbol, isLineChart, getTimezone, formatTime])
+  }, [interval, symbol, isLineChart, getTimezone, formatTime, cssVar])
 
   // Set data when data changes
   useEffect(() => {
@@ -604,7 +626,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           <button
             key={i}
             onClick={() => onIntervalChange(i)}
-            className={`px-3 py-1 text-xs rounded whitespace-nowrap ${interval === i ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+            className={`px-3 py-1 text-xs rounded whitespace-nowrap ${interval === i ? 'bg-blue-600 text-white' : 'bg-[var(--bg-raised)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
           >
             {i}
           </button>
