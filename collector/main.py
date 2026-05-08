@@ -14,7 +14,10 @@ import logging
 import asyncpg
 import redis.asyncio as aioredis
 from aiohttp import web
-from config import DB_URL, IB_CLIENT_ID, IB_HOST, IB_PORT, REDIS_URL
+from config import (
+    ACCOUNT_REFRESH_INTERVAL, DB_URL, HEALTH_PORT, IB_CLIENT_ID, IB_HOST,
+    IB_PORT, REDIS_URL,
+)
 from data_writer import DataWriter
 from ibkr_client import IBKRClient
 from publisher import Publisher
@@ -22,11 +25,6 @@ from tick_aggregator import TickAggregator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-async def load_settings(pool):
-    rows = await pool.fetch("SELECT key, value FROM settings")
-    return {r["key"]: r["value"] for r in rows}
 
 
 async def load_subscriptions(pool):
@@ -139,11 +137,7 @@ async def main():
     pool = await asyncpg.create_pool(DB_URL)
     redis_client = aioredis.from_url(REDIS_URL)
 
-    settings = await load_settings(pool)
-    account_interval = int(settings.get("account_refresh_interval", "30"))
-    health_port = int(settings.get("health_port", "8001"))
-
-    # IBKR 连接参数直接从 .env 读取，不从数据库覆盖
+    # IBKR 连接参数和其他配置直接从 .env 读取
     client = IBKRClient(IB_HOST, IB_PORT, IB_CLIENT_ID)
     writer = DataWriter(pool)
     pub = Publisher(redis_client)
@@ -191,8 +185,8 @@ async def main():
     app.router.add_get("/health", health)
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", health_port).start()
-    logger.info(f"Health endpoint listening on :{health_port}")
+    await web.TCPSite(runner, "0.0.0.0", HEALTH_PORT).start()
+    logger.info(f"Health endpoint listening on :{HEALTH_PORT}")
 
     # Graceful shutdown
     shutdown_event = asyncio.Event()
@@ -210,7 +204,7 @@ async def main():
         asyncio.create_task(tick_loop(client, pub), name="tick_loop"),
         asyncio.create_task(aggregator_flush_loop(aggregator), name="aggregator_flush"),
         asyncio.create_task(
-            account_loop(client, writer, pub, account_interval), name="account_loop"
+            account_loop(client, writer, pub, ACCOUNT_REFRESH_INTERVAL), name="account_loop"
         ),
         asyncio.create_task(settings_listener(redis_client), name="settings_listener"),
         asyncio.create_task(
