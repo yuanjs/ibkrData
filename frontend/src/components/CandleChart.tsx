@@ -81,38 +81,10 @@ function getIntervalSeconds(inv: string) {
   return 60
 }
 
-// Helper to get the start of the day in a specific timezone
-function getDailyBucketTime(tickTimeSec: number, timezone: string) {
-  const date = new Date(tickTimeSec * 1000)
-  // Use Intl.DateTimeFormat to get the date parts in the target timezone
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })
-  const parts = formatter.format(date).split('-') // YYYY-MM-DD
-
-  // Construct a new date object representing the start of that day in that timezone
-  // We need to find the UTC timestamp that corresponds to YYYY-MM-DD 00:00:00 in the target timezone
-  // A simple way is to use the same Intl trick or manually calculate offset,
-  // but simpler is to use a date string and parse it as a local time then adjust,
-  // or use the fact that lightweight-charts '1d' can take a string 'YYYY-MM-DD'.
-  // However, the rest of the app uses numeric timestamps.
-
-  // Create a string that represents the midnight of that day in the given timezone
-  const dateString = `${parts[0]}-${parts[1]}-${parts[2]}T00:00:00`
-
-  // To get the UTC timestamp of "YYYY-MM-DD 00:00:00" in "timezone":
-  // We can use the fact that new Date(dateString).toLocaleString(...) should match the dateString if the local TZ is the same.
-  // A more robust way:
-  const tempDate = new Date(dateString) // This is local time
-  // This is a bit tricky in JS without a library like luxon.
-  // Let's use a simpler approach: get the "YYYY-MM-DD" and use it as the 'time' for lightweight-charts if needed,
-  // or just return the UTC timestamp of the start of that day.
-
-  // Alternative: return an object { time: number | string }
-  return `${parts[0]}-${parts[1]}-${parts[2]}`
+// Helper to get the start of the UTC day as epoch seconds
+// IBKR daily bars use UTC midnight as their timestamp, so we bucket ticks by UTC day
+function getDailyBucketTime(tickTimeSec: number) {
+  return Math.floor(tickTimeSec / 86400) * 86400
 }
 
 export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange }: Props) {
@@ -396,7 +368,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       }
 
       tt.style.display = 'block'
-      const timeSec = typeof sData.time === 'number' ? sData.time : 0
+      const timeSec = typeof sData.time === 'number' ? sData.time : Math.floor(Date.now() / 1000)
       const timeStr = formatTime(timeSec)
 
       // Lookup MA values safely
@@ -544,9 +516,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       ? Math.floor(new Date(liveTick.time).getTime() / 1000)
       : Math.floor(Date.now() / 1000)
 
-    let currentBucketTime: number | string
+    let currentBucketTime: number
     if (interval === '1d') {
-      currentBucketTime = getDailyBucketTime(tickTimeSec, getTimezone())
+      currentBucketTime = getDailyBucketTime(tickTimeSec)
     } else {
       const invSec = getIntervalSeconds(interval)
       currentBucketTime = tickTimeSec - (tickTimeSec % invSec)
