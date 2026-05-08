@@ -92,6 +92,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const mainContainerRef = useRef<HTMLDivElement>(null)
   const kdjContainerRef = useRef<HTMLDivElement>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
+  const mobileInfoRef = useRef<HTMLDivElement>(null)
+  const isMobileRef = useRef(window.innerWidth < 768)
 
   const chartRef = useRef<IChartApi | undefined>(undefined)
   const seriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
@@ -139,6 +141,13 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       hour12: false,
     }).replace(',', '')
   }, [getTimezone])
+
+  // Track mobile/desktop for tooltip layout
+  useEffect(() => {
+    const handleResize = () => { isMobileRef.current = window.innerWidth < 768 }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   // Create / destroy charts
   useEffect(() => {
@@ -236,7 +245,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         priceLineVisible: false,
       })
       ma5SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#f97316',
+        color: '#facc15',
         lineWidth: 1,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
@@ -291,7 +300,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         lastValueVisible: true, priceLineVisible: false,
       })
       dSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#f97316', lineWidth: 1, title: '',
+        color: '#facc15', lineWidth: 1, title: '',
         lastValueVisible: true, priceLineVisible: false,
       })
       jSeriesRef.current = kdjChart.addSeries(LineSeries, {
@@ -365,7 +374,14 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     // Tooltip on crosshair move
     chart.subscribeCrosshairMove((param) => {
       const tt = tooltipRef.current
-      if (!tt || !mainContainerRef.current) return
+      const mi = mobileInfoRef.current
+      if (!mainContainerRef.current) return
+
+      const isMobile = isMobileRef.current
+
+      // Hide both by default; the active one will be shown below
+      if (tt) tt.style.display = 'none'
+      if (mi) mi.style.display = 'none'
 
       if (
         param.point === undefined ||
@@ -375,17 +391,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         param.point.y < 0 ||
         param.point.y > 320
       ) {
-        tt.style.display = 'none'
         return
       }
 
       const sData = param.seriesData.get(series) as any
-      if (!sData) {
-        tt.style.display = 'none'
-        return
-      }
+      if (!sData) return
 
-      tt.style.display = 'block'
       const timeSec = typeof sData.time === 'number' ? sData.time : Math.floor(Date.now() / 1000)
       const timeStr = formatTime(timeSec)
 
@@ -399,29 +410,68 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       const dVal = kdjDataRef.current.d.find((x) => x.time === timeSec)?.value
       const jVal = kdjDataRef.current.j.find((x) => x.time === timeSec)?.value
 
+      const tp = 'color:var(--text-primary)'
+      const ts = 'color:var(--text-secondary)'
+
+      if (isMobile && mi) {
+        // Mobile: fixed info panel at top-left corner
+        mi.style.display = 'block'
+        if (isLineChart) {
+          mi.innerHTML = `<span style="${tp};font-size:0.7rem">${timeStr}</span> <span class="text-blue-400" style="font-family:monospace;font-size:0.7rem">${(sData.value ?? sData.close)?.toFixed(2) ?? '-'}</span>`
+        } else {
+          const cO = sData.open?.toFixed(2)
+          const cH = sData.high?.toFixed(2)
+          const cL = sData.low?.toFixed(2)
+          const cC = sData.close?.toFixed(2)
+          const oCls = sData.open > sData.close ? 'text-red-400' : 'text-green-400'
+          const hCls = sData.high > sData.close ? 'text-red-400' : 'text-green-400'
+          const lCls = sData.low > sData.close ? 'text-red-400' : 'text-green-400'
+          const cCls = sData.close >= sData.open ? 'text-green-400' : 'text-red-400'
+          mi.innerHTML = `
+            <div style="${tp};font-size:0.65rem;margin-bottom:0.125rem">${timeStr}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:2px 5px;font-size:0.6rem;font-family:monospace">
+              <span><span style="${ts}">O</span><span class="${oCls}">${cO}</span></span>
+              <span><span style="${ts}">H</span><span class="${hCls}">${cH}</span></span>
+              <span><span style="${ts}">L</span><span class="${lCls}">${cL}</span></span>
+              <span><span style="${ts}">C</span><span class="${cCls}">${cC}</span></span>
+              <span><span style="${ts}">3M</span><span class="text-blue-400">${ma3Val?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">5M</span><span class="text-yellow-400">${ma5Val?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">10M</span><span class="text-purple-400">${ma10Val?.toFixed(2) ?? '-'}</span></span>
+              <span style="border-left:1px solid var(--border);padding-left:3px"><span style="${ts}">K</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">D</span><span class="text-yellow-400">${dVal?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">J</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></span>
+            </div>
+          `
+        }
+        return
+      }
+
+      // Desktop: floating tooltip following crosshair
+      if (!tt) return
+      tt.style.display = 'block'
       if (isLineChart) {
         tt.innerHTML = `
-          <div class="font-bold text-gray-200 text-sm whitespace-nowrap">${timeStr}</div>
-          <div class="mt-1 text-xs"><span class="text-gray-400">Price:</span><span class="text-blue-400 ml-2 font-mono">${(sData.value ?? sData.close)?.toFixed(2) ?? '-'}</span></div>
+          <div style="font-weight:bold;${tp};font-size:0.875rem;white-space:nowrap">${timeStr}</div>
+          <div style="margin-top:0.25rem;font-size:0.75rem"><span style="${ts}">Price:</span><span class="text-blue-400" style="margin-left:0.5rem;font-family:monospace">${(sData.value ?? sData.close)?.toFixed(2) ?? '-'}</span></div>
         `
       } else {
         tt.innerHTML = `
-          <div class="font-bold text-gray-200 text-sm whitespace-nowrap">${timeStr}</div>
+          <div style="font-weight:bold;${tp};font-size:0.875rem;white-space:nowrap">${timeStr}</div>
           <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-2">
-            <div class="flex justify-between w-16"><span class="text-gray-400">O:</span><span class="${sData.open > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.open?.toFixed(2)}</span></div>
-            <div class="flex justify-between w-16"><span class="text-gray-400">H:</span><span class="${sData.high > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.high?.toFixed(2)}</span></div>
-            <div class="flex justify-between w-16"><span class="text-gray-400">L:</span><span class="${sData.low > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.low?.toFixed(2)}</span></div>
-            <div class="flex justify-between w-16"><span class="text-gray-400">C:</span><span class="${sData.close >= sData.open ? 'text-green-400' : 'text-red-400'}">${sData.close?.toFixed(2)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">O:</span><span class="${sData.open > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.open?.toFixed(2)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">H:</span><span class="${sData.high > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.high?.toFixed(2)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">L:</span><span class="${sData.low > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.low?.toFixed(2)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">C:</span><span class="${sData.close >= sData.open ? 'text-green-400' : 'text-red-400'}">${sData.close?.toFixed(2)}</span></div>
           </div>
           <div class="flex gap-4 mt-2 text-[10px] font-mono">
-            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#3b82f6]"></div><span class="text-gray-400">MA3:</span><span class="text-blue-400">${ma3Val?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#f97316]"></div><span class="text-gray-400">MA5:</span><span class="text-orange-400">${ma5Val?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#a855f7] border-dashed"></div><span class="text-gray-400">MA10:</span><span class="text-purple-400">${ma10Val?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">3M:</span><span class="text-blue-400">${ma3Val?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span class="text-yellow-400">${ma5Val?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span class="text-purple-400">${ma10Val?.toFixed(2) ?? '-'}</span></div>
           </div>
-          <div class="flex gap-3 mt-1 text-[10px] font-mono border-t border-gray-700 pt-1">
-            <div class="flex items-center gap-1"><span class="text-gray-400">K:</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span class="text-gray-400">D:</span><span class="text-orange-400">${dVal?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span class="text-gray-400">J:</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></div>
+          <div class="flex gap-3 mt-1 text-[10px] font-mono pt-1" style="border-top:1px solid var(--border)">
+            <div class="flex items-center gap-1"><span style="${ts}">K:</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">D:</span><span class="text-yellow-400">${dVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">J:</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></div>
           </div>
         `
       }
@@ -683,8 +733,13 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         <div ref={mainContainerRef} />
         <div
           ref={tooltipRef}
-          className="absolute z-10 pointer-events-none bg-gray-800/95 border border-gray-600 rounded pt-1 pb-2 px-3 shadow-2xl hidden backdrop-blur-sm"
-          style={{ top: 0, left: 0 }}
+          className="absolute z-10 pointer-events-none border rounded pt-1 pb-2 px-3 shadow-2xl hidden backdrop-blur-sm max-md:!hidden"
+          style={{ top: 0, left: 0, backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
+        />
+        <div
+          ref={mobileInfoRef}
+          className="absolute z-10 pointer-events-none hidden rounded p-1.5 shadow-lg md:!hidden"
+          style={{ top: 2, left: 2, backgroundColor: 'color-mix(in srgb, var(--bg-elevated) 92%, transparent)', borderColor: 'var(--border)' }}
         />
       </div>
       {!isLineChart && <div ref={kdjContainerRef} className="mt-1 border-t border-gray-800" />}
