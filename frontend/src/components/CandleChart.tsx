@@ -349,7 +349,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
       // events, which may not fire reliably during drag-to-pan gestures.
-      const KDJ_OFFSET = 7  // KDJ K-series starts at main bar index 7
       let lastFrom = -1
       let lastTo = -1
 
@@ -357,10 +356,20 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         if (!chartRef.current || !kdjChartRef.current) return
         const mr = chartRef.current.timeScale().getVisibleLogicalRange()
         if (!mr) return
-        const kdjLen = kdjDataRef.current.k.length
-        if (kdjLen === 0) return
-        const from = mr.from - KDJ_OFFSET
-        const to = mr.to - KDJ_OFFSET
+        const kdjK = kdjDataRef.current.k
+        if (kdjK.length === 0) return
+
+        // Calculate offset dynamically: match KDJ's first point time to main chart index
+        let currentOffset = 7
+        const mainData = lastDataRef.current
+        if (mainData.length > 0) {
+          const firstKTime = kdjK[0].time
+          const idx = mainData.findIndex(x => x.time === firstKTime)
+          if (idx !== -1) currentOffset = idx
+        }
+
+        const from = mr.from - currentOffset
+        const to = mr.to - currentOffset
         if (from !== lastFrom || to !== lastTo) {
           lastFrom = from
           lastTo = to

@@ -52,8 +52,12 @@ export function Monitor() {
       )
       // Ensure precise timestamp alignment for lightweight-charts
       setCandles(res.map((d: any) => {
-        // For daily bars, we can use the date part if it's 1d, but numeric timestamp is also fine
-        const t = Math.floor(new Date(d.time).getTime() / 1000)
+        let t = Math.floor(new Date(d.time).getTime() / 1000)
+        if (inv === '1d') {
+          // Force 12:00 UTC for daily bars to match live tick bucketing
+          const dt = new Date(t * 1000)
+          t = Math.floor(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 12) / 1000)
+        }
         return { ...d, time: t }
       }))
     } catch (e: any) {
