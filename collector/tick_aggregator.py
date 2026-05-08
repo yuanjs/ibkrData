@@ -57,31 +57,49 @@ class TickAggregator:
         """Truncate a datetime to the start of its second."""
         return dt.replace(microsecond=0)
 
+    async def flush_expired(self):
+        """
+        Periodically called to flush bars that have completed their second.
+        This ensures data is written to the DB even if no new ticks arrive for a symbol.
+        """
+        now_bucket = self._truncate_to_second(datetime.now(timezone.utc))
+        
+        async with self._lock:
+            symbols_to_remove = []
+            for symbol, bar in self._bars.items():
+                # If the bar's second is in the past, it's safe to flush
+                if bar.bucket_time < now_bucket:
+                    self._pending_flush(symbol, bar)
+                    symbols_to_remove.append(symbol)
+            
+            for symbol in symbols_to_remove:
+                del self._bars[symbol]
+
     def on_tick(self, symbol: str, price: float, size: float, tick_time: datetime):
         """
         Process a single trade tick. Called from the ib_insync event callback.
-
-        If the tick belongs to a new second, the previous bar is queued for
-        flushing (handled by flush_expired).
         """
         if price is None or (isinstance(price, float) and math.isnan(price)):
             return
         if price <= 0:
             return
 
+        # Ensure tick_time is UTC aware
+        if tick_time.tzinfo is None:
+            tick_time = tick_time.replace(tzinfo=timezone.utc)
+
         bucket = self._truncate_to_second(tick_time)
+        
+        # Note: We use a simple dict update here. 
+        # Concurrent access with flush_expired is protected by the lock in flush_expired.
         bar = self._bars.get(symbol)
 
         if bar is None:
-            # First tick for this symbol
             self._bars[symbol] = BarAccumulator(bucket, price, size)
         elif bar.bucket_time == bucket:
-            # Same second — update the running bar
             bar.update(price, size)
-        else:
-            # New second — the old bar will be flushed by flush_expired()
-            # We can safely replace it since flush_expired runs on a timer
-            # and we need to capture the boundary correctly
+        elif bar.bucket_time < bucket:
+            # New second arrived - flush the old one immediately
             self._pending_flush(symbol, bar)
             self._bars[symbol] = BarAccumulator(bucket, price, size)
 
