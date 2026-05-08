@@ -1,7 +1,9 @@
 import os
-from dotenv import load_dotenv
+from pathlib import Path
+from dotenv import load_dotenv, find_dotenv
 
-load_dotenv() # 这会自动向上级目录寻找 .env 文件
+# 从项目根目录加载 .env（自动向上级目录搜索）
+load_dotenv(find_dotenv())
 
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4002"))
