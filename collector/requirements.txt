@@ -1,0 +1,5 @@
+ib_insync==0.9.86
+asyncpg==0.30.0
+redis==5.0.1
+aiohttp==3.9.3
+python-dotenv==1.0.1
