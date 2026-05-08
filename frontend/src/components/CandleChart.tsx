@@ -205,6 +205,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         axisPressedMouseMove: false,
         axisDoubleClickReset: true,
       },
+      rightPriceScale: {
+        minimumWidth: 80,
+      },
       timeScale: {
         timeVisible: true,
         secondsVisible: true,
@@ -312,6 +315,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           pinch: false,
           axisPressedMouseMove: false,
           axisDoubleClickReset: false,
+        },
+        rightPriceScale: {
+          minimumWidth: 80,
         },
         timeScale: {
           visible: false,
@@ -546,6 +552,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       cancelAnimationFrame(rafId)
       themeObserver.disconnect()
       resizeObserver.disconnect()
+      if (tooltipRef.current) tooltipRef.current.style.display = 'none'
+      if (mobileInfoRef.current) mobileInfoRef.current.style.display = 'none'
       chart.remove()
       chartRef.current = undefined
       seriesRef.current = undefined
@@ -747,7 +755,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         {/* Spacer to push "Go to Latest" button to the right */}
         <div className="flex-1" />
         {/* "Go to Latest" button — shown when user scrolls/zooms away from the latest data */}
-        {showGoToLatest && (
+        {/* "Go to Latest" button — hidden for now as per user request */}
+        {/* showGoToLatest && (
           <button
             onClick={handleGoToLatest}
             className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded shadow transition-all duration-200 hover:scale-105 active:scale-95 animate-pulse"
@@ -758,7 +767,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             </svg>
             回到最新 ▶
           </button>
-        )}
+        ) */}
       </div>
       <div className="relative">
         <div ref={mainContainerRef} />

@@ -19,7 +19,7 @@ export function Monitor() {
   } : null)
 
   // NOTE: named chartInterval/setChartInterval to avoid shadowing window.setInterval
-  const [chartInterval, setChartInterval] = useState('1m')
+  const [chartInterval, setChartInterval] = useState('1d')
   const [candles, setCandles] = useState<any[]>([])
   const [error, setError] = useState<string | null>(null)
 
@@ -70,6 +70,7 @@ export function Monitor() {
 
   const handleSelectSymbol = (sym: string) => {
     setActiveSymbol(sym)
+    setChartInterval('1d')
   }
 
   const handleIntervalChange = (newInterval: string) => {
