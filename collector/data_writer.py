@@ -78,14 +78,12 @@ class DataWriter:
         low: float,
         close: float,
         volume: int,
-        tick_count: int,
     ):
-        """Write a pre-aggregated 1-second OHLC bar to the database."""
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO ticks(time,symbol,last,open,high,low,close,volume,tick_count) "
-                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                    "INSERT INTO ticks(time,symbol,last,open,high,low,close,volume) "
+                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
                     time,
                     symbol,
                     close,
@@ -94,7 +92,6 @@ class DataWriter:
                     low,
                     close,
                     volume,
-                    tick_count,
                 )
         except Exception as e:
             logger.error(f"write_ohlc_bar error: {e}")

@@ -96,7 +96,6 @@ class TickAggregator:
                 low=bar.low,
                 close=bar.close,
                 volume=int(bar.volume),
-                tick_count=bar.tick_count,
             )
         )
         task.add_done_callback(self._log_error)
@@ -134,7 +133,6 @@ class TickAggregator:
                 low=bar.low,
                 close=bar.close,
                 volume=int(bar.volume),
-                tick_count=bar.tick_count,
             )
 
     async def flush_all(self):
@@ -148,6 +146,5 @@ class TickAggregator:
                 low=bar.low,
                 close=bar.close,
                 volume=int(bar.volume),
-                tick_count=bar.tick_count,
             )
         self._bars.clear()
