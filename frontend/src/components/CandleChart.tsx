@@ -501,24 +501,29 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       ma5SeriesRef.current?.setData(ma5Data)
 
       // Calculate KDJ
+      let hasKdjData = false
       if (kSeriesRef.current && dSeriesRef.current && jSeriesRef.current) {
         const kdj = calculateKDJData(normalizedData)
         kdjDataRef.current = kdj
         kSeriesRef.current.setData(kdj.k)
         dSeriesRef.current.setData(kdj.d)
         jSeriesRef.current.setData(kdj.j)
+        hasKdjData = kdj.k.length > 0
       }
-    }
 
-    // Fit all loaded candles into the visible area
-    // This fixes the issue where switching intervals shows only 2 candles instead of all
-    // Use programmaticScrollRef to suppress false detection in the range change listener
-    programmaticScrollRef.current = true
-    if (chartRef.current) {
-      chartRef.current.timeScale().fitContent()
-    }
-    if (kdjChartRef.current) {
-      kdjChartRef.current.timeScale().fitContent()
+      // Fit all loaded candles into the visible area.
+      // KDJ chart fitContent runs BEFORE main chart because
+      // subscribeVisibleTimeRangeChange syncs KDJ's narrower range to main.
+      // Main chart runs last so its full data range wins.
+      // Skip KDJ fitContent when KDJ has no data (< 8 bars) — calling
+      // fitContent on an all-empty chart can produce an invalid range.
+      programmaticScrollRef.current = true
+      if (hasKdjData && kdjChartRef.current) {
+        kdjChartRef.current.timeScale().fitContent()
+      }
+      if (chartRef.current) {
+        chartRef.current.timeScale().fitContent()
+      }
     }
     // Reset the "Go to Latest" button state
     setShowGoToLatest(false)
@@ -608,11 +613,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   // Handler to scroll both charts to the latest data
   const handleGoToLatest = useCallback(() => {
     programmaticScrollRef.current = true
+    const hasKdjData = kdjDataRef.current.k.length > 0
+    if (hasKdjData && kdjChartRef.current) {
+      kdjChartRef.current.timeScale().fitContent()
+    }
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent()
-    }
-    if (kdjChartRef.current) {
-      kdjChartRef.current.timeScale().fitContent()
     }
     setShowGoToLatest(false)
     // Allow detection again after the animation settles
