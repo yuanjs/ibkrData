@@ -37,10 +37,11 @@ export function Monitor() {
     try {
       setError(null)
       const end = new Date()
-      // Fetch 6 hours window for smaller intervals, up to 1 year for 1d ones
+      // Fetch appropriate window for each interval
       let hours = 24
       if (inv.endsWith('s') || inv === '1m') hours = 6
       else if (inv === '1d') hours = 24 * 365
+      else if (inv === '1w') hours = 24 * 365 * 2
       else if (inv.endsWith('m')) hours = 48
       else hours = 168
 

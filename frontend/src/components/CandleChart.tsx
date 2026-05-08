@@ -74,6 +74,7 @@ function calculateKDJData(candles: any[]) {
 // Helper to get seconds from interval string
 function getIntervalSeconds(inv: string) {
   if (inv === '1d') return 86400
+  if (inv === '1w') return 7 * 86400
   if (inv.endsWith('min')) return parseInt(inv) * 60
   if (inv.endsWith('m')) return parseInt(inv) * 60
   if (inv.endsWith('h')) return parseInt(inv) * 3600
@@ -96,6 +97,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const seriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
   const ma3SeriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
   const ma5SeriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
+  const ma10SeriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
 
   const kdjChartRef = useRef<IChartApi | undefined>(undefined)
   const kSeriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
@@ -115,7 +117,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || ''
   }, [])
 
-  const isLineChart = interval === '1s' || interval === '5s'
+  const isLineChart = interval === '1s' || interval === '5s' || interval === '10s'
 
   const getTimezone = useCallback(() => {
     return getProductConfig(symbol || '').timezone
@@ -227,15 +229,23 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     // MA series (only for candle charts)
     if (!isLineChart) {
       ma3SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#facc15',
+        color: '#3b82f6',
         lineWidth: 1,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false,
       })
       ma5SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#ec4899',
+        color: '#f97316',
         lineWidth: 1,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false,
+        priceLineVisible: false,
+      })
+      ma10SeriesRef.current = chart.addSeries(LineSeries, {
+        color: '#a855f7',
+        lineWidth: 2,
+        lineStyle: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false,
@@ -243,6 +253,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     } else {
       ma3SeriesRef.current = undefined
       ma5SeriesRef.current = undefined
+      ma10SeriesRef.current = undefined
     }
 
     // KDJ chart (only for candle charts)
@@ -276,15 +287,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       kdjChartRef.current = kdjChart
 
       kSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#fff', lineWidth: 1, title: '',
+        color: '#3b82f6', lineWidth: 1, title: '',
         lastValueVisible: true, priceLineVisible: false,
       })
       dSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#facc15', lineWidth: 1, title: '',
+        color: '#f97316', lineWidth: 1, title: '',
         lastValueVisible: true, priceLineVisible: false,
       })
       jSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#ec4899', lineWidth: 1, title: '',
+        color: '#a855f7', lineWidth: 2, title: '',
         lastValueVisible: true, priceLineVisible: false,
       })
 
@@ -381,6 +392,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Lookup MA values safely
       const ma3Val = ma3SeriesRef.current ? (param.seriesData.get(ma3SeriesRef.current) as any)?.value : undefined
       const ma5Val = ma5SeriesRef.current ? (param.seriesData.get(ma5SeriesRef.current) as any)?.value : undefined
+      const ma10Val = ma10SeriesRef.current ? (param.seriesData.get(ma10SeriesRef.current) as any)?.value : undefined
 
       // Lookup KDJ values
       const kVal = kdjDataRef.current.k.find((x) => x.time === timeSec)?.value
@@ -402,13 +414,14 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             <div class="flex justify-between w-16"><span class="text-gray-400">C:</span><span class="${sData.close >= sData.open ? 'text-green-400' : 'text-red-400'}">${sData.close?.toFixed(2)}</span></div>
           </div>
           <div class="flex gap-4 mt-2 text-[10px] font-mono">
-            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#facc15]"></div><span class="text-gray-400">MA3:</span><span class="text-yellow-400">${ma3Val?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#ec4899]"></div><span class="text-gray-400">MA5:</span><span class="text-pink-400">${ma5Val?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#3b82f6]"></div><span class="text-gray-400">MA3:</span><span class="text-blue-400">${ma3Val?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#f97316]"></div><span class="text-gray-400">MA5:</span><span class="text-orange-400">${ma5Val?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><div class="w-2 h-0.5 bg-[#a855f7] border-dashed"></div><span class="text-gray-400">MA10:</span><span class="text-purple-400">${ma10Val?.toFixed(2) ?? '-'}</span></div>
           </div>
           <div class="flex gap-3 mt-1 text-[10px] font-mono border-t border-gray-700 pt-1">
-            <div class="flex items-center gap-1"><span class="text-gray-400">K:</span><span class="text-white">${kVal?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span class="text-gray-400">D:</span><span class="text-yellow-400">${dVal?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span class="text-gray-400">J:</span><span class="text-pink-400">${jVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span class="text-gray-400">K:</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span class="text-gray-400">D:</span><span class="text-orange-400">${dVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span class="text-gray-400">J:</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></div>
           </div>
         `
       }
@@ -456,6 +469,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       seriesRef.current = undefined
       ma3SeriesRef.current = undefined
       ma5SeriesRef.current = undefined
+      ma10SeriesRef.current = undefined
       if (kdjChart) {
         kdjChart.remove()
       }
@@ -485,6 +499,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Calculate and set MA data
       const ma3Data: any[] = []
       const ma5Data: any[] = []
+      const ma10Data: any[] = []
       for (let i = 0; i < normalizedData.length; i++) {
         if (i >= 2) {
           let sum3 = 0
@@ -496,9 +511,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           for (let j = 0; j < 5; j++) sum5 += (normalizedData[i - j] as any).close
           ma5Data.push({ time: normalizedData[i].time, value: sum5 / 5 })
         }
+        if (i >= 9) {
+          let sum10 = 0
+          for (let j = 0; j < 10; j++) sum10 += (normalizedData[i - j] as any).close
+          ma10Data.push({ time: normalizedData[i].time, value: sum10 / 10 })
+        }
       }
       ma3SeriesRef.current?.setData(ma3Data)
       ma5SeriesRef.current?.setData(ma5Data)
+      ma10SeriesRef.current?.setData(ma10Data)
 
       // Calculate KDJ
       let hasKdjData = false
@@ -531,9 +552,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     setTimeout(() => { programmaticScrollRef.current = false }, 300)
   }, [data, isLineChart])
 
-  // Process live ticks
+  // Process live ticks (skip for weekly — no meaningful real-time bucketing)
   useEffect(() => {
-    if (!liveTick?.price || lastDataRef.current.length === 0 || !seriesRef.current) return
+    if (!liveTick?.price || lastDataRef.current.length === 0 || !seriesRef.current || interval === '1w') return
 
     const currentData = lastDataRef.current
     const lastCandle = currentData[currentData.length - 1] as any
@@ -582,8 +603,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       lastCandle.close = newClose
     }
 
-    // Update MA on live tick
-    if (!isLineChart && ma3SeriesRef.current && ma5SeriesRef.current) {
+    // Update MA on live tick (skip for weekly — no meaningful real-time bucketing)
+    if (!isLineChart && interval !== '1w' && ma3SeriesRef.current && ma5SeriesRef.current) {
       const lastIndex = currentData.length - 1
       const updateTime = currentData[lastIndex].time
       if (lastIndex >= 2) {
@@ -595,6 +616,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         let sum5 = 0
         for (let j = 0; j < 5; j++) sum5 += currentData[lastIndex - j].close
         ma5SeriesRef.current.update({ time: updateTime, value: sum5 / 5 })
+      }
+      if (lastIndex >= 9) {
+        let sum10 = 0
+        for (let j = 0; j < 10; j++) sum10 += currentData[lastIndex - j].close
+        ma10SeriesRef.current?.update({ time: updateTime, value: sum10 / 10 })
       }
 
       // Update KDJ on live tick
@@ -628,7 +654,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   return (
     <div>
       <div className="flex items-center gap-2 mb-2 overflow-x-auto no-scrollbar pb-1">
-        {['1s', '5s', '1m', '3m', '5m', '15m', '1h', '4h', '1d'].map((i) => (
+        {['1s', '5s', '10s', '1m', '2m', '3m', '5m', '15m', '1h', '4h', '1d', '1w'].map((i) => (
           <button
             key={i}
             onClick={() => onIntervalChange(i)}

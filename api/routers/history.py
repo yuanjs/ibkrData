@@ -15,8 +15,10 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 _BUCKET_MAP = {
     "1s": timedelta(seconds=1),
     "5s": timedelta(seconds=5),
+    "10s": timedelta(seconds=10),
     "1m": timedelta(minutes=1),
     "1min": timedelta(minutes=1),
+    "2m": timedelta(minutes=2),
     "3m": timedelta(minutes=3),
     "5m": timedelta(minutes=5),
     "5min": timedelta(minutes=5),
@@ -24,6 +26,7 @@ _BUCKET_MAP = {
     "1h": timedelta(hours=1),
     "4h": timedelta(hours=4),
     "1d": timedelta(days=1),
+    "1w": timedelta(weeks=1),
 }
 
 
@@ -53,6 +56,19 @@ async def get_history(symbol: str, start: str, end: str, interval: str = "1min")
             "SELECT time, open, high, low, close, volume "
             "FROM daily_bars WHERE symbol=$1 AND time >= $2 AND time <= $3 "
             "ORDER BY time",
+            symbol,
+            dt_start,
+            dt_end,
+        )
+    elif interval == "1w":
+        # Aggregate weekly bars from daily_bars aligned to Monday
+        # 2000-01-03 was a Monday, used as alignment origin
+        rows = await pool.fetch(
+            "SELECT time_bucket('7 days', time, origin => '2000-01-03'::timestamptz) AS time, "
+            "first(open, time) AS open, max(high) AS high, min(low) AS low, "
+            "last(close, time) AS close, sum(volume) AS volume "
+            "FROM daily_bars WHERE symbol=$1 AND time >= $2 AND time <= $3 "
+            "GROUP BY 1 ORDER BY 1",
             symbol,
             dt_start,
             dt_end,
