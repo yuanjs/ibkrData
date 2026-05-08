@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from dotenv import load_dotenv, find_dotenv
@@ -12,3 +13,4 @@ DB_URL = os.getenv("DB_URL", "postgresql://ibkr:password@localhost:5432/ibkrdata
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8001"))
 ACCOUNT_REFRESH_INTERVAL = int(os.getenv("ACCOUNT_REFRESH_INTERVAL", "30"))
+DEFAULT_SUBSCRIPTIONS = json.loads(os.getenv("SYMBOLS", "[]"))

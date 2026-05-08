@@ -15,8 +15,8 @@ import asyncpg
 import redis.asyncio as aioredis
 from aiohttp import web
 from config import (
-    ACCOUNT_REFRESH_INTERVAL, DB_URL, HEALTH_PORT, IB_CLIENT_ID, IB_HOST,
-    IB_PORT, REDIS_URL,
+    ACCOUNT_REFRESH_INTERVAL, DB_URL, DEFAULT_SUBSCRIPTIONS, HEALTH_PORT,
+    IB_CLIENT_ID, IB_HOST, IB_PORT, REDIS_URL,
 )
 from data_writer import DataWriter
 from ibkr_client import IBKRClient
@@ -28,10 +28,17 @@ logger = logging.getLogger(__name__)
 
 
 async def load_subscriptions(pool):
-    rows = await pool.fetch(
-        "SELECT symbol, sec_type, exchange, currency FROM subscriptions WHERE active=true"
-    )
-    return [dict(r) for r in rows]
+    """Load subscriptions from DB; fall back to .env SYMBOLS if table is empty or missing."""
+    try:
+        rows = await pool.fetch(
+            "SELECT symbol, sec_type, exchange, currency FROM subscriptions WHERE active=true"
+        )
+        if rows:
+            return [dict(r) for r in rows]
+    except Exception:
+        logger.warning("Failed to load subscriptions from DB, using .env SYMBOLS")
+    logger.info(f"Using {len(DEFAULT_SUBSCRIPTIONS)} symbols from .env SYMBOLS")
+    return DEFAULT_SUBSCRIPTIONS
 
 
 async def tick_loop(client, pub):
