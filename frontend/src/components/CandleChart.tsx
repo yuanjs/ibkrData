@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { createChart, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type CandlestickData } from 'lightweight-charts'
-import { getProductConfig } from '../config/productConfig'
+import { getProductConfig, getSymbolDecimalPlaces } from '../config/productConfig'
 
 interface Props {
   symbol?: string
@@ -82,10 +82,33 @@ function getIntervalSeconds(inv: string) {
   return 60
 }
 
-// Helper to get the start of the UTC day as epoch seconds
-// IBKR daily bars use UTC midnight as their timestamp, so we bucket ticks by UTC day
-function getDailyBucketTime(tickTimeSec: number) {
-  return Math.floor(tickTimeSec / 86400) * 86400
+function getEffectiveBucketTime(tickTimeSec: number, sym?: string): number {
+  const config = sym ? getProductConfig(sym) : undefined
+  if (!config) return Math.floor(tickTimeSec / 86400) * 86400 + 43200
+
+  // Get local time in the product's exchange timezone
+  const d = new Date(tickTimeSec * 1000)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0)
+  const hour = get('hour'), minute = get('minute')
+
+  // Determine effective date: if after roll time, belongs to next trading day
+  let [y, m, day] = [get('year'), get('month'), get('day')]
+  if (hour > config.rollHour || (hour === config.rollHour && minute >= config.rollMinute)) {
+    // Add one day
+    const next = new Date(Date.UTC(y, m - 1, day + 1))
+    y = next.getUTCFullYear()
+    m = next.getUTCMonth() + 1
+    day = next.getUTCDate()
+  }
+
+  return Math.floor(Date.UTC(y, m - 1, day, 12) / 1000)
 }
 
 export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange }: Props) {
@@ -120,6 +143,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   }, [])
 
   const isLineChart = interval === '1s' || interval === '5s' || interval === '10s'
+  const decPlaces = getSymbolDecimalPlaces(symbol)
 
   const getTimezone = useCallback(() => {
     return getProductConfig(symbol || '').timezone
@@ -152,6 +176,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   // Create / destroy charts
   useEffect(() => {
     if (!mainContainerRef.current) return
+
+    let rafId = 0
 
     const tz = getTimezone()
 
@@ -222,6 +248,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         crosshairMarkerRadius: 5,
         crosshairMarkerBorderColor: '#fff',
         crosshairMarkerBackgroundColor: '#3b82f6',
+        priceFormat: { type: 'price', precision: decPlaces, minMove: Math.pow(10, -decPlaces) },
       })
     } else {
       series = chart.addSeries(CandlestickSeries, {
@@ -231,6 +258,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         borderDownColor: '#ef4444',
         wickUpColor: '#22c55e',
         wickDownColor: '#ef4444',
+        priceFormat: { type: 'price', precision: decPlaces, minMove: Math.pow(10, -decPlaces) },
       })
     }
     seriesRef.current = series
@@ -275,15 +303,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         height: 120,
         handleScroll: {
           mouseWheel: false,
-          pressedMouseMove: true,
-          horzTouchDrag: true,
+          pressedMouseMove: false,
+          horzTouchDrag: false,
           vertTouchDrag: false,
         },
         handleScale: {
-          mouseWheel: true,
-          pinch: true,
+          mouseWheel: false,
+          pinch: false,
           axisPressedMouseMove: false,
-          axisDoubleClickReset: true,
+          axisDoubleClickReset: false,
         },
         timeScale: {
           visible: false,
@@ -312,26 +340,29 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       kSeriesRef.current.createPriceLine({ price: 0, color: '#4b5563', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' })
       kSeriesRef.current.createPriceLine({ price: 100, color: '#4b5563', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' })
 
-      // Sync scroll/zoom between main chart and KDJ chart using TIME range (not logical index)
-      // This ensures alignment even though KDJ has fewer bars than the main chart
-      let syncing = false
-      chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-        if (syncing || !range || !kdjChartRef.current) return
-        syncing = true
-        try { kdjChartRef.current.timeScale().setVisibleRange(range as any) } catch { }
-        syncing = false
-      })
-      kdjChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-        if (syncing || !range || !chartRef.current) return
-        syncing = true
-        try { chartRef.current.timeScale().setVisibleRange(range as any) } catch { }
-        syncing = false
-      })
+      // Continuous polling sync: read main chart's logical range each frame
+      // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
+      // events, which may not fire reliably during drag-to-pan gestures.
+      const KDJ_OFFSET = 7  // KDJ K-series starts at main bar index 7
+      let lastFrom = -1
+      let lastTo = -1
 
-      // Sync "Go to Latest" visibility between charts
-      kdjChart.timeScale().subscribeVisibleLogicalRangeChange(() => {
-        // Do nothing — main chart drives the button state
-      })
+      const syncLoop = () => {
+        if (!chartRef.current || !kdjChartRef.current) return
+        const mr = chartRef.current.timeScale().getVisibleLogicalRange()
+        if (!mr) return
+        const kdjLen = kdjDataRef.current.k.length
+        if (kdjLen === 0) return
+        const from = mr.from - KDJ_OFFSET
+        const to = mr.to - KDJ_OFFSET
+        if (from !== lastFrom || to !== lastTo) {
+          lastFrom = from
+          lastTo = to
+          try { kdjChartRef.current.timeScale().setVisibleLogicalRange({ from, to }) } catch { }
+        }
+        rafId = requestAnimationFrame(syncLoop)
+      }
+      rafId = requestAnimationFrame(syncLoop)
 
       // Sync crosshair vertical line from main chart to KDJ chart
       chart.subscribeCrosshairMove((param) => {
@@ -417,12 +448,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         // Mobile: fixed info panel at top-left corner
         mi.style.display = 'block'
         if (isLineChart) {
-          mi.innerHTML = `<span style="${tp};font-size:0.7rem">${timeStr}</span> <span class="text-blue-400" style="font-family:monospace;font-size:0.7rem">${(sData.value ?? sData.close)?.toFixed(2) ?? '-'}</span>`
+          mi.innerHTML = `<span style="${tp};font-size:0.7rem">${timeStr}</span> <span class="text-blue-400" style="font-family:monospace;font-size:0.7rem">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span>`
         } else {
-          const cO = sData.open?.toFixed(2)
-          const cH = sData.high?.toFixed(2)
-          const cL = sData.low?.toFixed(2)
-          const cC = sData.close?.toFixed(2)
+          const cO = sData.open?.toFixed(decPlaces)
+          const cH = sData.high?.toFixed(decPlaces)
+          const cL = sData.low?.toFixed(decPlaces)
+          const cC = sData.close?.toFixed(decPlaces)
           const oCls = sData.open > sData.close ? 'text-red-400' : 'text-green-400'
           const hCls = sData.high > sData.close ? 'text-red-400' : 'text-green-400'
           const lCls = sData.low > sData.close ? 'text-red-400' : 'text-green-400'
@@ -434,9 +465,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
               <span><span style="${ts}">H</span><span class="${hCls}">${cH}</span></span>
               <span><span style="${ts}">L</span><span class="${lCls}">${cL}</span></span>
               <span><span style="${ts}">C</span><span class="${cCls}">${cC}</span></span>
-              <span><span style="${ts}">3M</span><span class="text-blue-400">${ma3Val?.toFixed(2) ?? '-'}</span></span>
-              <span><span style="${ts}">5M</span><span class="text-yellow-400">${ma5Val?.toFixed(2) ?? '-'}</span></span>
-              <span><span style="${ts}">10M</span><span class="text-purple-400">${ma10Val?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">3M</span><span class="text-blue-400">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></span>
+              <span><span style="${ts}">5M</span><span class="text-yellow-400">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></span>
+              <span><span style="${ts}">10M</span><span class="text-purple-400">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></span>
               <span style="border-left:1px solid var(--border);padding-left:3px"><span style="${ts}">K</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></span>
               <span><span style="${ts}">D</span><span class="text-yellow-400">${dVal?.toFixed(2) ?? '-'}</span></span>
               <span><span style="${ts}">J</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></span>
@@ -452,21 +483,21 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       if (isLineChart) {
         tt.innerHTML = `
           <div style="font-weight:bold;${tp};font-size:0.875rem;white-space:nowrap">${timeStr}</div>
-          <div style="margin-top:0.25rem;font-size:0.75rem"><span style="${ts}">Price:</span><span class="text-blue-400" style="margin-left:0.5rem;font-family:monospace">${(sData.value ?? sData.close)?.toFixed(2) ?? '-'}</span></div>
+          <div style="margin-top:0.25rem;font-size:0.75rem"><span style="${ts}">Price:</span><span class="text-blue-400" style="margin-left:0.5rem;font-family:monospace">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span></div>
         `
       } else {
         tt.innerHTML = `
           <div style="font-weight:bold;${tp};font-size:0.875rem;white-space:nowrap">${timeStr}</div>
           <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-2">
-            <div class="flex justify-between w-16"><span style="${ts}">O:</span><span class="${sData.open > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.open?.toFixed(2)}</span></div>
-            <div class="flex justify-between w-16"><span style="${ts}">H:</span><span class="${sData.high > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.high?.toFixed(2)}</span></div>
-            <div class="flex justify-between w-16"><span style="${ts}">L:</span><span class="${sData.low > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.low?.toFixed(2)}</span></div>
-            <div class="flex justify-between w-16"><span style="${ts}">C:</span><span class="${sData.close >= sData.open ? 'text-green-400' : 'text-red-400'}">${sData.close?.toFixed(2)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">O:</span><span class="${sData.open > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.open?.toFixed(decPlaces)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">H:</span><span class="${sData.high > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.high?.toFixed(decPlaces)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">L:</span><span class="${sData.low > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.low?.toFixed(decPlaces)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">C:</span><span class="${sData.close >= sData.open ? 'text-green-400' : 'text-red-400'}">${sData.close?.toFixed(decPlaces)}</span></div>
           </div>
           <div class="flex gap-4 mt-2 text-[10px] font-mono">
-            <div class="flex items-center gap-1"><span style="${ts}">3M:</span><span class="text-blue-400">${ma3Val?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span class="text-yellow-400">${ma5Val?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span class="text-purple-400">${ma10Val?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">3M:</span><span class="text-blue-400">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span class="text-yellow-400">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span class="text-purple-400">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></div>
           </div>
           <div class="flex gap-3 mt-1 text-[10px] font-mono pt-1" style="border-top:1px solid var(--border)">
             <div class="flex items-center gap-1"><span style="${ts}">K:</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></div>
@@ -512,6 +543,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
     return () => {
+      cancelAnimationFrame(rafId)
       themeObserver.disconnect()
       resizeObserver.disconnect()
       chart.remove()
@@ -583,11 +615,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       }
 
       // Fit all loaded candles into the visible area.
-      // KDJ chart fitContent runs BEFORE main chart because
-      // subscribeVisibleTimeRangeChange syncs KDJ's narrower range to main.
-      // Main chart runs last so its full data range wins.
-      // Skip KDJ fitContent when KDJ has no data (< 8 bars) — calling
-      // fitContent on an all-empty chart can produce an invalid range.
+      // KDJ chart runs first; main chart runs last and its
+      // visibleTimeRangeChange handler syncs the final range to KDJ.
+      // Skip KDJ fitContent when KDJ has no data — calling fitContent
+      // on an all-empty chart can produce an invalid range.
       programmaticScrollRef.current = true
       if (hasKdjData && kdjChartRef.current) {
         kdjChartRef.current.timeScale().fitContent()
@@ -616,7 +647,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
 
     let currentBucketTime: number
     if (interval === '1d') {
-      currentBucketTime = getDailyBucketTime(tickTimeSec)
+      currentBucketTime = getEffectiveBucketTime(tickTimeSec, symbol)
     } else {
       const invSec = getIntervalSeconds(interval)
       currentBucketTime = tickTimeSec - (tickTimeSec % invSec)

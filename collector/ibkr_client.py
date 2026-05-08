@@ -4,6 +4,8 @@ import math
 
 from ib_insync import IB, Contract, Stock, Ticker
 
+from daily_tracker import _effective_date_str as _get_effective_date_str, _bucket_time
+
 logger = logging.getLogger(__name__)
 
 
@@ -254,38 +256,17 @@ class IBKRClient:
             currency=params["currency"],
         )
 
-        # For futures, we need to resolve the specific contract to avoid ambiguity
         if sec_type == "FUT":
-            logger.info(
-                f"Resolving active rolling future for {symbol} historical data via CONTFUT..."
-            )
-            cont_contract = Contract(
+            # Use CONTFUT directly for historical data to get continuous prices
+            # that automatically roll across contract months. Resolving to a
+            # specific FUT contract would only return data for that contract's
+            # active period (a few months), not the full continuous history.
+            contract = Contract(
                 secType="CONTFUT",
                 symbol=symbol,
                 exchange=params["exchange"],
                 currency=params["currency"],
             )
-            cont_details = await self.ib.reqContractDetailsAsync(cont_contract)
-            if cont_details:
-                resolved = cont_details[0].contract
-                contract = Contract(
-                    secType="FUT",
-                    symbol=resolved.symbol,
-                    exchange=resolved.exchange,
-                    currency=resolved.currency,
-                    lastTradeDateOrContractMonth=resolved.lastTradeDateOrContractMonth,
-                    multiplier=resolved.multiplier,
-                )
-            else:
-                # Fallback to qualification
-                qualified = await self.ib.qualifyContractsAsync(contract)
-                if qualified:
-                    contract = qualified[0]
-                else:
-                    logger.error(
-                        f"Failed to resolve future contract for {symbol} historical data"
-                    )
-                    return []
         else:
             qualified = await self.ib.qualifyContractsAsync(contract)
             if not qualified:
@@ -303,24 +284,23 @@ class IBKRClient:
                 durationStr=duration,
                 barSizeSetting="1 day",
                 whatToShow=what_to_show,
-                useRTH=True,
+                useRTH=False,
                 formatDate=1,
             )
-            return [
-                {
+            result = []
+            for b in bars:
+                ds = _get_effective_date_str(b.date, symbol)
+                result.append({
                     "symbol": symbol,
-                    "date_str": b.date.strftime("%Y%m%d")
-                    if hasattr(b.date, "strftime")
-                    else str(b.date),
-                    "time": b.date,
+                    "date_str": ds,
+                    "time": _bucket_time(ds),
                     "open": b.open,
                     "high": b.high,
                     "low": b.low,
                     "close": b.close,
                     "volume": int(b.volume) if b.volume > 0 else 0,
-                }
-                for b in bars
-            ]
+                })
+            return result
         except Exception as e:
             logger.error(f"Error fetching historical bars for {symbol}: {e}")
             return []

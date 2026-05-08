@@ -19,29 +19,54 @@ export function getSymbolDescription(symbol: string): string {
   return SYMBOL_DESCRIPTIONS[symbol.toUpperCase()] || '';
 }
 
-export const PRODUCT_CONFIGS: Record<string, { timezone: string }> = {
+interface ProductConfig {
+  timezone: string
+  rollHour: number
+  rollMinute: number
+  decimalPlaces?: number
+}
+
+export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
   'ASX200': {
     timezone: 'Australia/Sydney',
+    rollHour: 17,
+    rollMinute: 10,
   },
   'WALLSTREET': {
     timezone: 'America/Chicago',
+    rollHour: 16,
+    rollMinute: 0,
   },
   'NIKKEI_MINI': {
     timezone: 'Asia/Tokyo',
+    rollHour: 16,
+    rollMinute: 30,
   },
   'USDJPY': {
     timezone: 'America/New_York',
+    rollHour: 17,
+    rollMinute: 0,
+    decimalPlaces: 3,
   }
 };
 
-export function getProductConfig(symbol: string) {
-  const s = symbol ? symbol.toUpperCase() : 'ASX200';
-  
-  // Symbol normalization for mapped variants
-  let normalized = s;
-  if (s === 'SPI' || s === 'AP') normalized = 'ASX200';
-  if (s === 'YM' || s === 'DOW' || s === 'IX.D.DOW.IFA.IP' || s === 'DOW_MINI' || s === 'MYM') normalized = 'WALLSTREET';
-  if (s === 'N225M' || s === '225M') normalized = 'NIKKEI_MINI';
-  
-  return PRODUCT_CONFIGS[normalized] || PRODUCT_CONFIGS['ASX200'];
+function normalizeSymbol(s: string): string {
+  if (s === 'SPI' || s === 'AP') return 'ASX200'
+  if (s === 'YM' || s === 'DOW' || s === 'IX.D.DOW.IFA.IP' || s === 'DOW_MINI' || s === 'MYM') return 'WALLSTREET'
+  if (s === 'N225M' || s === '225M') return 'NIKKEI_MINI'
+  if (s === 'USD.JPY') return 'USDJPY'
+  return s
+}
+
+export function getProductConfig(symbol: string): ProductConfig {
+  const s = symbol ? symbol.toUpperCase() : 'ASX200'
+  const normalized = normalizeSymbol(s)
+  return PRODUCT_CONFIGS[normalized] || PRODUCT_CONFIGS['ASX200']
+}
+
+export function getSymbolDecimalPlaces(symbol: string | undefined): number {
+  if (!symbol) return 2
+  const s = symbol.toUpperCase()
+  const normalized = normalizeSymbol(s)
+  return PRODUCT_CONFIGS[normalized]?.decimalPlaces ?? 2
 }

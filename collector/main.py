@@ -19,6 +19,7 @@ from config import (
     IB_CLIENT_ID, IB_HOST, IB_PORT, REDIS_URL,
 )
 from data_writer import DataWriter
+from daily_tracker import DailyBarTracker
 from ibkr_client import IBKRClient
 from publisher import Publisher
 from tick_aggregator import TickAggregator
@@ -127,6 +128,19 @@ async def daily_bar_refresh_loop(client, writer, pool):
             logger.error(f"Daily bar refresh error: {e}")
 
 
+async def daily_bar_flush_loop(tracker, writer):
+    """Flush real-time daily bars from the tick tracker to DB every 5 seconds."""
+    while True:
+        await asyncio.sleep(5)
+        try:
+            for bar in tracker.get_dirty_bars():
+                await writer.upsert_daily_bars([bar])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Daily bar flush error: {e}")
+
+
 async def health(request):
     return web.Response(text="ok")
 
@@ -149,6 +163,7 @@ async def main():
     writer = DataWriter(pool)
     pub = Publisher(redis_client)
     aggregator = TickAggregator(writer)
+    daily_tracker = DailyBarTracker()
 
     # Register tick-by-tick callbacks:
     # 1) Feed each tick into the 1-second OHLC aggregator (for DB persistence)
@@ -156,6 +171,8 @@ async def main():
     def on_trade_tick(symbol, price, size, tick_time):
         # Synchronous call to aggregator (accumulates in memory)
         aggregator.on_tick(symbol, price, size, tick_time)
+        # Track today's daily OHLCV from real-time ticks
+        daily_tracker.on_tick(symbol, price, size, tick_time)
         # Async publish for real-time frontend (fire-and-forget)
         t = asyncio.ensure_future(pub.publish_tick(symbol, price, size, tick_time))
         t.add_done_callback(_on_task_done)
@@ -216,6 +233,9 @@ async def main():
         asyncio.create_task(settings_listener(redis_client), name="settings_listener"),
         asyncio.create_task(
             daily_bar_refresh_loop(client, writer, pool), name="daily_bar_refresh"
+        ),
+        asyncio.create_task(
+            daily_bar_flush_loop(daily_tracker, writer), name="daily_bar_flush"
         ),
     ]
 

@@ -3,7 +3,7 @@ import { QuoteTable } from '../components/QuoteTable'
 import { CandleChart } from '../components/CandleChart'
 import { api } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
-import { getSymbolDescription } from '../config/productConfig'
+import { getSymbolDescription, getSymbolDecimalPlaces } from '../config/productConfig'
 
 export function Monitor() {
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
@@ -113,7 +113,7 @@ export function Monitor() {
               {symbols.map(sym => (
                 <option key={sym} value={sym}>
                   {getSymbolDescription(sym) ? `${sym} (${getSymbolDescription(sym)})` : sym}{' '}
-                  {quotes[sym].last ? `@${quotes[sym].last.toFixed(2)}` : ''}
+                  {quotes[sym].last ? `@${quotes[sym].last.toFixed(getSymbolDecimalPlaces(sym))}` : ''}
                 </option>
               ))}
             </select>
@@ -131,7 +131,7 @@ export function Monitor() {
               </h2>
               {quote && (
                 <div className="text-xl md:text-2xl font-mono tabular-nums" style={{ color: 'var(--text-primary)' }}>
-                  {quote.last?.toFixed(2)}
+                  {quote.last?.toFixed(getSymbolDecimalPlaces(activeSymbol || undefined))}
                 </div>
               )}
             </div>

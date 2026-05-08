@@ -1,15 +1,15 @@
 import { useMarketStore, type Quote } from '../store/marketStore'
-import { getSymbolDescription } from '../config/productConfig'
+import { getSymbolDescription, getSymbolDecimalPlaces } from '../config/productConfig'
 
 interface Props {
   onSelect: (symbol: string) => void
   activeSymbol: string | null
 }
 
-/** Format a price, treating null/-1 as no data */
-function fmtPrice(val: number | null | undefined): string {
+/** Format a price for a given symbol, treating null/-1 as no data */
+function fmtPrice(val: number | null | undefined, symbol?: string): string {
   if (val == null || val === -1) return '-'
-  return val.toFixed(2)
+  return val.toFixed(getSymbolDecimalPlaces(symbol))
 }
 
 function fmtVolume(val: number | null | undefined): string {
@@ -53,9 +53,9 @@ export function QuoteTable({ onSelect, activeSymbol }: Props) {
                 </span>
               )}
             </td>
-            <td className="py-2 px-3 text-right font-mono">{fmtPrice(q.last)}</td>
-            <td className="py-2 px-3 text-right font-mono text-blue-300">{fmtPrice(q.bid)}</td>
-            <td className="py-2 px-3 text-right font-mono text-orange-300">{fmtPrice(q.ask)}</td>
+            <td className="py-2 px-3 text-right font-mono">{fmtPrice(q.last, q.symbol)}</td>
+            <td className="py-2 px-3 text-right font-mono text-blue-300">{fmtPrice(q.bid, q.symbol)}</td>
+            <td className="py-2 px-3 text-right font-mono text-orange-300">{fmtPrice(q.ask, q.symbol)}</td>
             <td className="py-2 px-3 text-right" style={{ color: 'var(--text-muted)' }}>{fmtVolume(q.volume)}</td>
           </tr>
         ))}
