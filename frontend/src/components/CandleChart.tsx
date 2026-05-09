@@ -118,6 +118,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const mobileInfoRef = useRef<HTMLDivElement>(null)
   const isMobileRef = useRef(window.innerWidth < 768)
 
+  // Responsive heights
+  const isMobile = window.innerWidth < 768
+  const mainHeight = isMobile ? 450 : 320
+  const kdjHeight = isMobile ? 150 : 120
+
   const chartRef = useRef<IChartApi | undefined>(undefined)
   const seriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
   const ma3SeriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
@@ -191,7 +196,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       layout: { background: { color: bgColor }, textColor },
       grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
       width: mainContainerRef.current.clientWidth,
-      height: 320,
+      height: mainHeight,
       // 左键拖动 = 平移；滚轮 = 缩放
       handleScroll: {
         mouseWheel: false,
@@ -303,7 +308,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         layout: { background: { color: bgColor }, textColor },
         grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
         width: mainContainerRef.current.clientWidth,
-        height: 120,
+        height: kdjHeight,
         handleScroll: {
           mouseWheel: false,
           pressedMouseMove: false,
@@ -435,7 +440,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         param.point.x < 0 ||
         param.point.x > mainContainerRef.current.clientWidth ||
         param.point.y < 0 ||
-        param.point.y > 320
+        param.point.y > mainHeight
       ) {
         return
       }
@@ -463,7 +468,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         // Mobile: fixed info panel at top-left corner
         mi.style.display = 'block'
         if (isLineChart) {
-          mi.innerHTML = `<span style="${tp};font-size:0.7rem">${timeStr}</span> <span class="text-blue-400" style="font-family:monospace;font-size:0.7rem">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span>`
+          mi.innerHTML = `<span style="${tp};font-size:0.85rem">${timeStr}</span> <span class="text-blue-400" style="font-family:monospace;font-size:0.85rem">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span>`
         } else {
           const cO = sData.open?.toFixed(decPlaces)
           const cH = sData.high?.toFixed(decPlaces)
@@ -474,8 +479,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           const lCls = sData.low > sData.close ? 'text-red-400' : 'text-green-400'
           const cCls = sData.close >= sData.open ? 'text-green-400' : 'text-red-400'
           mi.innerHTML = `
-            <div style="${tp};font-size:0.65rem;margin-bottom:0.125rem">${timeStr}</div>
-            <div style="display:flex;flex-wrap:wrap;gap:2px 5px;font-size:0.6rem;font-family:monospace">
+            <div style="${tp};font-size:0.85rem;margin-bottom:0.125rem">${timeStr}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:2px 8px;font-size:0.8rem;font-family:monospace">
               <span><span style="${ts}">O</span><span class="${oCls}">${cO}</span></span>
               <span><span style="${ts}">H</span><span class="${hCls}">${cH}</span></span>
               <span><span style="${ts}">L</span><span class="${lCls}">${cL}</span></span>
@@ -526,7 +531,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       const ttWidth = tt.offsetWidth
       const ttHeight = tt.offsetHeight
       const x = Math.min(Math.max(0, param.point.x + 15), mainContainerRef.current.clientWidth - ttWidth - 5)
-      const y = Math.min(Math.max(10, param.point.y - ttHeight / 2), 320 - ttHeight - 5)
+      const y = Math.min(Math.max(10, param.point.y - ttHeight / 2), mainHeight - ttHeight - 5)
       tt.style.left = `${x}px`
       tt.style.top = `${y}px`
     })

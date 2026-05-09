@@ -20,6 +20,8 @@ interface MarketStore {
   quotes: Record<string, Quote>
   lastTick: Tick | null
   connected: boolean
+  activeSymbol: string | null
+  setActiveSymbol: (sym: string | null) => void
   setConnected: (v: boolean) => void
   updateQuote: (q: Quote) => void
   updateTick: (t: Tick) => void
@@ -30,12 +32,14 @@ export const useMarketStore = create<MarketStore>(set => ({
   quotes: {},
   lastTick: null,
   connected: false,
+  activeSymbol: null,
+  setActiveSymbol: (activeSymbol) => set({ activeSymbol }),
   setConnected: (connected) => set({ connected }),
-  updateQuote: (q) => set(s => ({ 
-    quotes: { 
-      ...s.quotes, 
-      [q.symbol]: { ...q, time: q.time || new Date().toISOString() } 
-    } 
+  updateQuote: (q) => set(s => ({
+    quotes: {
+      ...s.quotes,
+      [q.symbol]: { ...q, time: q.time || new Date().toISOString() }
+    }
   })),
   updateTick: (t) => set({ lastTick: t }),
   initQuotes: (symbols) => set(s => {

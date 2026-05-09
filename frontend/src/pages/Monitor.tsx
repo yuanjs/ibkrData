@@ -6,7 +6,9 @@ import { useMarketStore } from '../store/marketStore'
 import { getSymbolDescription, getSymbolDecimalPlaces } from '../config/productConfig'
 
 export function Monitor() {
-  const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
+  const activeSymbol = useMarketStore(s => s.activeSymbol)
+  const setActiveSymbol = useMarketStore(s => s.setActiveSymbol)
+
   const quote = useMarketStore(s => activeSymbol ? s.quotes[activeSymbol] : null)
   const lastTick = useMarketStore(s => (s.lastTick?.symbol === activeSymbol) ? s.lastTick : null)
 
@@ -100,29 +102,6 @@ export function Monitor() {
               backgroundColor: 'var(--bg-danger-bg)',
             }}>{error}</div>
           )}
-
-          {/* Mobile Symbol Selector */}
-          <div className="md:hidden mb-3">
-            <label className="block text-xs mb-1 ml-1" style={{ color: 'var(--text-muted)' }}>选择监控标的</label>
-            <select
-              value={activeSymbol || ''}
-              onChange={(e) => handleSelectSymbol(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 appearance-none font-mono"
-              style={{
-                backgroundColor: 'var(--bg-elevated)',
-                color: 'var(--text-primary)',
-                borderColor: 'var(--border)',
-              }}
-            >
-              <option value="" disabled>-- 请选择标的 --</option>
-              {symbols.map(sym => (
-                <option key={sym} value={sym}>
-                  {getSymbolDescription(sym) ? `${sym} (${getSymbolDescription(sym)})` : sym}{' '}
-                  {quotes[sym].last ? `@${quotes[sym].last.toFixed(getSymbolDecimalPlaces(sym))}` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
 
           <div className="rounded-lg p-3 md:p-4 mb-4" style={{
             backgroundColor: 'var(--bg-elevated)',
