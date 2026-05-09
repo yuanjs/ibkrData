@@ -111,6 +111,21 @@ function getEffectiveBucketTime(tickTimeSec: number, sym?: string): number {
   return Math.floor(Date.UTC(y, m - 1, day, 12) / 1000)
 }
 
+/** Get Unix timestamp for midnight (start of today) in the product's exchange timezone */
+function getMidnightSec(symbol?: string): number {
+  const config = symbol ? getProductConfig(symbol) : undefined
+  const tz = config?.timezone || 'America/New_York'
+  const now = new Date()
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(now)
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0)
+  const elapsedSec = get('hour') * 3600 + get('minute') * 60 + get('second')
+  return Math.floor(now.getTime() / 1000) - elapsedSec
+}
+
 export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange }: Props) {
   const mainContainerRef = useRef<HTMLDivElement>(null)
   const kdjContainerRef = useRef<HTMLDivElement>(null)
@@ -646,7 +661,21 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         kdjChartRef.current.timeScale().fitContent()
       }
       if (chartRef.current) {
-        chartRef.current.timeScale().fitContent()
+        if (interval.endsWith('m') && !isLineChart) {
+          // 分钟级别 K 线：默认只显示当天数据
+          const midnightSec = getMidnightSec(symbol)
+          const firstTodayIdx = normalizedData.findIndex(d => (d.time as number) >= midnightSec)
+          if (firstTodayIdx > 0) {
+            chartRef.current.timeScale().setVisibleLogicalRange({
+              from: firstTodayIdx,
+              to: normalizedData.length - 1,
+            })
+          } else {
+            chartRef.current.timeScale().fitContent()
+          }
+        } else {
+          chartRef.current.timeScale().fitContent()
+        }
       }
     }
     // Reset the "Go to Latest" button state
