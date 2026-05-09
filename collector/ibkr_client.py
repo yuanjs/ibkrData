@@ -16,7 +16,6 @@ class IBKRClient:
         self.client_id = client_id
         self.ib = IB()
         self._tickers: dict[str, Ticker] = {}
-        self._tick_tickers: dict[str, Ticker] = {}  # tick-by-tick tickers
         self._symbol_map: dict[int, str] = {}  # conId -> symbol mapping
         self._tick_callbacks = []  # (symbol, price, size, time) callbacks
         self._retry = 0
@@ -81,7 +80,6 @@ class IBKRClient:
         logger.info(f"Re-subscribing to {len(self._subscriptions)} symbols...")
         # Clear existing tickers as they are bound to the old connection
         self._tickers.clear()
-        self._tick_tickers.clear()
         self._symbol_map.clear()
 
         # Deep copy the subscriptions to avoid mutation during iteration
@@ -169,71 +167,32 @@ class IBKRClient:
         # Store conId -> symbol mapping for event callbacks
         self._symbol_map[contract.conId] = symbol
 
-        # reqMktData for bid/ask/volume/daily OHLC (kept for quote table)
+        # reqMktData for bid/ask/volume/daily OHLC and real-time trade ticks
         ticker = self.ib.reqMktData(contract, "", False, False)
         self._tickers[symbol] = ticker
 
         def _on_mkt_data_update(ticker, symbol=symbol):
             if self._data_suspended:
                 logger.info(
-                    f"Market data snapshot received for {symbol}. Stopping auto-reconnect."
+                    f"Market data received for {symbol}. Stopping auto-reconnect."
                 )
                 self._data_suspended = False
 
+            price = ticker.last if hasattr(ticker, "last") else None
+            size = ticker.lastSize if hasattr(ticker, "lastSize") else 0.0
+
+            if (
+                price is not None
+                and not (isinstance(price, float) and math.isnan(price))
+                and price > 0
+            ):
+                for cb in self._tick_callbacks:
+                    try:
+                        cb(symbol, float(price), float(size or 0), ticker.time)
+                    except Exception as e:
+                        logger.error(f"Tick callback error: {e}")
+
         ticker.updateEvent += _on_mkt_data_update
-
-        # reqTickByTickData for accurate trade-by-trade streaming
-        try:
-            # Forex (CASH) doesn't have 'AllLast' (Trades), use 'BidAsk' instead
-            tick_type = "BidAsk" if sec_type == "CASH" else "AllLast"
-            tick_ticker = self.ib.reqTickByTickData(contract, tick_type)
-            self._tick_tickers[symbol] = tick_ticker
-
-            # Wire up the event callback
-            def _on_tick_update(ticker, symbol=symbol):
-                """Called on each tick-by-tick trade or bid/ask update."""
-                if self._data_suspended:
-                    logger.info(
-                        f"Real-time tick data received for {symbol}. Stopping auto-reconnect."
-                    )
-                    self._data_suspended = False
-
-                ticks = ticker.tickByTicks
-                if not ticks:
-                    return
-                # Process the latest tick(s)
-                for tick in ticks:
-                    p = None
-                    s = 0.0
-
-                    if hasattr(tick, "price"):
-                        # Trade tick (AllLast)
-                        p = tick.price
-                        s = float(tick.size or 0)
-                    elif hasattr(tick, "bidPrice") and hasattr(tick, "askPrice"):
-                        # BidAsk tick - use midpoint as a representative price
-                        p = (tick.bidPrice + tick.askPrice) / 2
-                        s = float((tick.bidSize or 0) + (tick.askSize or 0))
-
-                    if (
-                        p is not None
-                        and not (isinstance(p, float) and math.isnan(p))
-                        and p > 0
-                    ):
-                        for cb in self._tick_callbacks:
-                            try:
-                                cb(symbol, p, s, tick.time)
-                            except Exception as e:
-                                logger.error(f"Tick callback error: {e}")
-
-            tick_ticker.updateEvent += _on_tick_update
-            logger.info(
-                f"Subscribed tick-by-tick ({tick_type}): {symbol} (Local: {contract.localSymbol}, ConId: {contract.conId})"
-            )
-        except Exception as e:
-            logger.warning(
-                f"reqTickByTickData failed for {symbol}: {e}. Falling back to snapshot-only mode."
-            )
 
     async def get_historical_daily_bars(self, symbol: str, duration: str = "1 Y"):
         """Fetch historical daily bars from IBKR."""
@@ -310,10 +269,6 @@ class IBKRClient:
         ticker = self._tickers.pop(symbol, None)
         if ticker:
             self.ib.cancelMktData(ticker.contract)
-
-        tick_ticker = self._tick_tickers.pop(symbol, None)
-        if tick_ticker:
-            self.ib.cancelTickByTickData(tick_ticker.contract, "AllLast")
 
     def get_snapshots(self) -> dict:
         result = {}
