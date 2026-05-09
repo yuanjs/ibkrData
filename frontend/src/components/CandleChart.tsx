@@ -236,7 +236,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         axisDoubleClickReset: true,
       },
       rightPriceScale: {
-        minimumWidth: 100,
+        minimumWidth: isMobile ? 80 : 120,
       },
       timeScale: {
         timeVisible: true,
@@ -347,7 +347,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           axisDoubleClickReset: false,
         },
         rightPriceScale: {
-          minimumWidth: 100,
+          minimumWidth: isMobile ? 80 : 120,
         },
         timeScale: {
           visible: false,

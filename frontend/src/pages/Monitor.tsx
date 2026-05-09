@@ -95,7 +95,7 @@ export function Monitor() {
         <QuoteTable onSelect={handleSelectSymbol} activeSymbol={activeSymbol} />
       </div>
       <div className="flex-1 flex flex-col min-w-0" style={{ backgroundColor: 'var(--bg-base)' }}>
-        <div className="p-3 md:p-4 flex-1 overflow-y-auto">
+        <div className="p-2 md:p-4 flex-1 overflow-y-auto">
           {error && (
             <div className="p-3 rounded mb-4 text-sm" style={{
               color: '#ef4444',
@@ -103,7 +103,7 @@ export function Monitor() {
             }}>{error}</div>
           )}
 
-          <div className="rounded-lg p-3 md:p-4 mb-4" style={{
+          <div className="rounded-lg px-1 py-3 md:p-4 mb-4" style={{
             backgroundColor: 'var(--bg-elevated)',
             boxShadow: '0 0 0 1px var(--ring-subtle)',
           }}>
