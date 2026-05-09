@@ -111,19 +111,29 @@ function getEffectiveBucketTime(tickTimeSec: number, sym?: string): number {
   return Math.floor(Date.UTC(y, m - 1, day, 12) / 1000)
 }
 
-/** Get Unix timestamp for midnight (start of today) in the product's exchange timezone */
-function getMidnightSec(symbol?: string): number {
+/** Get Unix timestamp for midnight (start of the day) for a given time in the product's exchange timezone */
+function getMidnightSec(timeSec: number, symbol?: string): number {
   const config = symbol ? getProductConfig(symbol) : undefined
   const tz = config?.timezone || 'America/New_York'
-  const now = new Date()
+  const d = new Date(timeSec * 1000)
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false,
-  }).formatToParts(now)
-  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0)
-  const elapsedSec = get('hour') * 3600 + get('minute') * 60 + get('second')
-  return Math.floor(now.getTime() / 1000) - elapsedSec
+  }).formatToParts(d)
+
+  const get = (t: string) => {
+    const v = parts.find(p => p.type === t)?.value ?? '0'
+    return parseInt(v, 10)
+  }
+
+  // Some locales or environments might return 24 for midnight; normalize to 0.
+  const hour = get('hour') % 24
+  const minute = get('minute')
+  const second = get('second')
+
+  const elapsedSec = hour * 3600 + minute * 60 + second
+  return timeSec - elapsedSec
 }
 
 export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange }: Props) {
@@ -641,41 +651,43 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       ma10SeriesRef.current?.setData(ma10Data)
 
       // Calculate KDJ
-      let hasKdjData = false
       if (kSeriesRef.current && dSeriesRef.current && jSeriesRef.current) {
         const kdj = calculateKDJData(normalizedData)
         kdjDataRef.current = kdj
         kSeriesRef.current.setData(kdj.k)
         dSeriesRef.current.setData(kdj.d)
         jSeriesRef.current.setData(kdj.j)
-        hasKdjData = kdj.k.length > 0
       }
+    }
 
-      // Fit all loaded candles into the visible area.
-      // KDJ chart runs first; main chart runs last and its
-      // visibleTimeRangeChange handler syncs the final range to KDJ.
-      // Skip KDJ fitContent when KDJ has no data — calling fitContent
-      // on an all-empty chart can produce an invalid range.
+    // Set visible range for both Line and Candle charts
+    if (chartRef.current) {
       programmaticScrollRef.current = true
-      if (hasKdjData && kdjChartRef.current) {
+
+      // Fit KDJ chart if applicable
+      if (!isLineChart && kdjChartRef.current && kdjDataRef.current.k.length > 0) {
         kdjChartRef.current.timeScale().fitContent()
       }
-      if (chartRef.current) {
-        if (interval.endsWith('m') && !isLineChart) {
-          // 分钟级别 K 线：默认只显示当天数据
-          const midnightSec = getMidnightSec(symbol)
-          const firstTodayIdx = normalizedData.findIndex(d => (d.time as number) >= midnightSec)
-          if (firstTodayIdx > 0) {
-            chartRef.current.timeScale().setVisibleLogicalRange({
-              from: firstTodayIdx,
-              to: normalizedData.length - 1,
-            })
-          } else {
-            chartRef.current.timeScale().fitContent()
-          }
+
+      // Determine if the interval is intraday (seconds, minutes, or hours)
+      const isIntraday = interval.endsWith('s') || interval.endsWith('m') || interval.endsWith('h') || interval.endsWith('min')
+
+      if (isIntraday) {
+        // Intraday: default to showing only today's data if available
+        const lastPoint = normalizedData[normalizedData.length - 1]
+        const midnightSec = getMidnightSec(lastPoint.time as number, symbol)
+        const firstTodayIdx = normalizedData.findIndex(d => (d.time as number) >= midnightSec)
+        if (firstTodayIdx > 0) {
+          chartRef.current.timeScale().setVisibleLogicalRange({
+            from: firstTodayIdx,
+            to: normalizedData.length - 1,
+          })
         } else {
           chartRef.current.timeScale().fitContent()
         }
+      } else {
+        // Daily or weekly: show all loaded data
+        chartRef.current.timeScale().fitContent()
       }
     }
     // Reset the "Go to Latest" button state
