@@ -78,7 +78,7 @@ async def get_history(symbol: str, start: str, end: str, interval: str = "1min")
         rows = await pool.fetch(
             "SELECT time_bucket($1, time) AS time, "
             "first(last,time) AS open, max(last) AS high, min(last) AS low, "
-            "last(last,time) AS close, (max(volume) - min(volume)) AS volume "
+            "last(last,time) AS close, sum(volume) AS volume "
             "FROM ticks WHERE symbol=$2 AND time BETWEEN $3 AND $4 "
             "GROUP BY 1 ORDER BY 1",
             bucket,

@@ -37,64 +37,19 @@ class DataWriter:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
-    async def write_ticks(self, snapshots: dict):
-        now = datetime.now(timezone.utc)
-        rows = []
-        for symbol, d in snapshots.items():
-            if d.get("last") is not None and not math.isnan(d.get("last")):
-                rows.append(
-                    (
-                        now,
-                        symbol,
-                        _clean_num(d.get("bid")),
-                        _clean_num(d.get("ask")),
-                        _clean_num(d.get("last")),
-                        _clean_int(d.get("volume")),
-                        _clean_num(d.get("open")),
-                        _clean_num(d.get("high")),
-                        _clean_num(d.get("low")),
-                        _clean_num(d.get("close")),
-                    )
-                )
-
+    async def write_raw_ticks(self, rows: list[tuple]):
+        """Batch insert raw trade ticks into the ticks table."""
         if not rows:
             return
         try:
             async with self.pool.acquire() as conn:
                 await conn.executemany(
-                    "INSERT INTO ticks(time,symbol,bid,ask,last,volume,open,high,low,close) "
-                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                    "INSERT INTO ticks(time,symbol,last,volume,open,high,low,close) "
+                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
                     rows,
                 )
         except Exception as e:
-            logger.error(f"write_ticks error: {e}")
-
-    async def write_ohlc_bar(
-        self,
-        time,
-        symbol: str,
-        open_: float,
-        high: float,
-        low: float,
-        close: float,
-        volume: int,
-    ):
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO ticks(time,symbol,last,open,high,low,close,volume) "
-                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-                    time,
-                    symbol,
-                    close,
-                    open_,
-                    high,
-                    low,
-                    close,
-                    volume,
-                )
-        except Exception as e:
-            logger.error(f"write_ohlc_bar error: {e}")
+            logger.error(f"write_raw_ticks error: {e}")
 
     async def write_account(self, accounts: list[dict]):
         now = datetime.now(timezone.utc)

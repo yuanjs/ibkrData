@@ -15,17 +15,50 @@ import asyncpg
 import redis.asyncio as aioredis
 from aiohttp import web
 from config import (
-    ACCOUNT_REFRESH_INTERVAL, DB_URL, DEFAULT_SUBSCRIPTIONS, HEALTH_PORT,
-    IB_CLIENT_ID, IB_HOST, IB_PORT, REDIS_URL,
+    ACCOUNT_REFRESH_INTERVAL,
+    DB_URL,
+    DEFAULT_SUBSCRIPTIONS,
+    HEALTH_PORT,
+    IB_CLIENT_ID,
+    IB_HOST,
+    IB_PORT,
+    REDIS_URL,
 )
-from data_writer import DataWriter
 from daily_tracker import DailyBarTracker
+from data_writer import DataWriter
 from ibkr_client import IBKRClient
 from publisher import Publisher
-from tick_aggregator import TickAggregator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class TickBuffer:
+    """Buffers raw ticks and flushes them to the DB in batches."""
+
+    def __init__(self, writer, batch_size=1000):
+        self.writer = writer
+        self.batch_size = batch_size
+        self._buffer = []
+        self._lock = asyncio.Lock()
+
+    def add_tick(self, symbol, price, size, tick_time):
+        """Synchronous add to buffer (called from IB callback)."""
+        # (time, symbol, last, volume, open, high, low, close)
+        self._buffer.append(
+            (tick_time, symbol, price, size, price, price, price, price)
+        )
+
+    async def flush(self):
+        """Async flush to database."""
+        async with self._lock:
+            if not self._buffer:
+                return
+            rows = list(self._buffer)
+            self._buffer.clear()
+
+        if rows:
+            await self.writer.write_raw_ticks(rows)
 
 
 async def load_subscriptions(pool):
@@ -57,16 +90,16 @@ async def tick_loop(client, pub):
             logger.error(f"Tick loop error: {e}")
 
 
-async def aggregator_flush_loop(aggregator):
-    """Flush completed 1-second OHLC bars from the in-memory aggregator to DB."""
+async def tick_flush_loop(tick_buffer):
+    """Periodically flush raw ticks from the buffer to DB."""
     while True:
-        await asyncio.sleep(0.2)  # Check every 200ms
+        await asyncio.sleep(0.5)  # Flush every 500ms
         try:
-            await aggregator.flush_expired()
+            await tick_buffer.flush()
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Aggregator flush error: {e}")
+            logger.error(f"Tick buffer flush error: {e}")
 
 
 async def account_loop(client, writer, pub, interval):
@@ -162,15 +195,16 @@ async def main():
     client = IBKRClient(IB_HOST, IB_PORT, IB_CLIENT_ID)
     writer = DataWriter(pool)
     pub = Publisher(redis_client)
-    aggregator = TickAggregator(writer)
+    tick_buffer = TickBuffer(writer)
     daily_tracker = DailyBarTracker()
 
     # Register tick-by-tick callbacks:
-    # 1) Feed each tick into the 1-second OHLC aggregator (for DB persistence)
-    # 2) Publish each tick in real-time via Redis (for frontend live display)
+    # 1) Feed each tick into the buffer (for full DB persistence)
+    # 2) Track today's daily OHLCV from real-time ticks
+    # 3) Publish each tick in real-time via Redis (for frontend live display)
     def on_trade_tick(symbol, price, size, tick_time):
-        # Synchronous call to aggregator (accumulates in memory)
-        aggregator.on_tick(symbol, price, size, tick_time)
+        # Buffer the raw tick for batch DB write
+        tick_buffer.add_tick(symbol, price, size, tick_time)
         # Track today's daily OHLCV from real-time ticks
         daily_tracker.on_tick(symbol, price, size, tick_time)
         # Async publish for real-time frontend (fire-and-forget)
@@ -226,9 +260,10 @@ async def main():
     # Run main loops as tasks
     tasks = [
         asyncio.create_task(tick_loop(client, pub), name="tick_loop"),
-        asyncio.create_task(aggregator_flush_loop(aggregator), name="aggregator_flush"),
+        asyncio.create_task(tick_flush_loop(tick_buffer), name="tick_flush"),
         asyncio.create_task(
-            account_loop(client, writer, pub, ACCOUNT_REFRESH_INTERVAL), name="account_loop"
+            account_loop(client, writer, pub, ACCOUNT_REFRESH_INTERVAL),
+            name="account_loop",
         ),
         asyncio.create_task(settings_listener(redis_client), name="settings_listener"),
         asyncio.create_task(
@@ -248,9 +283,9 @@ async def main():
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Flush any remaining aggregated bars before exit
-    await aggregator.flush_all()
-    logger.info("Flushed remaining OHLC bars")
+    # Flush any remaining ticks before exit
+    await tick_buffer.flush()
+    logger.info("Flushed remaining raw ticks")
 
     # Cleanup resources
     await runner.cleanup()

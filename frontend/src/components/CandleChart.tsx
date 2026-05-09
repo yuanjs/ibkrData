@@ -236,7 +236,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         axisDoubleClickReset: true,
       },
       rightPriceScale: {
-        minimumWidth: 80,
+        minimumWidth: 100,
       },
       timeScale: {
         timeVisible: true,
@@ -347,7 +347,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           axisDoubleClickReset: false,
         },
         rightPriceScale: {
-          minimumWidth: 80,
+          minimumWidth: 100,
         },
         timeScale: {
           visible: false,
@@ -381,29 +381,40 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // events, which may not fire reliably during drag-to-pan gestures.
       let lastFrom = -1
       let lastTo = -1
+      let cachedOffset = -1
+      let lastKdjK0Time = -1
 
       const syncLoop = () => {
         if (!chartRef.current || !kdjChartRef.current) return
         const mr = chartRef.current.timeScale().getVisibleLogicalRange()
         if (!mr) return
         const kdjK = kdjDataRef.current.k
-        if (kdjK.length === 0) return
-
-        // Calculate offset dynamically: match KDJ's first point time to main chart index
-        let currentOffset = 7
-        const mainData = lastDataRef.current
-        if (mainData.length > 0) {
-          const firstKTime = kdjK[0].time
-          const idx = mainData.findIndex(x => x.time === firstKTime)
-          if (idx !== -1) currentOffset = idx
+        if (kdjK.length === 0) {
+          rafId = requestAnimationFrame(syncLoop)
+          return
         }
 
-        const from = mr.from - currentOffset
-        const to = mr.to - currentOffset
-        if (from !== lastFrom || to !== lastTo) {
-          lastFrom = from
-          lastTo = to
-          try { kdjChartRef.current.timeScale().setVisibleLogicalRange({ from, to }) } catch { }
+        // Cache offset calculation: only re-calculate if KDJ first point time or data changes
+        const currentKdjK0Time = kdjK[0].time
+        if (cachedOffset === -1 || currentKdjK0Time !== lastKdjK0Time) {
+          const mainData = lastDataRef.current
+          if (mainData.length > 0) {
+            const idx = mainData.findIndex(x => x.time === currentKdjK0Time)
+            if (idx !== -1) {
+              cachedOffset = idx
+              lastKdjK0Time = currentKdjK0Time
+            }
+          }
+        }
+
+        if (cachedOffset !== -1) {
+          const from = mr.from - cachedOffset
+          const to = mr.to - cachedOffset
+          if (from !== lastFrom || to !== lastTo) {
+            lastFrom = from
+            lastTo = to
+            try { kdjChartRef.current.timeScale().setVisibleLogicalRange({ from, to }) } catch { }
+          }
         }
         rafId = requestAnimationFrame(syncLoop)
       }
@@ -587,7 +598,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     })
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
-    return () => {
+      // Clear data refs on chart recreation to prevent stale sync during interval switch
+      lastDataRef.current = []
+      kdjDataRef.current = { k: [], d: [], j: [] }
+
+      return () => {
       cancelAnimationFrame(rafId)
       themeObserver.disconnect()
       resizeObserver.disconnect()
@@ -694,7 +709,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     setShowGoToLatest(false)
     // Allow detection again after a short delay (let the range change event settle)
     setTimeout(() => { programmaticScrollRef.current = false }, 300)
-  }, [data, isLineChart])
+  }, [data, isLineChart, interval, symbol])
 
   // Process live ticks (skip for weekly — no meaningful real-time bucketing)
   useEffect(() => {
