@@ -2,9 +2,12 @@ import asyncio
 import logging
 import math
 
+from daily_tracker import _bucket_time
+from daily_tracker import _effective_date_str as _get_effective_date_str
 from ib_insync import IB, Contract, Stock, Ticker
 
-from daily_tracker import _effective_date_str as _get_effective_date_str, _bucket_time
+from .config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS
+from .notifier import BarkNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,10 @@ class IBKRClient:
         self._tick_callbacks = []  # (symbol, price, size, time) callbacks
         self._retry = 0
         self._subscriptions = {}
+
+        self._notifier = BarkNotifier(BARK_SERVER, BARK_KEY)
+        self._first_fail_time = None
+        self._alert_sent = False
 
         self.ib.disconnectedEvent += self._on_disconnect
         self.ib.connectedEvent += self._on_connect
@@ -51,6 +58,16 @@ class IBKRClient:
 
     async def connect(self):
         await self.ib.connectAsync(self.host, self.port, clientId=self.client_id)
+        if self._alert_sent:
+            loop = asyncio.get_event_loop()
+            duration = int(loop.time() - self._first_fail_time)
+            asyncio.create_task(
+                self._notifier.send_notification(
+                    "✅ IBKR 连接已恢复", f"连接已成功建立，故障持续 {duration} 秒。"
+                )
+            )
+        self._first_fail_time = None
+        self._alert_sent = False
         self._retry = 0
         logger.info("Connected to IB Gateway")
 
@@ -60,6 +77,22 @@ class IBKRClient:
                 await self.connect()
                 return
             except Exception as e:
+                loop = asyncio.get_event_loop()
+                now = loop.time()
+
+                if self._first_fail_time is None:
+                    self._first_fail_time = now
+
+                elapsed = now - self._first_fail_time
+                if elapsed >= NOTIFY_THRESHOLD_SECONDS and not self._alert_sent:
+                    asyncio.create_task(
+                        self._notifier.send_notification(
+                            "🚨 IBKR 连接故障",
+                            f"错误详情: {e}\n重试次数: {self._retry}\n持续时间: {int(elapsed)} 秒",
+                        )
+                    )
+                    self._alert_sent = True
+
                 wait = min(2**self._retry, 60)
                 logger.warning(f"Connection failed: {e}. Retrying in {wait}s")
                 self._retry += 1
@@ -249,16 +282,18 @@ class IBKRClient:
             result = []
             for b in bars:
                 ds = _get_effective_date_str(b.date, symbol)
-                result.append({
-                    "symbol": symbol,
-                    "date_str": ds,
-                    "time": _bucket_time(ds),
-                    "open": b.open,
-                    "high": b.high,
-                    "low": b.low,
-                    "close": b.close,
-                    "volume": int(b.volume) if b.volume > 0 else 0,
-                })
+                result.append(
+                    {
+                        "symbol": symbol,
+                        "date_str": ds,
+                        "time": _bucket_time(ds),
+                        "open": b.open,
+                        "high": b.high,
+                        "low": b.low,
+                        "close": b.close,
+                        "volume": int(b.volume) if b.volume > 0 else 0,
+                    }
+                )
             return result
         except Exception as e:
             logger.error(f"Error fetching historical bars for {symbol}: {e}")
