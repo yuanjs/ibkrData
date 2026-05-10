@@ -1,7 +1,8 @@
 import json
 import os
 from pathlib import Path
-from dotenv import load_dotenv, find_dotenv
+
+from dotenv import find_dotenv, load_dotenv
 
 # 从项目根目录加载 .env（自动向上级目录搜索）
 load_dotenv(find_dotenv())
@@ -15,11 +16,16 @@ HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8001"))
 ACCOUNT_REFRESH_INTERVAL = int(os.getenv("ACCOUNT_REFRESH_INTERVAL", "30"))
 DEFAULT_SUBSCRIPTIONS = json.loads(os.getenv("SYMBOLS", "[]"))
 
+# Bark Notification
+BARK_SERVER = os.getenv("BARK_SERVER", "https://api.day.app")
+BARK_KEY = os.getenv("BARK_KEY", "")
+NOTIFY_THRESHOLD_SECONDS = int(os.getenv("NOTIFY_THRESHOLD_SECONDS", "120"))
+
 # Product rollover times for daily bar date adjustment.
 # After rollHour:rollMinute (local exchange time), the bar belongs to the next trading day.
 PRODUCT_ROLL_CONFIG = {
-    'SPI':    {'timezone': 'Australia/Sydney',  'roll_hour': 17, 'roll_minute': 10},
-    'MYM':    {'timezone': 'America/Chicago',    'roll_hour': 16, 'roll_minute': 0},
-    'N225M':  {'timezone': 'Asia/Tokyo',         'roll_hour': 16, 'roll_minute': 30},
-    'USD.JPY': {'timezone': 'America/New_York',  'roll_hour': 17, 'roll_minute': 0},
+    "SPI": {"timezone": "Australia/Sydney", "roll_hour": 17, "roll_minute": 10},
+    "MYM": {"timezone": "America/Chicago", "roll_hour": 16, "roll_minute": 0},
+    "N225M": {"timezone": "Asia/Tokyo", "roll_hour": 16, "roll_minute": 30},
+    "USD.JPY": {"timezone": "America/New_York", "roll_hour": 17, "roll_minute": 0},
 }
