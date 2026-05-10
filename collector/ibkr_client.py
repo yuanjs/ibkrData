@@ -2,12 +2,11 @@ import asyncio
 import logging
 import math
 
+from config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS
 from daily_tracker import _bucket_time
 from daily_tracker import _effective_date_str as _get_effective_date_str
 from ib_insync import IB, Contract, Stock, Ticker
-
-from .config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS
-from .notifier import BarkNotifier
+from notifier import BarkNotifier
 
 logger = logging.getLogger(__name__)
 
