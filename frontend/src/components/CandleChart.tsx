@@ -598,11 +598,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     })
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
-      // Clear data refs on chart recreation to prevent stale sync during interval switch
-      lastDataRef.current = []
-      kdjDataRef.current = { k: [], d: [], j: [] }
+    // Clear data refs on chart recreation to prevent stale sync during interval switch
+    lastDataRef.current = []
+    kdjDataRef.current = { k: [], d: [], j: [] }
 
-      return () => {
+    return () => {
       cancelAnimationFrame(rafId)
       themeObserver.disconnect()
       resizeObserver.disconnect()
@@ -782,15 +782,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         ma10SeriesRef.current?.update({ time: updateTime, value: sum10 / 10 })
       }
 
-      // Update KDJ on live tick
+      // Update KDJ on live tick using full data for continuity
       if (kSeriesRef.current && dSeriesRef.current && jSeriesRef.current) {
-        const kdj = calculateKDJData(currentData.slice(-20))
+        const kdj = calculateKDJData(currentData)
         const lastK = kdj.k[kdj.k.length - 1]
         const lastD = kdj.d[kdj.d.length - 1]
         const lastJ = kdj.j[kdj.j.length - 1]
-        if (lastK) kSeriesRef.current.update(lastK)
-        if (lastD) dSeriesRef.current.update(lastD)
-        if (lastJ) jSeriesRef.current.update(lastJ)
+        if (lastK) { kSeriesRef.current.update(lastK); kdjDataRef.current.k[kdjDataRef.current.k.length - 1] = lastK }
+        if (lastD) { dSeriesRef.current.update(lastD); kdjDataRef.current.d[kdjDataRef.current.d.length - 1] = lastD }
+        if (lastJ) { jSeriesRef.current.update(lastJ); kdjDataRef.current.j[kdjDataRef.current.j.length - 1] = lastJ }
       }
     }
   }, [liveTick, interval, isLineChart])
@@ -824,9 +824,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         ))}
         {/* Spacer to push "Go to Latest" button to the right */}
         <div className="flex-1" />
-        {/* "Go to Latest" button — shown when user scrolls/zooms away from the latest data */}
-        {/* "Go to Latest" button — hidden for now as per user request */}
-        {/* showGoToLatest && (
+        {showGoToLatest && (
           <button
             onClick={handleGoToLatest}
             className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded shadow transition-all duration-200 hover:scale-105 active:scale-95 animate-pulse"
@@ -837,7 +835,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             </svg>
             回到最新 ▶
           </button>
-        ) */}
+        )}
       </div>
       <div className="relative">
         <div ref={mainContainerRef} />

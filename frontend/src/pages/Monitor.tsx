@@ -44,8 +44,8 @@ export function Monitor() {
       if (inv.endsWith('s') || inv === '1m') hours = 6
       else if (inv === '1d') hours = 24 * 365
       else if (inv === '1w') hours = 24 * 365 * 2
-      else if (inv.endsWith('m')) hours = 48
-      else hours = 168
+      else if (inv.endsWith('m')) hours = 24 * 7
+      else hours = 24 * 14
 
       const start = new Date(end.getTime() - hours * 3600 * 1000)
 
