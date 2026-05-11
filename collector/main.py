@@ -138,7 +138,7 @@ async def backfill_daily_bars(client, writer, pool, duration="100 D"):
             logger.info(f"Backfilling daily bars for {symbol} ({duration})...")
             bars = await client.get_historical_daily_bars(symbol, duration=duration)
             if bars:
-                await writer.upsert_daily_bars(bars)
+                await writer.upsert_daily_bars(bars, update_open=True)
         logger.info("Daily bar backfill completed")
     except Exception as e:
         logger.error(f"Daily bar backfill error: {e}")
@@ -159,6 +159,19 @@ async def daily_bar_refresh_loop(client, writer, pool):
             raise
         except Exception as e:
             logger.error(f"Daily bar refresh error: {e}")
+
+
+async def trading_days_refresh_loop(client, daily_tracker):
+    """Refresh trading days cache daily so holiday data stays current."""
+    while True:
+        await asyncio.sleep(24 * 3600)
+        try:
+            await client.refresh_trading_days()
+            daily_tracker.trading_days = client._trading_days
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Trading days refresh error: {e}")
 
 
 async def daily_bar_flush_loop(tracker, writer):
@@ -218,6 +231,9 @@ async def main():
     for s in await load_subscriptions(pool):
         await client.subscribe(s["symbol"], s["sec_type"], s["exchange"], s["currency"])
 
+    # Share trading days from IBKRClient with the tracker (populated during subscribe)
+    daily_tracker.trading_days = client._trading_days
+
     def on_order(trade):
         t = asyncio.ensure_future(writer.upsert_order(trade))
         t.add_done_callback(_on_task_done)
@@ -271,6 +287,9 @@ async def main():
         ),
         asyncio.create_task(
             daily_bar_flush_loop(daily_tracker, writer), name="daily_bar_flush"
+        ),
+        asyncio.create_task(
+            trading_days_refresh_loop(client, daily_tracker), name="trading_days_refresh"
         ),
     ]
 

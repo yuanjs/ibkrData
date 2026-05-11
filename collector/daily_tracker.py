@@ -7,8 +7,30 @@ from config import PRODUCT_ROLL_CONFIG
 logger = logging.getLogger(__name__)
 
 
-def _effective_date_str(bar_time, symbol: str) -> str:
-    """Adjust bar date based on product roll time."""
+def _parse_trading_days_str(trading_hours: str) -> set[str]:
+    """Parse IBKR tradingHours string into a set of trading date strings (YYYYMMDD)."""
+    days = set()
+    for segment in trading_hours.split(";"):
+        segment = segment.strip()
+        if not segment or "CLOSED" in segment:
+            continue
+        date_part = segment.split(":")[0]
+        if len(date_part) == 8:
+            days.add(date_part)
+    return days
+
+
+def _next_trading_day(dt: datetime, trading_days: set[str] | None) -> str:
+    d = dt + timedelta(days=1)
+    while True:
+        ds = d.strftime("%Y%m%d")
+        if d.weekday() < 5 and (trading_days is None or ds in trading_days):
+            return ds
+        d += timedelta(days=1)
+
+
+def _effective_date_str(bar_time, symbol: str, trading_days: set[str] | None = None) -> str:
+    """Adjust bar date based on product roll time, skipping weekends and holidays."""
     # IBKR formatDate=1 returns date-only objects (no time → no roll adjustment needed)
     if isinstance(bar_time, date) and not isinstance(bar_time, datetime):
         return bar_time.strftime("%Y%m%d")
@@ -18,12 +40,14 @@ def _effective_date_str(bar_time, symbol: str) -> str:
         return bar_time.strftime("%Y%m%d")
 
     tz = ZoneInfo(config["timezone"])
-    local_dt = bar_time.astimezone(tz) if bar_time.tzinfo is not None else bar_time.replace(tzinfo=tz)
+    local_dt = bar_time.astimezone(tz) if bar_time.tzinfo is not None else bar_time.replace(tzinfo=timezone.utc).astimezone(tz)
+
+    if local_dt.weekday() >= 5:
+        return _next_trading_day(local_dt - timedelta(days=1), trading_days)
 
     if (local_dt.hour > config["roll_hour"]
             or (local_dt.hour == config["roll_hour"] and local_dt.minute >= config["roll_minute"])):
-        next_day = local_dt + timedelta(days=1)
-        return next_day.strftime("%Y%m%d")
+        return _next_trading_day(local_dt, trading_days)
     return local_dt.strftime("%Y%m%d")
 
 
@@ -44,9 +68,10 @@ class DailyBarTracker:
 
     def __init__(self):
         self._bars = {}  # symbol -> dict
+        self.trading_days: dict[str, set[str]] = {}  # symbol -> set of YYYYMMDD, set by IBKRClient
 
     def on_tick(self, symbol: str, price: float, size: float, tick_time: datetime):
-        date_str = _effective_date_str(tick_time, symbol)
+        date_str = _effective_date_str(tick_time, symbol, self.trading_days.get(symbol))
         bar = self._bars.get(symbol)
 
         if bar is None:

@@ -1,12 +1,15 @@
 import asyncio
 import logging
 import math
+from datetime import datetime, timedelta
 
 from config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS
 from daily_tracker import _bucket_time
 from daily_tracker import _effective_date_str as _get_effective_date_str
+from daily_tracker import _parse_trading_days_str
 from ib_insync import IB, Contract, Stock, Ticker
 from notifier import BarkNotifier
+
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,8 @@ class IBKRClient:
         self._tick_callbacks = []  # (symbol, price, size, time) callbacks
         self._retry = 0
         self._subscriptions = {}
+
+        self._trading_days: dict[str, set[str]] = {}  # symbol -> set of YYYYMMDD trading days
 
         self._notifier = BarkNotifier(BARK_SERVER, BARK_KEY)
         self._first_fail_time = None
@@ -196,6 +201,15 @@ class IBKRClient:
         if qualified:
             contract = qualified[0]
 
+        # Fetch contract details to extract tradingHours
+        try:
+            details = await self.ib.reqContractDetailsAsync(contract)
+            if details and details[0].tradingHours:
+                self._trading_days[symbol] = _parse_trading_days_str(details[0].tradingHours)
+                logger.info(f"Cached {len(self._trading_days[symbol])} trading days for {symbol}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch tradingHours for {symbol}: {e}")
+
         # Store conId -> symbol mapping for event callbacks
         self._symbol_map[contract.conId] = symbol
 
@@ -281,8 +295,21 @@ class IBKRClient:
             result = []
             for b in bars:
                 ds = _get_effective_date_str(b.date, symbol)
-                result.append(
-                    {
+                # Shift weekend dates to the following Monday
+                d = datetime.strptime(ds, "%Y%m%d")
+                if d.weekday() == 5:  # Saturday -> Monday
+                    d += timedelta(days=2)
+                elif d.weekday() == 6:  # Sunday -> Monday
+                    d += timedelta(days=1)
+                ds = d.strftime("%Y%m%d")
+                existing = next((r for r in result if r["date_str"] == ds), None)
+                if existing:
+                    existing["high"] = max(existing["high"], b.high)
+                    existing["low"] = min(existing["low"], b.low)
+                    existing["close"] = b.close
+                    existing["volume"] += int(b.volume) if b.volume > 0 else 0
+                else:
+                    result.append({
                         "symbol": symbol,
                         "date_str": ds,
                         "time": _bucket_time(ds),
@@ -291,12 +318,30 @@ class IBKRClient:
                         "low": b.low,
                         "close": b.close,
                         "volume": int(b.volume) if b.volume > 0 else 0,
-                    }
-                )
+                    })
             return result
         except Exception as e:
             logger.error(f"Error fetching historical bars for {symbol}: {e}")
             return []
+
+    async def refresh_trading_days(self):
+        """Refresh tradingHours cache for all subscribed symbols."""
+        for symbol, params in self._subscriptions.items():
+            try:
+                contract_symbol = symbol
+                if params["sec_type"] == "CASH" and "." in symbol:
+                    contract_symbol = symbol.split(".")[0]
+                contract = Contract(
+                    symbol=contract_symbol,
+                    secType=params["sec_type"],
+                    exchange=params["exchange"],
+                    currency=params["currency"],
+                )
+                details = await self.ib.reqContractDetailsAsync(contract)
+                if details and details[0].tradingHours:
+                    self._trading_days[symbol] = _parse_trading_days_str(details[0].tradingHours)
+            except Exception as e:
+                logger.warning(f"Failed to refresh tradingHours for {symbol}: {e}")
 
     def unsubscribe(self, symbol: str):
         self._subscriptions.pop(symbol, None)
