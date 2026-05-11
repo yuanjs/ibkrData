@@ -104,6 +104,40 @@ class DailyBarTracker:
             bar["volume"] = float(size)
             bar["_dirty"] = True
 
+    async def load_from_db(self, pool, symbols: list[str]):
+        """Load the most recent daily bar from DB for each symbol on startup.
+
+        This preserves the correct open/high/low/close across collector restarts,
+        so the tracker continues from where it left off instead of resetting.
+        """
+        for s in symbols:
+            try:
+                row = await pool.fetchrow(
+                    "SELECT symbol, date_str, time, open, high, low, close, volume "
+                    "FROM daily_bars WHERE symbol=$1 ORDER BY date_str DESC LIMIT 1",
+                    s["symbol"] if isinstance(s, dict) else s,
+                )
+                if row and row["date_str"]:
+                    sym = row["symbol"]
+                    self._bars[sym] = {
+                        "symbol": sym,
+                        "date_str": row["date_str"],
+                        "time": row["time"],
+                        "open": row["open"],
+                        "high": row["high"],
+                        "low": row["low"],
+                        "close": row["close"],
+                        "volume": float(row["volume"]),
+                        "_dirty": False,  # Don't re-flush; wait for new ticks
+                    }
+                    logger.info(
+                        f"Loaded bar for {sym} from DB: date={row['date_str']} "
+                        f"O={row['open']} H={row['high']} L={row['low']} C={row['close']}"
+                    )
+            except Exception as e:
+                symbol = s["symbol"] if isinstance(s, dict) else s
+                logger.warning(f"Failed to load bar for {symbol} from DB: {e}")
+
     def get_dirty_bars(self) -> list[dict]:
         """Return bars that have changed since last flush, and mark them clean."""
         result = []

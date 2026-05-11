@@ -160,17 +160,18 @@ class DataWriter:
         except Exception as e:
             logger.error(f"write_execution error: {e}")
 
-    async def upsert_daily_bars(self, bars: list[dict]):
+    async def upsert_daily_bars(self, bars: list[dict], update_open: bool = True):
         if not bars:
             return
         try:
             async with self.pool.acquire() as conn:
+                update_cols = "high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, time=EXCLUDED.time"
+                if update_open:
+                    update_cols = f"open=EXCLUDED.open, {update_cols}"
                 await conn.executemany(
-                    "INSERT INTO daily_bars(symbol, date_str, time, open, high, low, close, volume) "
+                    f"INSERT INTO daily_bars(symbol, date_str, time, open, high, low, close, volume) "
                     "VALUES($1, $2, $3, $4, $5, $6, $7, $8) "
-                    "ON CONFLICT(symbol, date_str) DO UPDATE SET "
-                    "open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, "
-                    "close=EXCLUDED.close, volume=EXCLUDED.volume, time=EXCLUDED.time",
+                    f"ON CONFLICT(symbol, date_str) DO UPDATE SET {update_cols}",
                     [
                         (
                             b["symbol"],

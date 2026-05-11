@@ -180,7 +180,7 @@ async def daily_bar_flush_loop(tracker, writer):
         await asyncio.sleep(5)
         try:
             for bar in tracker.get_dirty_bars():
-                await writer.upsert_daily_bars([bar])
+                await writer.upsert_daily_bars([bar], update_open=False)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -211,6 +211,10 @@ async def main():
     tick_buffer = TickBuffer(writer)
     daily_tracker = DailyBarTracker()
 
+    # Load the most recent daily bars from DB so tracker preserves OHLC across restarts
+    symbols = await load_subscriptions(pool)
+    await daily_tracker.load_from_db(pool, symbols)
+
     # Register tick-by-tick callbacks:
     # 1) Feed each tick into the buffer (for full DB persistence)
     # 2) Track today's daily OHLCV from real-time ticks
@@ -228,7 +232,7 @@ async def main():
 
     await client.connect_with_retry()
 
-    for s in await load_subscriptions(pool):
+    for s in symbols:
         await client.subscribe(s["symbol"], s["sec_type"], s["exchange"], s["currency"])
 
     # Share trading days from IBKRClient with the tracker (populated during subscribe)

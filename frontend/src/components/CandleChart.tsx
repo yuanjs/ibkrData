@@ -737,13 +737,27 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       : (Number(currentBucketTime) > Number(lastCandle.time))
 
     if (isNewCandle) {
-      const newCandle = { time: currentBucketTime, open: newClose, high: newClose, low: newClose, close: newClose }
-      if (isLineChart) {
-        seriesRef.current.update({ time: currentBucketTime as any, value: newClose })
+      if (Number(currentBucketTime) > Number(lastCandle.time)) {
+        // Tick belongs to a new trading day (e.g., after roll hour)
+        const newCandle = { time: currentBucketTime, open: newClose, high: newClose, low: newClose, close: newClose }
+        if (isLineChart) {
+          seriesRef.current.update({ time: currentBucketTime as any, value: newClose })
+        } else {
+          seriesRef.current.update(newCandle as any)
+        }
+        currentData.push(newCandle)
       } else {
-        seriesRef.current.update(newCandle as any)
+        // currentBucketTime < lastCandle.time: tick belongs to a past candle
+        // (e.g., last candle is tomorrow's rolled bar, tick is today's pre-roll data).
+        // Update internal data silently — chart already has correct OHLC from DB.
+        const pastCandle = currentData.find(d => d.time === currentBucketTime)
+        if (pastCandle) {
+          pastCandle.high = Math.max(pastCandle.high, newClose)
+          pastCandle.low = Math.min(pastCandle.low, newClose)
+          pastCandle.close = newClose
+        }
+        // Don't call chart update — past candle data is already finalized in DB
       }
-      currentData.push(newCandle)
     } else {
       const updateTime = interval === '1d' ? lastCandle.time : Math.max(Number(lastCandle.time), Number(currentBucketTime))
       if (isLineChart) {

@@ -49,8 +49,13 @@ export function Monitor() {
 
       const start = new Date(end.getTime() - hours * 3600 * 1000)
 
+      // For daily bars, extend end time by 1 day to include bars whose UTC noon
+      // timestamp is in the future (e.g., today's post-roll-hour bar gets date_str
+      // of tomorrow, with UTC noon as its time field).
+      const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
+
       const res = await api.get<{ time: string, open: number, high: number, low: number, close: number }[]>(
-        `/history/${sym}?start=${start.toISOString()}&end=${end.toISOString()}&interval=${inv}`
+        `/history/${sym}?start=${start.toISOString()}&end=${queryEnd.toISOString()}&interval=${inv}`
       )
       // Ensure precise timestamp alignment for lightweight-charts
       setCandles(res.map((d: any) => {
@@ -85,9 +90,6 @@ export function Monitor() {
       fetchHistory(activeSymbol, newInterval)
     }
   }
-
-  const quotes = useMarketStore(s => s.quotes)
-  const symbols = Object.keys(quotes)
 
   return (
     <div className="flex h-screen overflow-hidden">

@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS
+from config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS, PRODUCT_ROLL_CONFIG
 from daily_tracker import _bucket_time
 from daily_tracker import _effective_date_str as _get_effective_date_str
 from daily_tracker import _parse_trading_days_str
@@ -302,6 +303,24 @@ class IBKRClient:
                 elif d.weekday() == 6:  # Sunday -> Monday
                     d += timedelta(days=1)
                 ds = d.strftime("%Y%m%d")
+
+                # Skip the current incomplete bar when roll hour shifts its date.
+                # IBKR's current daily bar has OHLC covering the full trading session.
+                # After roll hour, _effective_date_str correctly reassigns the date to the
+                # next trading day, but the OHLC values still include pre-roll-hour data.
+                # The DailyBarTracker correctly tracks post-roll-hour data from live ticks.
+                if isinstance(b.date, datetime):
+                    config = PRODUCT_ROLL_CONFIG.get(symbol)
+                    if config:
+                        tz = ZoneInfo(config["timezone"])
+                        local_dt = b.date.astimezone(tz) if b.date.tzinfo is not None else b.date.replace(tzinfo=timezone.utc).astimezone(tz)
+                        if local_dt.weekday() < 5:  # Weekday check (weekend handled above)
+                            is_after_roll = (local_dt.hour > config["roll_hour"] or
+                                             (local_dt.hour == config["roll_hour"] and local_dt.minute >= config["roll_minute"]))
+                            if is_after_roll:
+                                logger.info(f"Skipping current incomplete bar for {symbol}: time {local_dt} rolled from {local_dt.strftime('%Y%m%d')} to {ds}")
+                                continue
+
                 existing = next((r for r in result if r["date_str"] == ds), None)
                 if existing:
                     existing["high"] = max(existing["high"], b.high)
