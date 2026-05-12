@@ -389,8 +389,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       })
       kdjChartRef.current = kdjChart
 
-      // Fix KDJ Y-axis range to -30 ~ 130 so 0/100 are vertically symmetric
-      const fixedRange = { minValue: -30, maxValue: 130 }
+      // Fix KDJ Y-axis range to -20 ~ 120 so 0/100 are symmetric, applies to both mobile and desktop
+      const fixedRange = { minValue: -20, maxValue: 120 }
       const fixedAutoscale = () => ({ priceRange: fixedRange })
 
       kSeriesRef.current = kdjChart.addSeries(LineSeries, {
