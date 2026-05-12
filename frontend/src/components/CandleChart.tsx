@@ -300,14 +300,14 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     if (!isLineChart) {
       ma3SeriesRef.current = chart.addSeries(LineSeries, {
         color: '#3b82f6',
-        lineWidth: 1,
+        lineWidth: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false,
       })
       ma5SeriesRef.current = chart.addSeries(LineSeries, {
         color: '#facc15',
-        lineWidth: 1,
+        lineWidth: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false,

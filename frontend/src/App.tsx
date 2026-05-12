@@ -1,15 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
-import { StatusBar } from './components/StatusBar'
 import { WebSocketProvider } from './components/WebSocketProvider'
+import { useMarketStore } from './store/marketStore'
 import { Monitor } from './pages/Monitor'
 import { Account } from './pages/Account'
 import { Orders } from './pages/Orders'
 import { History } from './pages/History'
 import { Settings } from './pages/Settings'
-import { useMarketStore } from './store/marketStore'
 import { api } from './api/client'
-import { getSymbolDescription, getSymbolDecimalPlaces } from './config/productConfig'
+import { getSymbolDescription } from './config/productConfig'
 
 const nav = [
   { to: '/', label: '实时监控' },
@@ -18,6 +17,16 @@ const nav = [
   { to: '/history', label: '历史' },
   { to: '/settings', label: '设置' },
 ]
+
+function ConnectionDot() {
+  const connected = useMarketStore(s => s.connected)
+  return (
+    <span
+      className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${connected ? 'bg-green-400' : 'bg-red-400'}`}
+      title={connected ? 'IBKR 已连接' : '断开连接 - 重连中...'}
+    />
+  )
+}
 
 function ThemeToggle({ theme, onToggle }: { theme: string; onToggle: () => void }) {
   return (
@@ -62,7 +71,6 @@ export default function App() {
       if (Array.isArray(data)) {
         const symList = data.map(s => s.symbol)
         initQuotes(symList)
-        // Auto-select first symbol if none active
         if (symList.length > 0 && !useMarketStore.getState().activeSymbol) {
           useMarketStore.getState().setActiveSymbol(symList[0])
         }
@@ -78,7 +86,6 @@ export default function App() {
     <BrowserRouter>
       <WebSocketProvider />
       <div className="flex flex-col h-screen overflow-hidden" style={{ backgroundColor: 'var(--bg-base)', color: 'var(--text-primary)' }}>
-        <StatusBar />
 
         {/* Desktop Navigation */}
         <nav className="hidden md:flex gap-1 px-4 py-2 overflow-x-auto no-scrollbar" style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
@@ -90,18 +97,20 @@ export default function App() {
               {label}
             </NavLink>
           ))}
-          <div className="ml-auto flex items-center">
+          <div className="ml-auto flex items-center gap-2">
+            <ConnectionDot />
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
           </div>
         </nav>
 
         {/* Mobile Navigation / Symbol Selector */}
-        <nav className="flex md:hidden items-center gap-3 px-3 py-2" style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
+        <nav className="flex md:hidden items-center gap-2 px-2 py-1.5" style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
+          <ConnectionDot />
           <div className="flex-1 relative">
             <select
               value={activeSymbol || ''}
               onChange={(e) => setActiveSymbol(e.target.value)}
-              className="w-full h-10 border rounded-lg px-3 outline-none focus:ring-2 focus:ring-blue-500 appearance-none font-mono text-sm pr-8"
+              className="w-full h-8 border rounded-lg px-2 outline-none focus:ring-2 focus:ring-blue-500 appearance-none font-mono text-sm pr-7"
               style={{
                 backgroundColor: 'var(--bg-elevated)',
                 color: 'var(--text-primary)',
@@ -115,7 +124,7 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--text-secondary)]">
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--text-secondary)]">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
                 <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z" clipRule="evenodd" />
               </svg>
