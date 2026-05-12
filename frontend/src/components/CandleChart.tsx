@@ -830,7 +830,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   }, [])
 
   return (
-    <div className="pb-[1em]">
+    <div>
       <div className="flex items-center gap-2 mb-2 overflow-x-auto no-scrollbar pb-1">
         {['1s', '5s', '10s', '1m', '2m', '3m', '5m', '15m', '1h', '4h', '1d', '1w'].map((i) => (
           <button
