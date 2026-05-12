@@ -185,6 +185,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     const date = new Date(timeSec * 1000)
     if (isNaN(date.getTime())) return String(timeSec)
     const tz = getTimezone()
+    if (interval === '1d') {
+      return date.toLocaleString('en-GB', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour12: false,
+      }).replace(',', '')
+    }
     return date.toLocaleString('en-GB', {
       timeZone: tz,
       year: 'numeric',
@@ -195,7 +204,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       second: '2-digit',
       hour12: false,
     }).replace(',', '')
-  }, [getTimezone])
+  }, [getTimezone, interval])
 
   // Track mobile/desktop for tooltip layout
   useEffect(() => {
@@ -244,11 +253,18 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         minimumWidth: isMobile ? 80 : 120,
       },
       timeScale: {
-        timeVisible: true,
-        secondsVisible: true,
+        timeVisible: interval !== '1d',
+        secondsVisible: false,
         tickMarkFormatter: (time: any) => {
           const date = new Date(time * 1000)
           if (isNaN(date.getTime())) return ''
+          if (interval === '1d') {
+            return date.toLocaleDateString('en-GB', {
+              timeZone: tz,
+              day: '2-digit',
+              month: '2-digit',
+            })
+          }
           return date.toLocaleTimeString('en-GB', {
             timeZone: tz,
             hour: '2-digit',
@@ -261,6 +277,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         timeFormatter: (time: any) => {
           const date = new Date(time * 1000)
           if (isNaN(date.getTime())) return String(time)
+          if (interval === '1d') {
+            return date.toLocaleString('en-GB', {
+              timeZone: tz,
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour12: false,
+            }).replace(',', '')
+          }
           return date.toLocaleString('en-GB', {
             timeZone: tz,
             year: 'numeric',
