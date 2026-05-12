@@ -145,8 +145,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
 
   // Responsive heights
   const isMobile = window.innerWidth < 768
-  const mainHeight = isMobile ? 450 : 320
-  const kdjHeight = isMobile ? 150 : 120
+  const availableHeight = isMobile ? window.innerHeight - 88 : 440
+  const kdjHeight = isMobile ? Math.floor(availableHeight * 0.25) : 120
+  const mainHeight = isMobile ? availableHeight - kdjHeight : 320
 
   const chartRef = useRef<IChartApi | undefined>(undefined)
   const seriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
