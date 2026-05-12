@@ -378,7 +378,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         },
         rightPriceScale: {
           minimumWidth: isMobile ? 80 : 120,
-          autoScale: false,
         },
         timeScale: {
           visible: false,
