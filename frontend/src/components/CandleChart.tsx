@@ -286,6 +286,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         crosshairMarkerBorderColor: '#fff',
         crosshairMarkerBackgroundColor: '#3b82f6',
         priceFormat: { type: 'price', precision: decPlaces, minMove: Math.pow(10, -decPlaces) },
+        priceLineStyle: 0,
       })
     } else {
       series = chart.addSeries(CandlestickSeries, {
@@ -296,6 +297,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         wickUpColor: '#22c55e',
         wickDownColor: '#ef4444',
         priceFormat: { type: 'price', precision: decPlaces, minMove: Math.pow(10, -decPlaces) },
+        priceLineStyle: 0,
       })
     }
     seriesRef.current = series
