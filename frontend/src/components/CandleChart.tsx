@@ -389,26 +389,29 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       })
       kdjChartRef.current = kdjChart
 
+      // Fix KDJ Y-axis range to -20 ~ 120 via autoscaleInfoProvider
+      const fixedRange = { minValue: -20, maxValue: 120 }
+      const fixedAutoscale = () => ({ priceRange: fixedRange })
+
       kSeriesRef.current = kdjChart.addSeries(LineSeries, {
         color: '#3b82f6', lineWidth: 1, title: '',
         lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
+        autoscaleInfoProvider: fixedAutoscale,
       })
       dSeriesRef.current = kdjChart.addSeries(LineSeries, {
         color: '#eab308', lineWidth: 1, title: '',
         lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
+        autoscaleInfoProvider: fixedAutoscale,
       })
       jSeriesRef.current = kdjChart.addSeries(LineSeries, {
         color: '#a855f7', lineWidth: 2, title: '',
         lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
+        autoscaleInfoProvider: fixedAutoscale,
       })
 
       // Add 0 and 100 reference lines
       kSeriesRef.current.createPriceLine({ price: 0, color: '#4b5563', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       kSeriesRef.current.createPriceLine({ price: 100, color: '#4b5563', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-
-      // Fix KDJ Y-axis range to -20 ~ 120
-      kdjChart.priceScale('right').applyOptions({ autoScale: false })
-      kdjChart.priceScale('right').setPriceRange({ minValue: -20, maxValue: 120 })
 
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
