@@ -851,7 +851,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           </button>
         )}
       </div>
-      <div className="relative">
+      <div className="relative" style={{ touchAction: 'none' }}>
         <div ref={mainContainerRef} />
         <div
           ref={tooltipRef}
@@ -864,7 +864,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           style={{ top: 2, left: 2, backgroundColor: 'color-mix(in srgb, var(--bg-elevated) 92%, transparent)', borderColor: 'var(--border)' }}
         />
       </div>
-      {!isLineChart && <div ref={kdjContainerRef} className="mt-1 border-t border-gray-800" />}
+      {!isLineChart && <div ref={kdjContainerRef} className="mt-1 border-t border-gray-800" style={{ touchAction: 'none' }} />}
     </div>
   )
 }
