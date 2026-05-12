@@ -143,11 +143,19 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const mobileInfoRef = useRef<HTMLDivElement>(null)
   const isMobileRef = useRef(window.innerWidth < 768)
 
-  // Responsive heights
+  // Responsive heights: stabilize initial height on mount using useState to prevent layout shifts
+  // when dragging/zooming causes the mobile browser's navigation bar to dynamically hide/collapse.
+  const [initialHeights] = useState(() => {
+    const isMob = window.innerWidth < 768
+    // Leave generous space at the bottom of the screen on mobile devices
+    const availH = isMob ? window.innerHeight - 150 : 440
+    const kdjH = isMob ? Math.floor(availH * 0.25) : 120
+    const mainH = isMob ? availH - kdjH : 320
+    return { kdjHeight: kdjH, mainHeight: mainH }
+  })
+
   const isMobile = window.innerWidth < 768
-  const availableHeight = isMobile ? window.innerHeight - 88 : 440
-  const kdjHeight = isMobile ? Math.floor(availableHeight * 0.25) : 120
-  const mainHeight = isMobile ? availableHeight - kdjHeight : 320
+  const { kdjHeight, mainHeight } = initialHeights
 
   const chartRef = useRef<IChartApi | undefined>(undefined)
   const seriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
@@ -162,11 +170,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
 
   const kdjDataRef = useRef<{ k: any[]; d: any[]; j: any[] }>({ k: [], d: [], j: [] })
   const lastDataRef = useRef<any[]>([])
-
-  // Track whether the user has scrolled away from the latest data
-  const [showGoToLatest, setShowGoToLatest] = useState(false)
-  // Ref to suppress false detections during programmatic scroll/fit operations
-  const programmaticScrollRef = useRef(false)
 
   /** Read a CSS custom property from :root */
   const cssVar = useCallback((name: string): string => {
@@ -447,22 +450,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       jSeriesRef.current = undefined
     }
 
-    // Track whether user has scrolled away from the right edge (latest data)
-    // Only sets showGoToLatest to TRUE when user scrolls away.
-    // Never sets it to FALSE — that only happens via button click or data reload.
-    chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
-      // Skip detection during programmatic scroll/fit operations
-      if (programmaticScrollRef.current) return
-      if (!logicalRange || !seriesRef.current) return
-      const dataLength = lastDataRef.current.length
-      if (dataLength === 0) return
-      // Show button when the right edge is more than 3 bars away from the latest
-      const rightEdge = logicalRange.to
-      if (rightEdge < dataLength - 3) {
-        setShowGoToLatest(true)
-      }
-    })
-
     // Tooltip on crosshair move
     chart.subscribeCrosshairMove((param) => {
       const tt = tooltipRef.current
@@ -682,8 +669,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
 
     // Set visible range for both Line and Candle charts
     if (chartRef.current) {
-      programmaticScrollRef.current = true
-
       // Fit KDJ chart if applicable
       if (!isLineChart && kdjChartRef.current && kdjDataRef.current.k.length > 0) {
         kdjChartRef.current.timeScale().fitContent()
@@ -710,10 +695,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         chartRef.current.timeScale().fitContent()
       }
     }
-    // Reset the "Go to Latest" button state
-    setShowGoToLatest(false)
-    // Allow detection again after a short delay (let the range change event settle)
-    setTimeout(() => { programmaticScrollRef.current = false }, 300)
   }, [data, isLineChart, interval, symbol])
 
   // Process live ticks (skip for weekly — no meaningful real-time bucketing)
@@ -814,21 +795,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     }
   }, [liveTick, interval, isLineChart])
 
-  // Handler to scroll both charts to the latest data
-  const handleGoToLatest = useCallback(() => {
-    programmaticScrollRef.current = true
-    const hasKdjData = kdjDataRef.current.k.length > 0
-    if (hasKdjData && kdjChartRef.current) {
-      kdjChartRef.current.timeScale().fitContent()
-    }
-    if (chartRef.current) {
-      chartRef.current.timeScale().fitContent()
-    }
-    setShowGoToLatest(false)
-    // Allow detection again after the animation settles
-    setTimeout(() => { programmaticScrollRef.current = false }, 300)
-  }, [])
-
   return (
     <div>
       <div className="flex items-center gap-2 mb-2 overflow-x-auto no-scrollbar pb-1">
@@ -841,20 +807,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             {i}
           </button>
         ))}
-        {/* Spacer to push "Go to Latest" button to the right */}
-        <div className="flex-1" />
-        {showGoToLatest && (
-          <button
-            onClick={handleGoToLatest}
-            className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded shadow transition-all duration-200 hover:scale-105 active:scale-95 animate-pulse"
-            title="回到最新数据"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
-              <path fillRule="evenodd" d="M10 18a.75.75 0 01-.75-.75V4.66L7.3 6.76a.75.75 0 11-1.1-1.02l3.25-3.5a.75.75 0 011.1 0l3.25 3.5a.75.75 0 01-1.1 1.02l-1.95-2.1v12.59A.75.75 0 0110 18z" clipRule="evenodd" transform="rotate(90 10 10)" />
-            </svg>
-            回到最新 ▶
-          </button>
-        )}
       </div>
       <div className="relative" style={{ touchAction: 'none' }}>
         <div ref={mainContainerRef} />
