@@ -220,6 +220,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     const chart = createChart(mainContainerRef.current, {
       layout: { background: { color: bgColor }, textColor },
       grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
+      crosshair: {
+        vertLine: { color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 },
+        horzLine: { visible: false, labelVisible: false },
+      },
       width: mainContainerRef.current.clientWidth,
       height: mainHeight,
       // 左键拖动 = 平移；滚轮 = 缩放
@@ -306,7 +310,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         priceLineVisible: false,
       })
       ma5SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#facc15',
+        color: '#eab308',
         lineWidth: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
@@ -314,7 +318,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       })
       ma10SeriesRef.current = chart.addSeries(LineSeries, {
         color: '#a855f7',
-        lineWidth: 2,
+        lineWidth: 3,
         lineStyle: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
@@ -353,28 +357,28 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           visible: false,
         },
         crosshair: {
-          vertLine: { visible: true },
-          horzLine: { visible: true },
+          vertLine: { visible: true, color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 },
+          horzLine: { visible: false, labelVisible: false },
         },
       })
       kdjChartRef.current = kdjChart
 
       kSeriesRef.current = kdjChart.addSeries(LineSeries, {
         color: '#3b82f6', lineWidth: 1, title: '',
-        lastValueVisible: true, priceLineVisible: false,
+        lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
       })
       dSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#facc15', lineWidth: 1, title: '',
-        lastValueVisible: true, priceLineVisible: false,
+        color: '#eab308', lineWidth: 1, title: '',
+        lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
       })
       jSeriesRef.current = kdjChart.addSeries(LineSeries, {
         color: '#a855f7', lineWidth: 2, title: '',
-        lastValueVisible: true, priceLineVisible: false,
+        lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
       })
 
       // Add 0 and 100 reference lines
-      kSeriesRef.current.createPriceLine({ price: 0, color: '#4b5563', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' })
-      kSeriesRef.current.createPriceLine({ price: 100, color: '#4b5563', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 0, color: '#4b5563', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 100, color: '#4b5563', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
 
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
@@ -522,10 +526,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
               <span><span style="${ts}">L</span><span class="${lCls}">${cL}</span></span>
               <span><span style="${ts}">C</span><span class="${cCls}">${cC}</span></span>
               <span><span style="${ts}">3M</span><span class="text-blue-400">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></span>
-              <span><span style="${ts}">5M</span><span class="text-yellow-400">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></span>
+              <span><span style="${ts}">5M</span><span style="color:#eab308">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></span>
               <span><span style="${ts}">10M</span><span class="text-purple-400">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></span>
               <span style="border-left:1px solid var(--border);padding-left:3px"><span style="${ts}">K</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></span>
-              <span><span style="${ts}">D</span><span class="text-yellow-400">${dVal?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">D</span><span style="color:#eab308">${dVal?.toFixed(2) ?? '-'}</span></span>
               <span><span style="${ts}">J</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></span>
             </div>
           `
@@ -552,12 +556,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           </div>
           <div class="flex gap-4 mt-2 text-[10px] font-mono">
             <div class="flex items-center gap-1"><span style="${ts}">3M:</span><span class="text-blue-400">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span class="text-yellow-400">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span style="color:#eab308">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></div>
             <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span class="text-purple-400">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></div>
           </div>
           <div class="flex gap-3 mt-1 text-[10px] font-mono pt-1" style="border-top:1px solid var(--border)">
             <div class="flex items-center gap-1"><span style="${ts}">K:</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">D:</span><span class="text-yellow-400">${dVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">D:</span><span style="color:#eab308">${dVal?.toFixed(2) ?? '-'}</span></div>
             <div class="flex items-center gap-1"><span style="${ts}">J:</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></div>
           </div>
         `
