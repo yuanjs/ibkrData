@@ -12,6 +12,10 @@ export const SYMBOL_DESCRIPTIONS: Record<string, string> = {
   'NIKKEI_MINI': '日经',
   'USD.JPY': '汇率',
   'USDJPY': '汇率',
+  '10Y': '美债',
+  'US10Y': '美债',
+  'ZC': '玉米',
+  'CORN': '玉米',
 };
 
 export function getSymbolDescription(symbol: string): string {
@@ -47,7 +51,18 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     rollHour: 17,
     rollMinute: 0,
     decimalPlaces: 3,
-  }
+  },
+  'US10Y': {
+    timezone: 'America/Chicago',
+    rollHour: 16,
+    rollMinute: 0,
+    decimalPlaces: 3,
+  },
+  'CORN': {
+    timezone: 'America/Chicago',
+    rollHour: 16,
+    rollMinute: 0,
+  },
 };
 
 function normalizeSymbol(s: string): string {
@@ -55,6 +70,8 @@ function normalizeSymbol(s: string): string {
   if (s === 'YM' || s === 'DOW' || s === 'IX.D.DOW.IFA.IP' || s === 'DOW_MINI' || s === 'MYM') return 'WALLSTREET'
   if (s === 'N225M' || s === '225M') return 'NIKKEI_MINI'
   if (s === 'USD.JPY') return 'USDJPY'
+  if (s === '10Y') return 'US10Y'
+  if (s === 'ZC') return 'CORN'
   return s
 }
 

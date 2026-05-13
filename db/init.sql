@@ -124,7 +124,9 @@ INSERT INTO subscriptions (symbol, sec_type, exchange, currency) VALUES
     ('SPI',   'FUT',  'SNFE',     'AUD'),
     ('USD.JPY', 'CASH', 'IDEALPRO', 'JPY'),
     ('MYM',   'FUT',  'CBOT',     'USD'),
-    ('N225M', 'FUT',  'OSE.JPN',  'JPY')
+    ('N225M', 'FUT',  'OSE.JPN',  'JPY'),
+    ('10Y',   'FUT',  'CBOT',     'USD'),
+    ('ZC',    'FUT',  'CBOT',     'USD')
 ON CONFLICT (symbol) DO NOTHING;
 
 -- 告警配置表
