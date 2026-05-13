@@ -16,6 +16,14 @@ CREATE TABLE ticks (
 SELECT create_hypertable('ticks', 'time');
 CREATE INDEX ON ticks (symbol, time DESC);
 
+-- 压缩配置 (按品种分段压缩，15天前的chunk自动压缩)
+ALTER TABLE ticks SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'symbol',
+  timescaledb.compress_orderby = 'time DESC'
+);
+SELECT add_compression_policy('ticks', compress_after => INTERVAL '15 days');
+
 -- 日K线表 (存储来自 IBKR 的准确日线数据)
 CREATE TABLE daily_bars (
     symbol      TEXT NOT NULL,
