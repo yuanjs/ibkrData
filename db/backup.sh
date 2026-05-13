@@ -59,25 +59,25 @@ do_backup() {
   local filename="ibkrdata_${ts}.sql.gz"
   local filepath="${BACKUP_DIR}/${filename}"
 
-  _log "Starting backup: ${DB_NAME}@${DB_HOST}:${DB_PORT} -> ${filename}"
+  _log "Starting backup: ${DB_NAME}@timescaledb:${DB_PORT} -> ${filename}"
 
-  if pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-       --format=custom --compress=9 --file="$filepath" \
-       2> >(grep -v 'pg_dump: .*: 循环外键约束\|pg_dump: .*: cyclic foreign keys\|pg_dump: detail:.*hypertable\|pg_dump: detail:.*chunk\|pg_dump: detail:.*continuous_agg\|pg_dump: hint:' >> "$LOG_FILE" || true)
+  # 通过 docker compose exec 在 timescaledb 容器内运行 pg_dump
+  if PGPASSWORD="$DB_PASS" docker compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T timescaledb \
+       sh -c "PGPASSWORD=\"$DB_PASS\" pg_dump -U \"$DB_USER\" -d \"$DB_NAME\" --format=custom --compress=9" \
+       2> >(grep -v 'pg_dump: .*: 循环外键约束\|pg_dump: .*: cyclic foreign keys\|pg_dump: detail:.*hypertable\|pg_dump: detail:.*chunk\|pg_dump: detail:.*continuous_agg\|pg_dump: hint:' >> "$LOG_FILE" || true) \
+       > "$filepath"
   then
     local size
     size="$(du -h "$filepath" | cut -f1)"
     _log "Backup complete: ${filename} (${size})"
   else
-    _log "Backup FAILED: ${DB_NAME}@${DB_HOST}:${DB_PORT}"
+    _log "Backup FAILED: ${DB_NAME}@timescaledb:${DB_PORT}"
     return 1
   fi
 }
 
 _load_env
-export PGPASSWORD="$DB_PASS"
 mkdir -p "$BACKUP_DIR"
 _log "$@"
 do_backup
 _cleanup_old
-unset PGPASSWORD
