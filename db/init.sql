@@ -122,7 +122,7 @@ INSERT INTO settings VALUES
     ('ib_port',                  '4002',               NOW()),
     ('ib_client_id',             '1',                  NOW()),
     ('account_refresh_interval', '30',                 NOW()),
-    ('tick_retention_days',      '180',                NOW()),
+    ('tick_retention_days',      '365',                NOW()),
     ('default_chart_interval',   '1min',               NOW()),
     ('ui_language',              'zh',                 NOW()),
     ('ui_timezone',              'America/New_York',   NOW());
