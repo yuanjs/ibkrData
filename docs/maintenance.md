@@ -58,37 +58,82 @@ docker compose exec -T timescaledb pg_restore -U ibkr -d ibkrdata \
 > SELECT add_retention_policy('ticks', INTERVAL '365 days');
 > ```
 
-## 服务器定时备份设定
+## 定时备份
 
-### 1. 编辑 crontab
+### 服务器（igzmf）— crontab
 
 ```bash
+# 编辑 crontab
 crontab -e
 ```
 
-### 2. 添加定时任务
-
-以下示例每天凌晨 3:00 执行备份，保留 30 天历史：
+添加以下行，每天凌晨 3:00 执行：
 
 ```cron
-# 每天 3:00 备份数据库
 0 3 * * * cd ~/projects/ibkrData && ./db/backup.sh --cron >> /dev/null 2>&1
 ```
 
-如果需要保留 60 天备份：
+#### 自定义（保留 60 天，备份到其他目录）：
 
 ```cron
 0 3 * * * cd ~/projects/ibkrData && BACKUP_DIR=~/backups/ibkrdata RETENTION_DAYS=60 ./db/backup.sh --cron >> /dev/null 2>&1
 ```
 
-### 3. 验证
+#### 验证：
 
 ```bash
-# 查看备份是否成功生成
 ls -lh ~/projects/ibkrData/backups/
-
-# 查看备份日志
 tail -20 ~/projects/ibkrData/backups/backup.log
+```
+
+### 本机（CachyOS/Arch）— systemd timer
+
+如果系统没有安装 cron，可以用 systemd 用户定时器（无需 root）：
+
+#### 服务文件 `~/.config/systemd/user/ibkrdata-backup.service`：
+
+```ini
+[Unit]
+Description=IBKR Data Database Backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/ibkrData
+ExecStart=%h/projects/ibkrData/db/backup.sh --cron
+```
+
+#### 定时器文件 `~/.config/systemd/user/ibkrdata-backup.timer`：
+
+```ini
+[Unit]
+Description=Daily IBKR Data Database Backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+#### 启用并启动：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable ibkrdata-backup.timer
+systemctl --user start ibkrdata-backup.timer
+```
+
+> 确保 linger 已启用，否则注销后定时器不运行：
+> ```bash
+> loginctl enable-linger
+> ```
+
+#### 查看状态：
+
+```bash
+systemctl --user list-timers | grep ibkrdata
+journalctl --user -u ibkrdata-backup.service -e
 ```
 
 ### 说明
