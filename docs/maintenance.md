@@ -23,7 +23,7 @@
 
 ## 数据库备份
 
-备份脚本位于 `db/backup.sh`，使用 `pg_dump` 导出自定义格式（可压缩、可并行恢复）。
+备份脚本位于 `db/backup.sh`，通过 Docker 在 timescaledb 容器内运行 `pg_dump`（避免宿主机与容器内 PostgreSQL 版本不匹配），导出为自定义格式（可压缩、可并行恢复）。
 
 ### 手动备份
 
@@ -45,11 +45,13 @@ cd ~/projects/ibkrData
 ### 恢复备份
 
 ```bash
-# 恢复前确保目标数据库为空或已清理
-pg_restore -h localhost -U ibkr -d ibkrdata --clean --if-exists 备份文件路径
+# 通过 Docker 恢复（版本匹配）
+cd ~/projects/ibkrData
+docker compose exec -T timescaledb pg_restore -U ibkr -d ibkrdata \
+  --clean --if-exists < /path/to/ibkrdata_xxx.sql.gz
 ```
 
-> 注意：恢复后需要重建 TimescaleDB 的压缩策略和保留策略，因为 `pg_dump` custom 格式默认不导出这些策略。恢复后执行：
+> 注意：恢复后需要重建 TimescaleDB 的压缩策略和保留策略，因为 `pg_dump` custom 格式默认不导出这些策略：
 >
 > ```sql
 > SELECT add_compression_policy('ticks', compress_after => INTERVAL '15 days');
@@ -92,5 +94,5 @@ tail -20 ~/projects/ibkrData/backups/backup.log
 ### 说明
 
 - `--cron` 参数让脚本只写日志，不输出到终端
-- 备份脚本直接从宿主机连接 `localhost:5432`，因为 timescaledb 容器映射了端口
+- 备份脚本通过 `docker compose exec` 在 timescaledb 容器内运行，避免宿主机 `pg_dump` 版本不匹配
 - 脚本会自动清理超出保留天数的旧备份文件
