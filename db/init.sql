@@ -114,7 +114,7 @@ INSERT INTO settings VALUES
     ('ib_port',                  '4002',               NOW()),
     ('ib_client_id',             '1',                  NOW()),
     ('account_refresh_interval', '30',                 NOW()),
-    ('tick_retention_days',      '30',                 NOW()),
+    ('tick_retention_days',      '180',                NOW()),
     ('default_chart_interval',   '1min',               NOW()),
     ('ui_language',              'zh',                 NOW()),
     ('ui_timezone',              'America/New_York',   NOW());
@@ -153,5 +153,5 @@ SELECT
 FROM ticks
 GROUP BY bucket, symbol;
 
--- 数据保留策略
-SELECT add_retention_policy('ticks', INTERVAL '30 days');
+-- 数据保留策略 (延长至365天以支持长期回测)
+SELECT add_retention_policy('ticks', INTERVAL '365 days');

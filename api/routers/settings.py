@@ -26,6 +26,14 @@ async def update_settings(body: SettingsUpdate):
                 "ON CONFLICT(key) DO UPDATE SET value=$2, updated_at=NOW()",
                 key, str(value)
             )
+            # Sync tick_retention_days to TimescaleDB retention policy
+            if key == "tick_retention_days":
+                days = int(value)
+                await conn.execute("SELECT remove_retention_policy('ticks', if_exists => true)")
+                await conn.execute(
+                    "SELECT add_retention_policy('ticks', INTERVAL $1)",
+                    f"{days} days"
+                )
     r = aioredis.from_url(REDIS_URL)
     await r.publish("settings:update", "updated")
     await r.aclose()
