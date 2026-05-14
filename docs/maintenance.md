@@ -88,32 +88,15 @@ tail -20 ~/projects/ibkrData/backups/backup.log
 
 ### 本机（CachyOS/Arch）— systemd timer
 
-如果系统没有安装 cron，可以用 systemd 用户定时器（无需 root）：
+如果系统没有安装 cron，可以用 systemd 用户定时器（无需 root）。配置文件已纳入版本管理，位于 `config/systemd/`。
 
-#### 服务文件 `~/.config/systemd/user/ibkrdata-backup.service`：
+#### 安装：
 
-```ini
-[Unit]
-Description=IBKR Data Database Backup
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h/projects/ibkrData
-ExecStart=%h/projects/ibkrData/db/backup.sh --cron
-```
-
-#### 定时器文件 `~/.config/systemd/user/ibkrdata-backup.timer`：
-
-```ini
-[Unit]
-Description=Daily IBKR Data Database Backup
-
-[Timer]
-OnCalendar=*-*-* 03:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
+```bash
+# 从项目目录创建软链接
+cd ~/projects/ibkrData
+ln -sf "$(pwd)/config/systemd/ibkrdata-backup.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/config/systemd/ibkrdata-backup.timer" ~/.config/systemd/user/
 ```
 
 #### 启用并启动：
