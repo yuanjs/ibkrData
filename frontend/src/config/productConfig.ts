@@ -16,6 +16,10 @@ export const SYMBOL_DESCRIPTIONS: Record<string, string> = {
   'US10Y': '美债',
   'ZC': '玉米',
   'CORN': '玉米',
+  'MNQ': '纳指',
+  'NQ': '纳指',
+  'MES': '标普',
+  'ES': '标普',
 };
 
 export function getSymbolDescription(symbol: string): string {
@@ -63,6 +67,16 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     rollHour: 16,
     rollMinute: 0,
   },
+  'NAS100': {
+    timezone: 'America/Chicago',
+    rollHour: 16,
+    rollMinute: 0,
+  },
+  'SP500': {
+    timezone: 'America/Chicago',
+    rollHour: 16,
+    rollMinute: 0,
+  },
 };
 
 function normalizeSymbol(s: string): string {
@@ -72,6 +86,8 @@ function normalizeSymbol(s: string): string {
   if (s === 'USD.JPY') return 'USDJPY'
   if (s === '10Y') return 'US10Y'
   if (s === 'ZC') return 'CORN'
+  if (s === 'MNQ' || s === 'NQ') return 'NAS100'
+  if (s === 'MES' || s === 'ES') return 'SP500'
   return s
 }
 

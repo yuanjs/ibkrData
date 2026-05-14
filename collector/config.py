@@ -30,4 +30,6 @@ PRODUCT_ROLL_CONFIG = {
     "USD.JPY": {"timezone": "America/New_York", "roll_hour": 17, "roll_minute": 0},
     "10Y": {"timezone": "America/Chicago", "roll_hour": 16, "roll_minute": 0},
     "ZC": {"timezone": "America/Chicago", "roll_hour": 16, "roll_minute": 0},
+    "MNQ": {"timezone": "America/Chicago", "roll_hour": 16, "roll_minute": 0},
+    "MES": {"timezone": "America/Chicago", "roll_hour": 16, "roll_minute": 0},
 }

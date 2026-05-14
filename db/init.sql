@@ -134,7 +134,9 @@ INSERT INTO subscriptions (symbol, sec_type, exchange, currency) VALUES
     ('MYM',   'FUT',  'CBOT',     'USD'),
     ('N225M', 'FUT',  'OSE.JPN',  'JPY'),
     ('10Y',   'FUT',  'CBOT',     'USD'),
-    ('ZC',    'FUT',  'CBOT',     'USD')
+    ('ZC',    'FUT',  'CBOT',     'USD'),
+    ('MNQ',   'FUT',  'CME',      'USD'),
+    ('MES',   'FUT',  'CME',      'USD')
 ON CONFLICT (symbol) DO NOTHING;
 
 -- 告警配置表
