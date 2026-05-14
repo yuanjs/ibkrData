@@ -99,7 +99,7 @@ export function Monitor() {
         <div className="p-1 pb-12 md:p-4 flex-1 overflow-y-auto">
           {error && (
             <div className="p-3 rounded mb-4 text-sm" style={{
-              color: '#ef5350',
+              color: '#d32f2f',
               backgroundColor: 'var(--bg-danger-bg)',
             }}>{error}</div>
           )}

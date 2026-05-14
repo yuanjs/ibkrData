@@ -293,12 +293,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       })
     } else {
       series = chart.addSeries(CandlestickSeries, {
-        upColor: '#26a69a',
-        downColor: '#ef5350',
-        borderUpColor: '#26a69a',
-        borderDownColor: '#ef5350',
-        wickUpColor: '#26a69a',
-        wickDownColor: '#ef5350',
+        upColor: '#26a641',
+        downColor: '#d32f2f',
+        borderUpColor: '#26a641',
+        borderDownColor: '#d32f2f',
+        wickUpColor: '#26a641',
+        wickDownColor: '#d32f2f',
         priceFormat: { type: 'price', precision: decPlaces, minMove: Math.pow(10, -decPlaces) },
       })
     }
@@ -502,10 +502,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           const cH = sData.high?.toFixed(decPlaces)
           const cL = sData.low?.toFixed(decPlaces)
           const cC = sData.close?.toFixed(decPlaces)
-          const oCls = sData.open > sData.close ? '#ef5350' : '#26a69a'
-          const hCls = sData.high > sData.close ? '#ef5350' : '#26a69a'
-          const lCls = sData.low > sData.close ? '#ef5350' : '#26a69a'
-          const cCls = sData.close >= sData.open ? '#26a69a' : '#ef5350'
+          const oCls = sData.open > sData.close ? '#d32f2f' : '#26a641'
+          const hCls = sData.high > sData.close ? '#d32f2f' : '#26a641'
+          const lCls = sData.low > sData.close ? '#d32f2f' : '#26a641'
+          const cCls = sData.close >= sData.open ? '#26a641' : '#d32f2f'
           mi.innerHTML = `
             <div style="${tp};font-size:0.85rem;margin-bottom:0.125rem">${timeStr}</div>
             <div style="display:flex;flex-wrap:wrap;gap:2px 8px;font-size:0.8rem;font-family:monospace">
@@ -534,10 +534,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           <div style="margin-top:0.25rem;font-size:0.75rem"><span style="${ts}">Price:</span><span style="color:#2962ff;margin-left:0.5rem;font-family:monospace">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span></div>
         `
       } else {
-        const oCls = sData.open > sData.close ? '#ef5350' : '#26a69a'
-        const hCls = sData.high > sData.close ? '#ef5350' : '#26a69a'
-        const lCls = sData.low > sData.close ? '#ef5350' : '#26a69a'
-        const cCls = sData.close >= sData.open ? '#26a69a' : '#ef5350'
+        const oCls = sData.open > sData.close ? '#d32f2f' : '#26a641'
+        const hCls = sData.high > sData.close ? '#d32f2f' : '#26a641'
+        const lCls = sData.low > sData.close ? '#d32f2f' : '#26a641'
+        const cCls = sData.close >= sData.open ? '#26a641' : '#d32f2f'
         tt.innerHTML = `
           <div style="font-weight:bold;${tp};font-size:0.875rem;white-space:nowrap">${timeStr}</div>
           <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-2">
