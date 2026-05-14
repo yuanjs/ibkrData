@@ -5,7 +5,7 @@ export function Account() {
   const positions = useAccountStore(s => s.positions) as Array<Record<string, unknown>>
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
-  const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#089981' : '#f23645'
+  const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a69a' : '#ef5350'
 
   return (
     <div className="p-4 space-y-6">

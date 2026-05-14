@@ -40,7 +40,7 @@ export function Orders() {
             <tbody>{(orders as Record<string, unknown>[]).map((o, i) => (
               <tr key={i} className="border-b" style={{ borderColor: 'var(--border-light)' }}>
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{o.symbol as string}</td>
-                <td className="py-2 px-3" style={{ color: o.action === 'BUY' ? '#089981' : '#f23645' }}>{o.action as string}</td>
+                <td className="py-2 px-3" style={{ color: o.action === 'BUY' ? '#26a69a' : '#ef5350' }}>{o.action as string}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{o.quantity as number}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{o.limit_price as number ?? '-'}</td>
                 <td className="py-2 px-3" style={{ color: 'var(--text-secondary)' }}>{o.status as string}</td>
@@ -62,7 +62,7 @@ export function Orders() {
               <tr key={i} className="border-b" style={{ borderColor: 'var(--border-light)' }}>
                 <td className="py-2 px-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{new Date(t.time as string).toLocaleString()}</td>
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{t.symbol as string}</td>
-                <td className="py-2 px-3" style={{ color: t.side === 'BOT' ? '#089981' : '#f23645' }}>{t.side as string}</td>
+                <td className="py-2 px-3" style={{ color: t.side === 'BOT' ? '#26a69a' : '#ef5350' }}>{t.side as string}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{t.quantity as number}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{t.price as number}</td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{t.commission as number}</td>
@@ -83,7 +83,7 @@ export function Orders() {
             <tbody>{(pnl as Record<string, unknown>[]).map((p, i) => (
               <tr key={i} className="border-b" style={{ borderColor: 'var(--border-light)' }}>
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{p.symbol as string}</td>
-                <td className="py-2 px-3 text-right font-mono" style={{ color: (p.realized_pnl as number) >= 0 ? '#089981' : '#f23645' }}>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: (p.realized_pnl as number) >= 0 ? '#26a69a' : '#ef5350' }}>
                   {(p.realized_pnl as number)?.toFixed(2)}
                 </td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{p.trade_count as number}</td>
