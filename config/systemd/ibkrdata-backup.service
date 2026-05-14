@@ -1,0 +1,7 @@
+[Unit]
+Description=IBKR Data Database Backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/ibkrData
+ExecStart=%h/projects/ibkrData/db/backup.sh --cron
