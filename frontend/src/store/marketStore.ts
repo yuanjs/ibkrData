@@ -32,7 +32,7 @@ export const useMarketStore = create<MarketStore>(set => ({
   quotes: {},
   lastTick: null,
   connected: false,
-  activeSymbol: null,
+  activeSymbol: 'USD.JPY',
   setActiveSymbol: (activeSymbol) => set({ activeSymbol }),
   setConnected: (connected) => set({ connected }),
   updateQuote: (q) => set(s => ({
