@@ -381,10 +381,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       })
 
       // Add 0 and 100 reference lines
-      kSeriesRef.current.createPriceLine({ price: 0, color: '#2962ff', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      kSeriesRef.current.createPriceLine({ price: 100, color: '#2962ff', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      kSeriesRef.current.createPriceLine({ price: 80, color: '#f23645', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: '' })
-      kSeriesRef.current.createPriceLine({ price: 20, color: '#089981', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 0, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 100, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
 
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
