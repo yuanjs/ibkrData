@@ -5,7 +5,7 @@ export function Account() {
   const positions = useAccountStore(s => s.positions) as Array<Record<string, unknown>>
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
-  const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? 'text-green-400' : 'text-red-400'
+  const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#089981' : '#f23645'
 
   return (
     <div className="p-4 space-y-6">
@@ -18,8 +18,8 @@ export function Account() {
         ].map(({ label, key }) => (
           <div key={key} className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-surface)' }}>
             <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>{label}</div>
-            <div className={`text-lg font-mono font-bold ${key.includes('pnl') ? pnlColor(summary[key]) : ''}`}
-              style={{ color: key.includes('pnl') ? undefined : 'var(--text-primary)' }}>
+            <div className="text-lg font-mono font-bold"
+              style={{ color: key.includes('pnl') ? pnlColor(summary[key]) : 'var(--text-primary)' }}>
               {fmt(summary[key])}
             </div>
           </div>
@@ -45,7 +45,7 @@ export function Account() {
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{p.quantity as number}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.avg_cost as number)}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.market_value as number)}</td>
-                <td className={`py-2 px-3 text-right font-mono ${pnlColor(p.unrealized_pnl as number)}`}>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: pnlColor(p.unrealized_pnl as number) }}>
                   {fmt(p.unrealized_pnl as number)}
                 </td>
               </tr>

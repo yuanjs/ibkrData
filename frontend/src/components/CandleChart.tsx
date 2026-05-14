@@ -283,22 +283,22 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     let series: ISeriesApi<any>
     if (isLineChart) {
       series = chart.addSeries(LineSeries, {
-        color: '#3b82f6',
+        color: '#2962ff',
         lineWidth: 2,
         crosshairMarkerVisible: true,
         crosshairMarkerRadius: 5,
         crosshairMarkerBorderColor: '#fff',
-        crosshairMarkerBackgroundColor: '#3b82f6',
+        crosshairMarkerBackgroundColor: '#2962ff',
         priceFormat: { type: 'price', precision: decPlaces, minMove: Math.pow(10, -decPlaces) },
       })
     } else {
       series = chart.addSeries(CandlestickSeries, {
-        upColor: '#22c55e',
-        downColor: '#ef4444',
-        borderUpColor: '#22c55e',
-        borderDownColor: '#ef4444',
-        wickUpColor: '#22c55e',
-        wickDownColor: '#ef4444',
+        upColor: '#089981',
+        downColor: '#f23645',
+        borderUpColor: '#089981',
+        borderDownColor: '#f23645',
+        wickUpColor: '#089981',
+        wickDownColor: '#f23645',
         priceFormat: { type: 'price', precision: decPlaces, minMove: Math.pow(10, -decPlaces) },
       })
     }
@@ -307,22 +307,22 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     // MA series (only for candle charts)
     if (!isLineChart) {
       ma3SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#3b82f6',
+        color: '#2962ff',
         lineWidth: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false,
       })
       ma5SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#eab308',
+        color: '#ff9800',
         lineWidth: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false,
       })
       ma10SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#a855f7',
-        lineWidth: 3,
+        color: '#9c27b0',
+        lineWidth: 2.5,
         lineStyle: 2,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
@@ -368,21 +368,23 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       kdjChartRef.current = kdjChart
 
       kSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#3b82f6', lineWidth: 1, title: '',
+        color: '#2962ff', lineWidth: 1, title: '',
         lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
       })
       dSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#eab308', lineWidth: 1, title: '',
+        color: '#ff9800', lineWidth: 1, title: '',
         lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
       })
       jSeriesRef.current = kdjChart.addSeries(LineSeries, {
-        color: '#a855f7', lineWidth: 2, title: '',
+        color: '#9c27b0', lineWidth: 2, title: '',
         lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false,
       })
 
       // Add 0 and 100 reference lines
-      kSeriesRef.current.createPriceLine({ price: 0, color: '#4b5563', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      kSeriesRef.current.createPriceLine({ price: 100, color: '#4b5563', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 0, color: '#2962ff', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 100, color: '#2962ff', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 80, color: '#f23645', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: '' })
+      kSeriesRef.current.createPriceLine({ price: 20, color: '#089981', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: '' })
 
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
@@ -496,29 +498,29 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         // Mobile: fixed info panel at top-left corner
         mi.style.display = 'block'
         if (isLineChart) {
-          mi.innerHTML = `<span style="${tp};font-size:0.85rem">${timeStr}</span> <span class="text-blue-400" style="font-family:monospace;font-size:0.85rem">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span>`
+          mi.innerHTML = `<span style="${tp};font-size:0.85rem">${timeStr}</span> <span style="color:#2962ff;font-family:monospace;font-size:0.85rem">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span>`
         } else {
           const cO = sData.open?.toFixed(decPlaces)
           const cH = sData.high?.toFixed(decPlaces)
           const cL = sData.low?.toFixed(decPlaces)
           const cC = sData.close?.toFixed(decPlaces)
-          const oCls = sData.open > sData.close ? 'text-red-400' : 'text-green-400'
-          const hCls = sData.high > sData.close ? 'text-red-400' : 'text-green-400'
-          const lCls = sData.low > sData.close ? 'text-red-400' : 'text-green-400'
-          const cCls = sData.close >= sData.open ? 'text-green-400' : 'text-red-400'
+          const oCls = sData.open > sData.close ? '#f23645' : '#089981'
+          const hCls = sData.high > sData.close ? '#f23645' : '#089981'
+          const lCls = sData.low > sData.close ? '#f23645' : '#089981'
+          const cCls = sData.close >= sData.open ? '#089981' : '#f23645'
           mi.innerHTML = `
             <div style="${tp};font-size:0.85rem;margin-bottom:0.125rem">${timeStr}</div>
             <div style="display:flex;flex-wrap:wrap;gap:2px 8px;font-size:0.8rem;font-family:monospace">
-              <span><span style="${ts}">O</span><span class="${oCls}">${cO}</span></span>
-              <span><span style="${ts}">H</span><span class="${hCls}">${cH}</span></span>
-              <span><span style="${ts}">L</span><span class="${lCls}">${cL}</span></span>
-              <span><span style="${ts}">C</span><span class="${cCls}">${cC}</span></span>
-              <span><span style="${ts}">3M</span><span class="text-blue-400">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></span>
-              <span><span style="${ts}">5M</span><span style="color:#eab308">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></span>
-              <span><span style="${ts}">10M</span><span class="text-purple-400">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></span>
-              <span style="border-left:1px solid var(--border);padding-left:3px"><span style="${ts}">K</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></span>
-              <span><span style="${ts}">D</span><span style="color:#eab308">${dVal?.toFixed(2) ?? '-'}</span></span>
-              <span><span style="${ts}">J</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">O</span><span style="color:${oCls}">${cO}</span></span>
+              <span><span style="${ts}">H</span><span style="color:${hCls}">${cH}</span></span>
+              <span><span style="${ts}">L</span><span style="color:${lCls}">${cL}</span></span>
+              <span><span style="${ts}">C</span><span style="color:${cCls}">${cC}</span></span>
+              <span><span style="${ts}">3M</span><span style="color:#2962ff">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></span>
+              <span><span style="${ts}">5M</span><span style="color:#ff9800">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></span>
+              <span><span style="${ts}">10M</span><span style="color:#9c27b0">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></span>
+              <span style="border-left:1px solid var(--border);padding-left:3px"><span style="${ts}">K</span><span style="color:#2962ff">${kVal?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">D</span><span style="color:#ff9800">${dVal?.toFixed(2) ?? '-'}</span></span>
+              <span><span style="${ts}">J</span><span style="color:#9c27b0">${jVal?.toFixed(2) ?? '-'}</span></span>
             </div>
           `
         }
@@ -531,26 +533,30 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       if (isLineChart) {
         tt.innerHTML = `
           <div style="font-weight:bold;${tp};font-size:0.875rem;white-space:nowrap">${timeStr}</div>
-          <div style="margin-top:0.25rem;font-size:0.75rem"><span style="${ts}">Price:</span><span class="text-blue-400" style="margin-left:0.5rem;font-family:monospace">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span></div>
+          <div style="margin-top:0.25rem;font-size:0.75rem"><span style="${ts}">Price:</span><span style="color:#2962ff;margin-left:0.5rem;font-family:monospace">${(sData.value ?? sData.close)?.toFixed(decPlaces) ?? '-'}</span></div>
         `
       } else {
+        const oCls = sData.open > sData.close ? '#f23645' : '#089981'
+        const hCls = sData.high > sData.close ? '#f23645' : '#089981'
+        const lCls = sData.low > sData.close ? '#f23645' : '#089981'
+        const cCls = sData.close >= sData.open ? '#089981' : '#f23645'
         tt.innerHTML = `
           <div style="font-weight:bold;${tp};font-size:0.875rem;white-space:nowrap">${timeStr}</div>
           <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-2">
-            <div class="flex justify-between w-16"><span style="${ts}">O:</span><span class="${sData.open > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.open?.toFixed(decPlaces)}</span></div>
-            <div class="flex justify-between w-16"><span style="${ts}">H:</span><span class="${sData.high > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.high?.toFixed(decPlaces)}</span></div>
-            <div class="flex justify-between w-16"><span style="${ts}">L:</span><span class="${sData.low > sData.close ? 'text-red-400' : 'text-green-400'}">${sData.low?.toFixed(decPlaces)}</span></div>
-            <div class="flex justify-between w-16"><span style="${ts}">C:</span><span class="${sData.close >= sData.open ? 'text-green-400' : 'text-red-400'}">${sData.close?.toFixed(decPlaces)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">O:</span><span style="color:${oCls}">${sData.open?.toFixed(decPlaces)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">H:</span><span style="color:${hCls}">${sData.high?.toFixed(decPlaces)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">L:</span><span style="color:${lCls}">${sData.low?.toFixed(decPlaces)}</span></div>
+            <div class="flex justify-between w-16"><span style="${ts}">C:</span><span style="color:${cCls}">${sData.close?.toFixed(decPlaces)}</span></div>
           </div>
           <div class="flex gap-4 mt-2 text-[10px] font-mono">
-            <div class="flex items-center gap-1"><span style="${ts}">3M:</span><span class="text-blue-400">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span style="color:#eab308">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span class="text-purple-400">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">3M:</span><span style="color:#2962ff">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span style="color:#ff9800">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span style="color:#9c27b0">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></div>
           </div>
           <div class="flex gap-3 mt-1 text-[10px] font-mono pt-1" style="border-top:1px solid var(--border)">
-            <div class="flex items-center gap-1"><span style="${ts}">K:</span><span class="text-blue-400">${kVal?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">D:</span><span style="color:#eab308">${dVal?.toFixed(2) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">J:</span><span class="text-purple-400">${jVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">K:</span><span style="color:#2962ff">${kVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">D:</span><span style="color:#ff9800">${dVal?.toFixed(2) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">J:</span><span style="color:#9c27b0">${jVal?.toFixed(2) ?? '-'}</span></div>
           </div>
         `
       }

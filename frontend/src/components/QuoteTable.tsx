@@ -54,8 +54,8 @@ export function QuoteTable({ onSelect, activeSymbol }: Props) {
               )}
             </td>
             <td className="py-2 px-3 text-right font-mono">{fmtPrice(q.last, q.symbol)}</td>
-            <td className="py-2 px-3 text-right font-mono text-blue-300">{fmtPrice(q.bid, q.symbol)}</td>
-            <td className="py-2 px-3 text-right font-mono text-orange-300">{fmtPrice(q.ask, q.symbol)}</td>
+            <td className="py-2 px-3 text-right font-mono" style={{ color: '#2962ff' }}>{fmtPrice(q.bid, q.symbol)}</td>
+            <td className="py-2 px-3 text-right font-mono" style={{ color: '#ff9800' }}>{fmtPrice(q.ask, q.symbol)}</td>
             <td className="py-2 px-3 text-right" style={{ color: 'var(--text-muted)' }}>{fmtVolume(q.volume)}</td>
           </tr>
         ))}
