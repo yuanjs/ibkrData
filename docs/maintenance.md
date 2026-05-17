@@ -38,7 +38,7 @@ cd ~/projects/ibkrData
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `BACKUP_DIR` | `项目目录/backups` | 备份文件存放路径 |
-| `RETENTION_DAYS` | `30` | 保留天数，超过自动清理 |
+| `RETENTION_DAYS` | `10` | 保留天数，超过自动清理 |
 
 备份文件格式：`ibkrdata_YYYYMMDD_HHMMSS.sql.gz`（pg_dump custom 格式 + 最高压缩）。
 
