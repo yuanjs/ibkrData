@@ -792,9 +792,33 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         const lastK = kdj.k[kdj.k.length - 1]
         const lastD = kdj.d[kdj.d.length - 1]
         const lastJ = kdj.j[kdj.j.length - 1]
-        if (lastK) { kSeriesRef.current.update(lastK); kdjDataRef.current.k[kdjDataRef.current.k.length - 1] = lastK }
-        if (lastD) { dSeriesRef.current.update(lastD); kdjDataRef.current.d[kdjDataRef.current.d.length - 1] = lastD }
-        if (lastJ) { jSeriesRef.current.update(lastJ); kdjDataRef.current.j[kdjDataRef.current.j.length - 1] = lastJ }
+        if (lastK) {
+          kSeriesRef.current.update(lastK)
+          const len = kdjDataRef.current.k.length
+          if (len > 0 && kdjDataRef.current.k[len - 1].time === lastK.time) {
+            kdjDataRef.current.k[len - 1] = lastK
+          } else {
+            kdjDataRef.current.k.push(lastK)
+          }
+        }
+        if (lastD) {
+          dSeriesRef.current.update(lastD)
+          const len = kdjDataRef.current.d.length
+          if (len > 0 && kdjDataRef.current.d[len - 1].time === lastD.time) {
+            kdjDataRef.current.d[len - 1] = lastD
+          } else {
+            kdjDataRef.current.d.push(lastD)
+          }
+        }
+        if (lastJ) {
+          jSeriesRef.current.update(lastJ)
+          const len = kdjDataRef.current.j.length
+          if (len > 0 && kdjDataRef.current.j[len - 1].time === lastJ.time) {
+            kdjDataRef.current.j[len - 1] = lastJ
+          } else {
+            kdjDataRef.current.j.push(lastJ)
+          }
+        }
       }
     }
   }, [liveTick, interval, isLineChart])
