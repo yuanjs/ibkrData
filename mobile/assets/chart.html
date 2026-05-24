@@ -213,8 +213,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
       crosshair: { vertLine: { color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 }, horzLine: { visible: false, labelVisible: false } },
       width: w, height: mh,
-      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
-      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: false, axisDoubleClickReset: true },
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
       rightPriceScale: { minimumWidth: 80 },
       timeScale: { timeVisible: true, secondsVisible: true },
     });
@@ -284,6 +284,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       dSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.dLine, lineWidth: 1, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       jSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.jLine, lineWidth: 2, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       kSeries.createPriceLine({ price: 0, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
+      kSeries.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' });
       kSeries.createPriceLine({ price: 100, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
 
       chart.subscribeCrosshairMove(function(param) {
