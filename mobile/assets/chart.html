@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+#chart-container { width: 100%; height: calc(100% - 36px); display: flex; flex-direction: column; }
+#main-chart { flex: 3; min-height: 0; }
+#kdj-chart { flex: 1; min-height: 0; }
+#tooltip { display: none; position: absolute; top: 2px; left: 2px; z-index: 10; pointer-events: none; padding: 6px 8px; border-radius: 6px; font-size: 11px; line-height: 1.6; }
+#tooltip .tt-time { font-size: 10px; opacity: 0.7; margin-bottom: 2px; }
+#tooltip .tt-row { display: flex; gap: 8px; flex-wrap: wrap; }
+#tooltip .tt-item { white-space: nowrap; }
+#intervals { display: flex; gap: 4px; align-items: center; height: 32px; padding: 2px 4px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+#intervals button { flex-shrink: 0; padding: 2px 8px; font-size: 10px; border: none; border-radius: 4px; cursor: pointer; }
+#intervals button.active { background: #2563eb; color: #fff; }
+#no-data { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 13px; opacity: 0.5; }
+</style>
+</head>
+<body>
+<div id="intervals"></div>
+<div id="chart-container">
+  <div id="main-chart"></div>
+  <div id="kdj-chart"></div>
+</div>
+<div id="tooltip"></div>
+<div id="no-data">Select a symbol to start monitoring</div>
+
+<script>
+(function() {
+  'use strict';
+
+  window.onerror = function(msg, url, line) {
+    try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'log', text: 'JS Error: ' + msg + ' at ' + line })); } catch(e) {}
+  };
+
+  var chart, kdjChart, mainSeries, ma3Series, ma5Series, ma10Series;
+  var kSeries, dSeries, jSeries;
+  var currentCandles = [];
+  var kdjData = { k: [], d: [], j: [] };
+  var intervalSec = 86400;
+  var rafId = null;
+  var currentInterval = '1d';
+
+  var colors = {
+    bg: '#0f1117', text: '#e2e8f0', grid: '#1f2937',
+    up: '#26a641', down: '#d32f2f',
+    ma3: '#2962ff', ma5: '#ff9800', ma10: '#9c27b0',
+    kLine: '#2962ff', dLine: '#ff9800', jLine: '#9c27b0',
+    tooltipBg: 'rgba(31,41,55,0.95)',
+    raised: '#374151', secondary: '#9ca3af',
+  };
+
+  var intervals = ['1w', '1d', '4h', '1h', '15m', '5m', '3m', '2m', '1m', '10s', '5s', '1s'];
+  var intervalSeconds = {
+    '1s': 1, '5s': 5, '10s': 10, '1m': 60, '2m': 120, '3m': 180, '5m': 300,
+    '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800
+  };
+
+  function isLineInterval(inv) { return ['1s', '5s', '10s'].indexOf(inv) >= 0; }
+  function invToSec(inv) { return intervalSeconds[inv] || 86400; }
+
+  function postToRN(msg) {
+    if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+      window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+    }
+  }
+
+  function buildIntervalBtns() {
+    var container = document.getElementById('intervals');
+    container.textContent = '';
+    intervals.forEach(function(inv) {
+      var btn = document.createElement('button');
+      btn.textContent = inv;
+      if (inv === currentInterval) btn.className = 'active';
+      btn.style.background = inv === currentInterval ? '#2563eb' : colors.raised;
+      btn.style.color = inv === currentInterval ? '#fff' : colors.secondary;
+      btn.onclick = function() { postToRN({ type: 'intervalChange', interval: inv }); };
+      container.appendChild(btn);
+    });
+  }
+
+  function fmtTime(t) {
+    if (!t) return '';
+    var d = typeof t === 'number' ? new Date(t * 1000) : new Date(Number(t) * 1000);
+    return d.toLocaleString();
+  }
+
+  function calcMA(data, period) {
+    var r = [];
+    for (var i = period - 1; i < data.length; i++) {
+      var s = 0;
+      for (var j = 0; j < period; j++) s += data[i - j].close;
+      r.push({ time: data[i].time, value: s / period });
+    }
+    return r;
+  }
+
+  function calcKDJ(data) {
+    var period = 5, ks = 3, ds = 3;
+    var kv = [], dv = [], jv = [];
+    for (var i = 0; i < data.length; i++) {
+      if (i < period - 1) {
+        kv.push({ time: data[i].time, value: 50 });
+        dv.push({ time: data[i].time, value: 50 });
+        jv.push({ time: data[i].time, value: 50 });
+        continue;
+      }
+      var lo = Infinity, hi = -Infinity;
+      for (var j = i - period + 1; j <= i; j++) {
+        if (data[j].low < lo) lo = data[j].low;
+        if (data[j].high > hi) hi = data[j].high;
+      }
+      var rng = hi - lo || 1;
+      kv.push({ time: data[i].time, value: ((data[i].close - lo) / rng) * 100 });
+      dv.push({ time: data[i].time, value: 50 });
+      jv.push({ time: data[i].time, value: 50 });
+    }
+    for (var i = ks - 1; i < kv.length; i++) {
+      var s = 0;
+      for (var j = 0; j < ks; j++) s += kv[i - j].value;
+      kv[i].value = s / ks;
+    }
+    for (var i = ks + ds - 2; i < kv.length; i++) {
+      var s = 0;
+      for (var j = 0; j < ds; j++) s += kv[i - j].value;
+      dv[i].value = s / ds;
+    }
+    for (var i = 0; i < kv.length; i++) jv[i].value = 3 * dv[i].value - 2 * kv[i].value;
+    return { k: kv, d: dv, j: jv };
+  }
+
+  function setData(data) {
+    currentCandles = data;
+    if (!mainSeries) return;
+    document.getElementById('no-data').style.display = 'none';
+
+    if (isLineInterval(currentInterval)) {
+      mainSeries.setData(data.map(function(d) { return { time: d.time, value: d.close }; }));
+    } else {
+      mainSeries.setData(data);
+      if (ma3Series && data.length >= 3) ma3Series.setData(calcMA(data, 3));
+      if (ma5Series && data.length >= 5) ma5Series.setData(calcMA(data, 5));
+      if (ma10Series && data.length >= 10) ma10Series.setData(calcMA(data, 10));
+      if (kSeries && data.length >= 7) {
+        kdjData = calcKDJ(data);
+        kSeries.setData(kdjData.k);
+        dSeries.setData(kdjData.d);
+        jSeries.setData(kdjData.j);
+      }
+    }
+    chart.timeScale().fitContent();
+  }
+
+  function updateTick(tick) {
+    if (!mainSeries || currentCandles.length === 0) return;
+    var tickTime = tick.time ? new Date(tick.time).getTime() / 1000 : Date.now() / 1000;
+    var last = currentCandles[currentCandles.length - 1];
+    var bucket = Math.floor(tickTime / intervalSec) * intervalSec;
+    var upd;
+    if (bucket > Number(last.time)) {
+      upd = { time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price };
+      currentCandles.push(upd);
+      if (currentCandles.length > 500) currentCandles.shift();
+    } else {
+      upd = { time: bucket, high: Math.max(last.high, tick.price), low: Math.min(last.low, tick.price), close: tick.price };
+      currentCandles[currentCandles.length - 1] = upd;
+    }
+    mainSeries.update(upd);
+    if (!isLineInterval(currentInterval) && ma3Series && currentCandles.length >= 3) {
+      var idx = currentCandles.length - 1, s3 = 0, s5 = 0, s10 = 0;
+      for (var j = 0; j < 3 && idx - j >= 0; j++) s3 += currentCandles[idx - j].close;
+      ma3Series.update({ time: upd.time, value: s3 / 3 });
+      if (currentCandles.length >= 5) {
+        for (var j = 0; j < 5 && idx - j >= 0; j++) s5 += currentCandles[idx - j].close;
+        ma5Series.update({ time: upd.time, value: s5 / 5 });
+      }
+      if (currentCandles.length >= 10) {
+        for (var j = 0; j < 10 && idx - j >= 0; j++) s10 += currentCandles[idx - j].close;
+        ma10Series.update({ time: upd.time, value: s10 / 10 });
+      }
+    }
+    if (!isLineInterval(currentInterval) && kSeries && currentCandles.length >= 7) {
+      kdjData = calcKDJ(currentCandles);
+      if (kdjData.k.length > 0) kSeries.update(kdjData.k[kdjData.k.length - 1]);
+      if (kdjData.d.length > 0) dSeries.update(kdjData.d[kdjData.d.length - 1]);
+      if (kdjData.j.length > 0) jSeries.update(kdjData.j[kdjData.j.length - 1]);
+    }
+  }
+
+  function destroy() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (kdjChart) { kdjChart.remove(); kdjChart = null; }
+    if (chart) { chart.remove(); chart = null; }
+    mainSeries = null; ma3Series = null; ma5Series = null; ma10Series = null;
+    kSeries = null; dSeries = null; jSeries = null;
+  }
+
+  function create() {
+    destroy();
+    var isLine = isLineInterval(currentInterval);
+    var mc = document.getElementById('main-chart');
+    var kc = document.getElementById('kdj-chart');
+    var w = mc.clientWidth || window.innerWidth;
+    var mh = Math.floor((mc.parentElement.clientHeight || 300) * 0.75);
+    var kh = Math.floor((mc.parentElement.clientHeight || 300) * 0.25);
+
+    chart = LightweightCharts.createChart(mc, {
+      layout: { background: { color: colors.bg }, textColor: colors.text },
+      grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
+      crosshair: { vertLine: { color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 }, horzLine: { visible: false, labelVisible: false } },
+      width: w, height: mh,
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: false, axisDoubleClickReset: true },
+      rightPriceScale: { minimumWidth: 80 },
+      timeScale: { timeVisible: true, secondsVisible: true },
+    });
+
+    if (isLine) {
+      mainSeries = chart.addSeries(LightweightCharts.LineSeries, { color: '#2962ff', lineWidth: 2, crosshairMarkerVisible: true, crosshairMarkerRadius: 5, crosshairMarkerBorderColor: '#fff', crosshairMarkerBackgroundColor: '#2962ff' });
+    } else {
+      mainSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: colors.up, downColor: colors.down, borderUpColor: colors.up, borderDownColor: colors.down, wickUpColor: colors.up, wickDownColor: colors.down });
+      ma3Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma3, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+      ma5Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma5, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+      ma10Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma10, lineWidth: 3, lineStyle: 2, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+    }
+
+    chart.subscribeCrosshairMove(function(param) {
+      var tip = document.getElementById('tooltip');
+      if (!tip) return;
+      if (!param.time || !param.point) { tip.style.display = 'none'; return; }
+      var d = param.seriesData.get(mainSeries);
+      if (!d) { tip.style.display = 'none'; return; }
+      var html = '<div class="tt-time">' + fmtTime(param.time) + '</div><div class="tt-row">';
+      if (isLine) {
+        html += '<span class="tt-item" style="color:' + colors.text + '">P: ' + (d.value !== undefined ? d.value.toFixed(2) : '-') + '</span>';
+      } else {
+        html += '<span class="tt-item" style="color:' + colors.text + '">O: ' + d.open.toFixed(2) + '</span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">H: <span style="color:' + colors.up + '">' + d.high.toFixed(2) + '</span></span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">L: <span style="color:' + colors.down + '">' + d.low.toFixed(2) + '</span></span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">C: ' + d.close.toFixed(2) + '</span>';
+        var m3 = param.seriesData.get(ma3Series);
+        var m5 = param.seriesData.get(ma5Series);
+        var m10 = param.seriesData.get(ma10Series);
+        if (m3) html += '<span class="tt-item" style="color:' + colors.ma3 + '">MA3: ' + m3.value.toFixed(2) + '</span>';
+        if (m5) html += '<span class="tt-item" style="color:' + colors.ma5 + '">MA5: ' + m5.value.toFixed(2) + '</span>';
+        if (m10) html += '<span class="tt-item" style="color:' + colors.ma10 + '">MA10: ' + m10.value.toFixed(2) + '</span>';
+      }
+      var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
+      var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
+      if (kp && kdjData.d.length > 0) {
+        var kk = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
+        var dd = kdjData.d.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
+        var jj = kdjData.j.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
+        if (kk && dd && jj) {
+          html += '<span class="tt-item" style="color:' + colors.kLine + '">K: ' + kk.value.toFixed(1) + '</span>';
+          html += '<span class="tt-item" style="color:' + colors.dLine + '">D: ' + dd.value.toFixed(1) + '</span>';
+          html += '<span class="tt-item" style="color:' + colors.jLine + '">J: ' + jj.value.toFixed(1) + '</span>';
+        }
+      }
+      html += '</div>';
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      tip.style.background = colors.tooltipBg;
+      tip.style.color = colors.text;
+    });
+
+    // KDJ sub-chart
+    if (!isLine && currentInterval !== '1w') {
+      kdjChart = LightweightCharts.createChart(kc, {
+        layout: { background: { color: colors.bg }, textColor: colors.text },
+        grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
+        width: w, height: kh,
+        handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+        handleScale: { mouseWheel: false, pinch: false, axisPressedMouseMove: false, axisDoubleClickReset: false },
+        rightPriceScale: { minimumWidth: 80 },
+        timeScale: { visible: false },
+        crosshair: { vertLine: { visible: true, color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 }, horzLine: { visible: false, labelVisible: false } },
+      });
+      kSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.kLine, lineWidth: 1, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
+      dSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.dLine, lineWidth: 1, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
+      jSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.jLine, lineWidth: 2, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
+      kSeries.createPriceLine({ price: 0, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
+      kSeries.createPriceLine({ price: 100, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
+
+      chart.subscribeCrosshairMove(function(param) {
+        if (param.time && kSeries) {
+          var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
+          var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
+          if (kp) kdjChart.setCrosshairPosition(kp.value, param.time, kSeries);
+        } else if (kdjChart) {
+          kdjChart.clearCrosshairPosition();
+        }
+      });
+
+      function syncLoop() {
+        var mr = chart.timeScale().getVisibleLogicalRange();
+        if (mr && kdjData.k.length > 0) {
+          kdjChart.timeScale().setVisibleLogicalRange(mr);
+        }
+        rafId = requestAnimationFrame(syncLoop);
+      }
+      rafId = requestAnimationFrame(syncLoop);
+    }
+
+    if (currentCandles.length > 0) setData(currentCandles);
+  }
+
+  function handleMsg(s) {
+    try {
+      var m = typeof s === 'string' ? JSON.parse(s) : s;
+      switch (m.type) {
+        case 'candles':
+          currentInterval = m.interval || currentInterval;
+          intervalSec = invToSec(currentInterval);
+          currentCandles = m.data || [];
+          if (m.theme) { for (var k in m.theme) { if (m.theme.hasOwnProperty(k)) colors[k] = m.theme[k]; } }
+          create();
+          buildIntervalBtns();
+          break;
+        case 'tick':
+          intervalSec = invToSec(currentInterval);
+          updateTick(m.tick);
+          break;
+        case 'theme':
+          postToRN({ type: 'log', text: 'theme received, keys: ' + Object.keys(m.colors).join(',') });
+          for (var k in m.colors) { if (m.colors.hasOwnProperty(k)) colors[k] = m.colors[k]; }
+          create();
+          buildIntervalBtns();
+          if (currentCandles.length > 0) setData(currentCandles);
+          postToRN({ type: 'log', text: 'theme applied' });
+          break;
+        case 'resize':
+          if (chart) {
+            var w = m.width || window.innerWidth;
+            var ph = m.height || window.innerHeight;
+            chart.applyOptions({ width: w, height: Math.floor(ph * 0.75) });
+            if (kdjChart) kdjChart.applyOptions({ width: w, height: Math.floor(ph * 0.25) });
+          }
+          break;
+      }
+    } catch(e) {
+      postToRN({ type: 'log', text: 'handleMsg error: ' + (e.message || e) });
+    }
+  }
+
+  if (window.addEventListener) {
+    window.addEventListener('message', function(e) { handleMsg(e.data); });
+  }
+  if (document.addEventListener) {
+    document.addEventListener('message', function(e) { handleMsg(e.data); });
+  }
+
+  buildIntervalBtns();
+  window.__handleMsg = handleMsg;
+  postToRN({ type: 'ready' });
+})();
+</script>
+</body>
+</html>

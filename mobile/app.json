@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "IBKR Mobile",
+    "slug": "ibkr-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "scheme": "ibkr-mobile",
+    "splash": {
+      "backgroundColor": "#0f1117"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ibkr.mobile"
+    },
+    "extra": {
+      "apiBaseUrl": "http://192.168.1.100:8002",
+      "wsBaseUrl": "ws://192.168.1.100:8002"
+    }
+  }
+}

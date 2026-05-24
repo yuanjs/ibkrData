@@ -1,0 +1,22 @@
+diff --git a/node_modules/@expo/metro-runtime/src/messageSocket.native.ts b/node_modules/@expo/metro-runtime/src/messageSocket.native.ts
+index 1d7c933..1f6e131 100644
+--- a/node_modules/@expo/metro-runtime/src/messageSocket.native.ts
++++ b/node_modules/@expo/metro-runtime/src/messageSocket.native.ts
+@@ -1,7 +1,7 @@
+ /* eslint-env browser */
+ 
+ function createWebSocketConnection(path: string = '/message') {
+-  const getDevServer = require('react-native/Libraries/Core/Devtools/getDevServer');
++  const { default: getDevServer } = require('react-native/Libraries/Core/Devtools/getDevServer');
+   const devServer = getDevServer();
+   if (!devServer.bundleLoadedFromServer) {
+     throw new Error('Cannot create devtools websocket connections in embedded environments.');
+@@ -9,7 +9,7 @@ function createWebSocketConnection(path: string = '/message') {
+ 
+   const devServerUrl = new URL(devServer.url);
+   const serverScheme = devServerUrl.protocol === 'https:' ? 'wss' : 'ws';
+-  const WebSocket = require('react-native/Libraries/WebSocket/WebSocket');
++  const { default: WebSocket } = require('react-native/Libraries/WebSocket/WebSocket');
+   return new WebSocket(`${serverScheme}://${devServerUrl.host}${path}`);
+ }
+ 
