@@ -2,6 +2,7 @@ import { useRef, useEffect, useCallback } from 'react'
 import { View, StyleSheet } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { useTheme } from '../theme'
+import { getProductConfig } from '../config/productConfig'
 
 interface CandlestickData {
   time: number
@@ -93,11 +94,13 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
         secondary: c.textSecondary,
       },
     })
+    var tz = getProductConfig(symbolRef.current).timezone
     send({
       type: 'candles',
       data: dataRef.current,
       interval: intervalRef.current,
       symbol: symbolRef.current,
+      timezone: tz,
       theme: {
         bg: c.background,
         text: c.textPrimary,
@@ -123,11 +126,13 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
 
   // Send candles data when symbol/interval/data changes
   useEffect(() => {
+    var tz = getProductConfig(symbol).timezone
     send({
       type: 'candles',
       data,
       interval,
       symbol,
+      timezone: tz,
       theme: {
         bg: colors.background,
         text: colors.textPrimary,
@@ -145,7 +150,7 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
         secondary: colors.textSecondary,
       },
     })
-  }, [data, interval, symbol, colors, send])
+  }, [data, interval, symbol, colors, send, getProductConfig])
 
   // Send tick updates
   useEffect(() => {

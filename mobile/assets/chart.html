@@ -38,6 +38,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   };
 
   var chart, kdjChart, mainSeries, ma3Series, ma5Series, ma10Series;
+  var exchangeTimezone = 'America/New_York';
   var kSeries, dSeries, jSeries;
   var currentCandles = [];
   var kdjData = { k: [], d: [], j: [] };
@@ -83,10 +84,21 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     });
   }
 
+  function getTzParts(t) {
+    var d = new Date(Number(t) * 1000);
+    var opts = { timeZone: exchangeTimezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+    var parts = Intl.DateTimeFormat('en-US', opts).formatToParts(d);
+    function get(type) {
+      for (var i = 0; i < parts.length; i++) { if (parts[i].type === type) return parts[i].value; }
+      return '00';
+    }
+    return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour'), minute: get('minute'), second: get('second') };
+  }
+
   function fmtTime(t) {
     if (!t) return '';
-    var d = typeof t === 'number' ? new Date(t * 1000) : new Date(Number(t) * 1000);
-    return d.toLocaleString();
+    var p = getTzParts(t);
+    return p.year + '/' + p.month + '/' + p.day + ' ' + p.hour + ':' + p.minute + ':' + p.second;
   }
 
   function calcMA(data, period) {
@@ -216,7 +228,33 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
       handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
       rightPriceScale: { minimumWidth: 80 },
-      timeScale: { timeVisible: true, secondsVisible: true },
+      localization: {
+        timeFormatter: function(time) {
+          if (typeof time === 'number') {
+            var p = getTzParts(time);
+            if (intervalSec <= 300) return p.month + '/' + p.day + ' ' + p.hour + ':' + p.minute + ':' + p.second;
+            if (intervalSec <= 3600) return p.month + '/' + p.day + ' ' + p.hour + ':' + p.minute;
+            return p.month + '/' + p.day + ' ' + p.hour + ':' + p.minute;
+          }
+          if (typeof time === 'object' && time !== null) {
+            return time.year + '-' + String(time.month).padStart(2, '0') + '-' + String(time.day).padStart(2, '0');
+          }
+          return String(time);
+        },
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: true,
+        tickMarkFormatter: function(time, tickMarkType, locale) {
+          var p = getTzParts(time);
+          // TickMarkType: 0=Year, 1=Month, 2=DayOfMonth, 3=Time(hh:mm), 4=TimeWithSeconds
+          if (tickMarkType === 0) return p.year;
+          if (tickMarkType === 1) return p.month;
+          if (tickMarkType === 2) return p.month + '/' + p.day;
+          if (tickMarkType === 4 || intervalSec <= 300) return p.hour + ':' + p.minute + ':' + p.second;
+          return p.hour + ':' + p.minute;
+        },
+      },
     });
 
     if (isLine) {
@@ -318,6 +356,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
           currentInterval = m.interval || currentInterval;
           intervalSec = invToSec(currentInterval);
           currentCandles = m.data || [];
+          if (m.timezone) exchangeTimezone = m.timezone;
           if (m.theme) { for (var k in m.theme) { if (m.theme.hasOwnProperty(k)) colors[k] = m.theme[k]; } }
           create();
           buildIntervalBtns();
