@@ -260,7 +260,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     chart = LightweightCharts.createChart(mc, {
       layout: { background: { color: colors.bg }, textColor: colors.text },
       grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
-      crosshair: { vertLine: { color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 }, horzLine: { visible: true, labelVisible: true, color: '#26a641', labelBackgroundColor: '#26a641' } },
+      crosshair: { vertLine: { color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 }, horzLine: { visible: false, labelVisible: false } },
       width: w, height: mh,
       handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
       handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
