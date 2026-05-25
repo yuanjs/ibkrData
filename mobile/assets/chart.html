@@ -195,17 +195,27 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     var tickTime = tick.time ? new Date(tick.time).getTime() / 1000 : Date.now() / 1000;
     var last = currentCandles[currentCandles.length - 1];
     var bucket = Math.floor(tickTime / intervalSec) * intervalSec;
+    var isLine = isLineInterval(currentInterval);
     var upd;
     if (bucket > Number(last.time)) {
-      upd = { time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price };
-      currentCandles.push(upd);
+      if (isLine) {
+        upd = { time: bucket, value: tick.price };
+      } else {
+        upd = { time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price };
+      }
+      currentCandles.push({ time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price });
       if (currentCandles.length > 500) currentCandles.shift();
     } else {
-      // Update existing candle — preserve open price, never store partial objects
-      last.high = Math.max(last.high, tick.price);
-      last.low = Math.min(last.low, tick.price);
-      last.close = tick.price;
-      upd = { time: bucket, open: last.open, high: last.high, low: last.low, close: last.close };
+      if (isLine) {
+        last.close = tick.price;
+        upd = { time: bucket, value: tick.price };
+      } else {
+        // Update existing candle — preserve open price, never store partial objects
+        last.high = Math.max(last.high, tick.price);
+        last.low = Math.min(last.low, tick.price);
+        last.close = tick.price;
+        upd = { time: bucket, open: last.open, high: last.high, low: last.low, close: last.close };
+      }
     }
     mainSeries.update(upd);
     if (!isLineInterval(currentInterval) && ma3Series && currentCandles.length >= 3) {
