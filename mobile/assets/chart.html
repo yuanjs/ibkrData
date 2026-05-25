@@ -45,6 +45,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   var intervalSec = 86400;
   var rafId = null;
   var currentInterval = '1d';
+  // KDJ/main chart sync offset
+  var kdjOffset = -1, lastKdjK0Time = -1, lastSyncFrom = -1, lastSyncTo = -1;
 
   var colors = {
     bg: '#0f1117', text: '#e2e8f0', grid: '#1f2937',
@@ -111,37 +113,53 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     return r;
   }
 
+  // KDJ matching web frontend calculateKDJData exactly
+  // Period=5, SlowK=3, SlowD=3
   function calcKDJ(data) {
     var period = 5, ks = 3, ds = 3;
     var kv = [], dv = [], jv = [];
+    if (data.length < period + ks) return { k: kv, d: dv, j: jv };
+
+    // First pass: compute rolling PeriodHigh / PeriodLow per candle
+    var perHigh = [], perLow = [];
     for (var i = 0; i < data.length; i++) {
-      if (i < period - 1) {
-        kv.push({ time: data[i].time, value: 50 });
-        dv.push({ time: data[i].time, value: 50 });
-        jv.push({ time: data[i].time, value: 50 });
-        continue;
+      var start = Math.max(0, i - period + 1);
+      var maxH = -Infinity, minL = Infinity;
+      for (var j = start; j <= i; j++) {
+        if (data[j].high > maxH) maxH = data[j].high;
+        if (data[j].low < minL) minL = data[j].low;
       }
-      var lo = Infinity, hi = -Infinity;
-      for (var j = i - period + 1; j <= i; j++) {
-        if (data[j].low < lo) lo = data[j].low;
-        if (data[j].high > hi) hi = data[j].high;
+      perHigh.push(maxH);
+      perLow.push(minL);
+    }
+
+    // Second pass: calculate K, D, J
+    for (var i = 0; i < data.length; i++) {
+      if (i >= period + ks - 1) {
+        var sumLow = 0, sumHigh = 0;
+        for (var j = i - ks + 1; j <= i; j++) {
+          sumLow += data[j].close - perLow[j];
+          sumHigh += perHigh[j] - perLow[j];
+        }
+        var k = sumHigh === 0 ? 50 : (sumLow / sumHigh) * 100;
+        kv.push({ time: data[i].time, value: k });
+
+        if (i >= period + ks + ds - 2) {
+          var sumK = 0, countK = 0;
+          for (var j = i - ds + 1; j <= i; j++) {
+            // kv index = j - (period + ks - 1)
+            var kIdx = j - (period + ks - 1);
+            if (kIdx >= 0 && kIdx < kv.length) {
+              sumK += kv[kIdx].value;
+              countK++;
+            }
+          }
+          var d = countK > 0 ? sumK / countK : 50;
+          dv.push({ time: data[i].time, value: d });
+          jv.push({ time: data[i].time, value: 3 * d - 2 * k });
+        }
       }
-      var rng = hi - lo || 1;
-      kv.push({ time: data[i].time, value: ((data[i].close - lo) / rng) * 100 });
-      dv.push({ time: data[i].time, value: 50 });
-      jv.push({ time: data[i].time, value: 50 });
     }
-    for (var i = ks - 1; i < kv.length; i++) {
-      var s = 0;
-      for (var j = 0; j < ks; j++) s += kv[i - j].value;
-      kv[i].value = s / ks;
-    }
-    for (var i = ks + ds - 2; i < kv.length; i++) {
-      var s = 0;
-      for (var j = 0; j < ds; j++) s += kv[i - j].value;
-      dv[i].value = s / ds;
-    }
-    for (var i = 0; i < kv.length; i++) jv[i].value = 3 * dv[i].value - 2 * kv[i].value;
     return { k: kv, d: dv, j: jv };
   }
 
@@ -157,7 +175,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       if (ma3Series && data.length >= 3) ma3Series.setData(calcMA(data, 3));
       if (ma5Series && data.length >= 5) ma5Series.setData(calcMA(data, 5));
       if (ma10Series && data.length >= 10) ma10Series.setData(calcMA(data, 10));
-      if (kSeries && data.length >= 7) {
+      if (kSeries && data.length >= 8) {
         kdjData = calcKDJ(data);
         kSeries.setData(kdjData.k);
         dSeries.setData(kdjData.d);
@@ -165,6 +183,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       }
     }
     chart.timeScale().fitContent();
+    // Align KDJ sub-chart to main chart's initial view
+    if (kdjChart && kdjData.k.length > 0) {
+      kdjOffset = -1; lastKdjK0Time = -1; lastSyncFrom = -1; lastSyncTo = -1;
+      try { kdjChart.timeScale().fitContent(); } catch(e) {}
+    }
   }
 
   function updateTick(tick) {
@@ -178,8 +201,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       currentCandles.push(upd);
       if (currentCandles.length > 500) currentCandles.shift();
     } else {
-      upd = { time: bucket, high: Math.max(last.high, tick.price), low: Math.min(last.low, tick.price), close: tick.price };
-      currentCandles[currentCandles.length - 1] = upd;
+      // Update existing candle — preserve open price, never store partial objects
+      last.high = Math.max(last.high, tick.price);
+      last.low = Math.min(last.low, tick.price);
+      last.close = tick.price;
+      upd = { time: bucket, open: last.open, high: last.high, low: last.low, close: last.close };
     }
     mainSeries.update(upd);
     if (!isLineInterval(currentInterval) && ma3Series && currentCandles.length >= 3) {
@@ -195,7 +221,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         ma10Series.update({ time: upd.time, value: s10 / 10 });
       }
     }
-    if (!isLineInterval(currentInterval) && kSeries && currentCandles.length >= 7) {
+    if (!isLineInterval(currentInterval) && kSeries && currentCandles.length >= 8) {
       kdjData = calcKDJ(currentCandles);
       if (kdjData.k.length > 0) kSeries.update(kdjData.k[kdjData.k.length - 1]);
       if (kdjData.d.length > 0) dSeries.update(kdjData.d[kdjData.d.length - 1]);
@@ -338,8 +364,29 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
 
       function syncLoop() {
         var mr = chart.timeScale().getVisibleLogicalRange();
-        if (mr && kdjData.k.length > 0) {
-          kdjChart.timeScale().setVisibleLogicalRange(mr);
+        if (!mr || kdjData.k.length === 0) {
+          rafId = requestAnimationFrame(syncLoop);
+          return;
+        }
+        // Compute offset: index of the first KDJ point in the main candle data
+        var k0ts = kdjData.k[0].time;
+        if (kdjOffset === -1 || Number(k0ts) !== lastKdjK0Time) {
+          for (var ci = 0; ci < currentCandles.length; ci++) {
+            if (Number(currentCandles[ci].time) === Number(k0ts)) {
+              kdjOffset = ci;
+              lastKdjK0Time = Number(k0ts);
+              break;
+            }
+          }
+        }
+        if (kdjOffset !== -1) {
+          var from = mr.from - kdjOffset;
+          var to = mr.to - kdjOffset;
+          if (from !== lastSyncFrom || to !== lastSyncTo) {
+            lastSyncFrom = from;
+            lastSyncTo = to;
+            try { kdjChart.timeScale().setVisibleLogicalRange({ from: from, to: to }); } catch(e) {}
+          }
         }
         rafId = requestAnimationFrame(syncLoop);
       }
