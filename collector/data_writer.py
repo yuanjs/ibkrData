@@ -188,3 +188,19 @@ class DataWriter:
                 )
         except Exception as e:
             logger.error(f"upsert_daily_bars error: {e}")
+
+    async def delete_daily_bars(self, bars: list[dict]):
+        """Delete stale daily bars by (symbol, date_str) pairs."""
+        if not bars:
+            return
+        try:
+            async with self.pool.acquire() as conn:
+                for b in bars:
+                    await conn.execute(
+                        "DELETE FROM daily_bars WHERE symbol=$1 AND date_str=$2",
+                        b["symbol"],
+                        b["date_str"],
+                    )
+                    logger.info(f"Deleted stale daily bar: {b['symbol']} date={b['date_str']}")
+        except Exception as e:
+            logger.error(f"delete_daily_bars error: {e}")

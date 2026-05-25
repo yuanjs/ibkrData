@@ -129,7 +129,7 @@ async def settings_listener(redis_client):
         raise
 
 
-async def backfill_daily_bars(client, writer, pool, duration="100 D"):
+async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=None):
     """Backfill daily bars for all active subscriptions on startup."""
     try:
         symbols = await load_subscriptions(pool)
@@ -139,21 +139,56 @@ async def backfill_daily_bars(client, writer, pool, duration="100 D"):
             bars = await client.get_historical_daily_bars(symbol, duration=duration)
             if bars:
                 await writer.upsert_daily_bars(bars, update_open=True)
+                # Update the tracker with the latest bar date from backfill,
+                # so _effective_date_str can use it as an anchor for holiday
+                # detection (e.g., Memorial Day where trade date skips ahead).
+                if daily_tracker is not None:
+                    latest = max(b["date_str"] for b in bars)
+                    daily_tracker.update_latest_bar_date(symbol, latest)
+
+                # Protection: delete stale DB bars that fall in the gap between
+                # backfill dates but aren't in the backfill results (e.g., holiday
+                # bars incorrectly created by a previous collector run).
+                # Only clean up bars that are BEFORE the current session (latest),
+                # so we don't delete the tracker's active bar.
+                backfill_dates = {b["date_str"] for b in bars}
+                backfill_min = min(backfill_dates)
+                async with pool.acquire() as conn:
+                    # Find bars in the gap between the earliest backfill date
+                    # and the current session that ARE NOT in the backfill
+                    # results. These are holiday leftovers (e.g., a May 25 bar
+                    # created by an old collector run before holiday awareness).
+                    stale_rows = await conn.fetch(
+                        "SELECT date_str FROM daily_bars "
+                        "WHERE symbol=\$1 AND date_str >= \$2 AND date_str < \$3 "
+                        "ORDER BY date_str",
+                        symbol, backfill_min, latest,
+                    )
+                    for row in stale_rows:
+                        if row["date_str"] not in backfill_dates:
+                            await conn.execute(
+                                "DELETE FROM daily_bars WHERE symbol=\$1 AND date_str=\$2",
+                                symbol, row["date_str"],
+                            )
+                            logger.info(
+                                f"Cleaned up stale holiday bar: {symbol} "
+                                f"date={row['date_str']}"
+                            )
         logger.info("Daily bar backfill completed")
     except Exception as e:
         logger.error(f"Daily bar backfill error: {e}")
 
 
-async def daily_bar_refresh_loop(client, writer, pool):
+async def daily_bar_refresh_loop(client, writer, pool, daily_tracker):
     """Periodically refresh daily bars for all active subscriptions."""
     # Run first backfill immediately
-    await backfill_daily_bars(client, writer, pool, duration="100 D")
+    await backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=daily_tracker)
 
     while True:
         await asyncio.sleep(4 * 3600)  # Refresh every 4 hours
         try:
             # For periodic refresh, we can fetch a shorter period (e.g., 5 days) to keep it light
-            await backfill_daily_bars(client, writer, pool, duration="5 D")
+            await backfill_daily_bars(client, writer, pool, duration="5 D", daily_tracker=daily_tracker)
             logger.info("Periodic daily bar refresh completed")
         except asyncio.CancelledError:
             raise
@@ -175,12 +210,20 @@ async def trading_days_refresh_loop(client, daily_tracker):
 
 
 async def daily_bar_flush_loop(tracker, writer):
-    """Flush real-time daily bars from the tick tracker to DB every 5 seconds."""
+    """Flush real-time daily bars from the tick tracker to DB every 5 seconds.
+
+    Also deletes stale future-date bars that should not appear on the chart
+    (e.g., from a previous session's post-rollhour data after a restart).
+    """
     while True:
         await asyncio.sleep(5)
         try:
             for bar in tracker.get_dirty_bars():
                 await writer.upsert_daily_bars([bar], update_open=False)
+            # Clean up stale future-date bars flagged by the tracker
+            stale = tracker.get_stale_bars()
+            if stale:
+                await writer.delete_daily_bars(stale)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -287,7 +330,7 @@ async def main():
         ),
         asyncio.create_task(settings_listener(redis_client), name="settings_listener"),
         asyncio.create_task(
-            daily_bar_refresh_loop(client, writer, pool), name="daily_bar_refresh"
+            daily_bar_refresh_loop(client, writer, pool, daily_tracker), name="daily_bar_refresh"
         ),
         asyncio.create_task(
             daily_bar_flush_loop(daily_tracker, writer), name="daily_bar_flush"
