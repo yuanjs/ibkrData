@@ -322,7 +322,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       })
       ma10SeriesRef.current = chart.addSeries(LineSeries, {
         color: '#9c27b0',
-        lineWidth: 3,
+        lineWidth: 1,
         lineStyle: 0,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
