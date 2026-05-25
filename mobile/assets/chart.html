@@ -358,9 +358,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       kSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.kLine, lineWidth: 1, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       dSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.dLine, lineWidth: 1, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       jSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.jLine, lineWidth: 2, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
-      kSeries.createPriceLine({ price: 0, color: '#00ff00', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
+      kSeries.createPriceLine({ price: 0, color: '#2d5a27', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
       kSeries.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' });
-      kSeries.createPriceLine({ price: 100, color: '#00ff00', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
+      kSeries.createPriceLine({ price: 100, color: '#2d5a27', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
       kdjChart.priceScale('right').setVisibleRange({ from: -10, to: 110 });
 
       chart.subscribeCrosshairMove(function(param) {
