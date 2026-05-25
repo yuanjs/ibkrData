@@ -2,7 +2,7 @@ import { useRef, useEffect, useCallback } from 'react'
 import { View, StyleSheet } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { useTheme } from '../theme'
-import { getProductConfig } from '../config/productConfig'
+import { getProductConfig, getSymbolDecimalPlaces } from '../config/productConfig'
 
 interface CandlestickData {
   time: number
@@ -95,12 +95,14 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
       },
     })
     var tz = getProductConfig(symbolRef.current).timezone
+    var dp = getSymbolDecimalPlaces(symbolRef.current)
     send({
       type: 'candles',
       data: dataRef.current,
       interval: intervalRef.current,
       symbol: symbolRef.current,
       timezone: tz,
+      decimalPlaces: dp,
       theme: {
         bg: c.background,
         text: c.textPrimary,
@@ -127,12 +129,14 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
   // Send candles data when symbol/interval/data changes
   useEffect(() => {
     var tz = getProductConfig(symbol).timezone
+    const decPlaces = getSymbolDecimalPlaces(symbol)
     send({
       type: 'candles',
       data,
       interval,
       symbol,
       timezone: tz,
+      decimalPlaces: decPlaces,
       theme: {
         bg: colors.background,
         text: colors.textPrimary,

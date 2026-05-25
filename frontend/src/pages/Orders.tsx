@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
+import { getSymbolDecimalPlaces } from '../config/productConfig'
 
 export function Orders() {
   const [orders, setOrders] = useState<unknown[]>([])
@@ -42,7 +43,7 @@ export function Orders() {
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{o.symbol as string}</td>
                 <td className="py-2 px-3" style={{ color: o.action === 'BUY' ? '#26a641' : '#d32f2f' }}>{o.action as string}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{o.quantity as number}</td>
-                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{o.limit_price as number ?? '-'}</td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{(o.limit_price as number)?.toFixed(getSymbolDecimalPlaces(o.symbol as string)) ?? '-'}</td>
                 <td className="py-2 px-3" style={{ color: 'var(--text-secondary)' }}>{o.status as string}</td>
               </tr>
             ))}</tbody>
@@ -64,7 +65,7 @@ export function Orders() {
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{t.symbol as string}</td>
                 <td className="py-2 px-3" style={{ color: t.side === 'BOT' ? '#26a641' : '#d32f2f' }}>{t.side as string}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{t.quantity as number}</td>
-                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{t.price as number}</td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{(t.price as number)?.toFixed(getSymbolDecimalPlaces(t.symbol as string))}</td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{t.commission as number}</td>
               </tr>
             ))}</tbody>

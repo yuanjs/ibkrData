@@ -4,6 +4,7 @@ import { File, Paths, Directory } from 'expo-file-system'
 import * as Sharing from 'expo-sharing'
 import { api } from '../src/api/client'
 import { useTheme } from '../src/theme'
+import { getSymbolDecimalPlaces } from '../src/config/productConfig'
 
 type TabKey = 'orders' | 'trades' | 'pnl'
 
@@ -83,7 +84,7 @@ export default function Orders() {
         { text: t.symbol as string, mono: true, bold: false },
         { text: t.side as string, mono: false, color: t.side === 'BOT' ? '#26a641' : '#d32f2f' },
         { text: String(t.quantity ?? ''), mono: true, align: 'right' },
-        { text: t.price != null ? (t.price as number).toFixed(2) : '', mono: true, align: 'right' },
+        { text: t.price != null ? (t.price as number).toFixed(getSymbolDecimalPlaces(t.symbol as string)) : '', mono: true, align: 'right' },
         { text: t.commission != null ? String(t.commission) : '', mono: false, align: 'right' },
       ])}
 

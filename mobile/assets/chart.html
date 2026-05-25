@@ -45,6 +45,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   var intervalSec = 86400;
   var rafId = null;
   var currentInterval = '1d';
+  var decPlaces = 2;
   // KDJ/main chart sync offset
   var kdjOffset = -1, lastKdjK0Time = -1, lastSyncFrom = -1, lastSyncTo = -1;
 
@@ -310,18 +311,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       if (!d) { tip.style.display = 'none'; return; }
       var html = '<div class="tt-time">' + fmtTime(param.time) + '</div><div class="tt-row">';
       if (isLine) {
-        html += '<span class="tt-item" style="color:' + colors.text + '">P: ' + (d.value !== undefined ? d.value.toFixed(2) : '-') + '</span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">P: ' + (d.value !== undefined ? d.value.toFixed(decPlaces) : '-') + '</span>';
       } else {
-        html += '<span class="tt-item" style="color:' + colors.text + '">O: ' + d.open.toFixed(2) + '</span>';
-        html += '<span class="tt-item" style="color:' + colors.text + '">H: <span style="color:' + colors.up + '">' + d.high.toFixed(2) + '</span></span>';
-        html += '<span class="tt-item" style="color:' + colors.text + '">L: <span style="color:' + colors.down + '">' + d.low.toFixed(2) + '</span></span>';
-        html += '<span class="tt-item" style="color:' + colors.text + '">C: ' + d.close.toFixed(2) + '</span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">O: ' + d.open.toFixed(decPlaces) + '</span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">H: <span style="color:' + colors.up + '">' + d.high.toFixed(decPlaces) + '</span></span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">L: <span style="color:' + colors.down + '">' + d.low.toFixed(decPlaces) + '</span></span>';
+        html += '<span class="tt-item" style="color:' + colors.text + '">C: ' + d.close.toFixed(decPlaces) + '</span>';
         var m3 = param.seriesData.get(ma3Series);
         var m5 = param.seriesData.get(ma5Series);
         var m10 = param.seriesData.get(ma10Series);
-        if (m3) html += '<span class="tt-item" style="color:' + colors.ma3 + '">MA3: ' + m3.value.toFixed(2) + '</span>';
-        if (m5) html += '<span class="tt-item" style="color:' + colors.ma5 + '">MA5: ' + m5.value.toFixed(2) + '</span>';
-        if (m10) html += '<span class="tt-item" style="color:' + colors.ma10 + '">MA10: ' + m10.value.toFixed(2) + '</span>';
+        if (m3) html += '<span class="tt-item" style="color:' + colors.ma3 + '">MA3: ' + m3.value.toFixed(decPlaces) + '</span>';
+        if (m5) html += '<span class="tt-item" style="color:' + colors.ma5 + '">MA5: ' + m5.value.toFixed(decPlaces) + '</span>';
+        if (m10) html += '<span class="tt-item" style="color:' + colors.ma10 + '">MA10: ' + m10.value.toFixed(decPlaces) + '</span>';
       }
       var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
       var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
@@ -415,6 +416,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
           intervalSec = invToSec(currentInterval);
           currentCandles = m.data || [];
           if (m.timezone) exchangeTimezone = m.timezone;
+          if (m.decimalPlaces != null) decPlaces = m.decimalPlaces;
           if (m.theme) { for (var k in m.theme) { if (m.theme.hasOwnProperty(k)) colors[k] = m.theme[k]; } }
           create();
           buildIntervalBtns();
