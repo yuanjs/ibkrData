@@ -385,7 +385,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       kSeriesRef.current.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       // Draggable horizontal line at 50 — follows finger when touching KDJ, stays when released
       let kdjDragLine = kSeriesRef.current.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      let kdjDragSyncing = false  // Flag: true while main chart is syncing crosshair to KDJ
       kdjChartRef.current.subscribeCrosshairMove((param) => {
+        if (kdjDragSyncing) return  // Ignore programmatic sync from main chart
         const kSeries = kSeriesRef.current
         if (!param.point || !kSeries) return
         const price = kSeries.coordinateToPrice(param.point.y)
@@ -444,11 +446,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         const kSeries = kSeriesRef.current
         if (!kdjChart || !kSeries) return
         if (param.time) {
-          // Look up K value at this time from our cached data
+          kdjDragSyncing = true  // Prevent KDJ drag handler from responding to this sync
           const timeSec = typeof param.time === 'number' ? param.time : Math.floor(new Date(param.time as string).getTime() / 1000)
           const kPoint = kdjDataRef.current.k.find(x => x.time === timeSec)
           const price = kPoint?.value ?? 50
           try { kdjChart.setCrosshairPosition(price, param.time, kSeries) } catch { }
+          kdjDragSyncing = false
         } else {
           try { kdjChart.clearCrosshairPosition() } catch { }
         }
