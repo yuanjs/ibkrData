@@ -383,29 +383,18 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Add 0 and 100 reference lines
       kSeriesRef.current.createPriceLine({ price: 0, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       kSeriesRef.current.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      // Draggable auxiliary reference line — independent of crosshair
-      let kdjRefLine = kSeriesRef.current.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      const updateKdjRefLine = (y: number) => {
+      // Draggable horizontal line at 50 — follows finger when touching KDJ, stays when released
+      let kdjDragLine = kSeriesRef.current.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      let kdjDragSyncing = false  // Flag: true while main chart is syncing crosshair to KDJ
+      kdjChartRef.current.subscribeCrosshairMove((param) => {
+        if (kdjDragSyncing) return  // Ignore programmatic sync from main chart
         const kSeries = kSeriesRef.current
-        if (!kSeries) return
-        let price = kSeries.coordinateToPrice(y)
+        if (!param.point || !kSeries) return
+        const price = kSeries.coordinateToPrice(param.point.y)
         if (price == null) return
-        price = Math.max(0, Math.min(100, price))  // Clamp to 0-100
-        try { kSeries.removePriceLine(kdjRefLine) } catch {}
-        kdjRefLine = kSeries.createPriceLine({ price, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      }
-      // Pointer events on KDJ container (independent of crosshair)
-      const kdjContainer = kdjContainerRef.current
-      if (kdjContainer) {
-        let dragging = false
-        const onDown = (e: PointerEvent) => { dragging = true; updateKdjRefLine(e.offsetY) }
-        const onMove = (e: PointerEvent) => { if (dragging) updateKdjRefLine(e.offsetY) }
-        const onUp = () => { dragging = false }
-        kdjContainer.addEventListener('pointerdown', onDown)
-        kdjContainer.addEventListener('pointermove', onMove)
-        kdjContainer.addEventListener('pointerup', onUp)
-        kdjContainer.addEventListener('pointerleave', onUp)
-      }
+        try { kSeries.removePriceLine(kdjDragLine) } catch {}
+        kdjDragLine = kSeries.createPriceLine({ price, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      })
 
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
@@ -457,10 +446,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         const kSeries = kSeriesRef.current
         if (!kdjChart || !kSeries) return
         if (param.time) {
+          kdjDragSyncing = true  // Prevent KDJ drag handler from responding to this sync
           const timeSec = typeof param.time === 'number' ? param.time : Math.floor(new Date(param.time as string).getTime() / 1000)
           const kPoint = kdjDataRef.current.k.find(x => x.time === timeSec)
           const price = kPoint?.value ?? 50
           try { kdjChart.setCrosshairPosition(price, param.time, kSeries) } catch { }
+          kdjDragSyncing = false
         } else {
           try { kdjChart.clearCrosshairPosition() } catch { }
         }
