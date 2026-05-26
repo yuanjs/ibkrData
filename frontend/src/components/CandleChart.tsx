@@ -339,7 +339,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     if (!isLineChart && kdjContainerRef.current) {
       kdjChart = createChart(kdjContainerRef.current, {
         layout: { background: { color: bgColor }, textColor },
-        grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
+        grid: { vertLines: { color: gridColor }, horzLines: { color: 'transparent' } },
         width: mainContainerRef.current.clientWidth,
         height: kdjHeight,
         handleScroll: {

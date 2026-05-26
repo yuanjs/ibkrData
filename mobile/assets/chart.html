@@ -386,7 +386,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     if (!isLine && currentInterval !== '1w') {
       kdjChart = LightweightCharts.createChart(kc, {
         layout: { background: { color: colors.bg }, textColor: colors.text },
-        grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
+        grid: { vertLines: { color: colors.grid }, horzLines: { color: 'transparent' } },
         width: w, height: kh,
         handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
         handleScale: { mouseWheel: false, pinch: false, axisPressedMouseMove: false, axisDoubleClickReset: false },
