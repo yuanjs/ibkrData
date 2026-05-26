@@ -428,20 +428,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       }
       rafId = requestAnimationFrame(syncLoop)
 
-      // Sync crosshair vertical line from main chart to KDJ chart
-      chart.subscribeCrosshairMove((param) => {
-        const kdjChart = kdjChartRef.current
-        const kSeries = kSeriesRef.current
-        if (!kdjChart || !kSeries) return
-        if (param.time) {
-          const timeSec = typeof param.time === 'number' ? param.time : Math.floor(new Date(param.time as string).getTime() / 1000)
-          const kPoint = kdjDataRef.current.k.find(x => x.time === timeSec)
-          const price = kPoint?.value ?? 50
-          try { kdjChart.setCrosshairPosition(price, param.time, kSeries) } catch { }
-        } else {
-          try { kdjChart.clearCrosshairPosition() } catch { }
-        }
-      })
+
     } else {
       kdjChartRef.current = undefined
       kSeriesRef.current = undefined
