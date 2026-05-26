@@ -195,10 +195,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     if (!mainSeries || currentCandles.length === 0) return;
     var tickTime = tick.time ? new Date(tick.time).getTime() / 1000 : Date.now() / 1000;
     var last = currentCandles[currentCandles.length - 1];
+    var lastTime = typeof last.time === 'object' ? last.time._timestamp : Number(last.time);
     var bucket = Math.floor(tickTime / intervalSec) * intervalSec;
     var isLine = isLineInterval(currentInterval);
     var upd;
-    if (bucket > Number(last.time)) {
+    if (bucket > lastTime) {
+      // New candle
       if (isLine) {
         upd = { time: bucket, value: tick.price };
       } else {
@@ -206,19 +208,35 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       }
       currentCandles.push({ time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price });
       if (currentCandles.length > 500) currentCandles.shift();
-    } else {
+      mainSeries.update(upd);
+    } else if (bucket === lastTime) {
+      // Update current (latest) candle
       if (isLine) {
         last.close = tick.price;
         upd = { time: bucket, value: tick.price };
       } else {
-        // Update existing candle — preserve open price, never store partial objects
         last.high = Math.max(last.high, tick.price);
         last.low = Math.min(last.low, tick.price);
         last.close = tick.price;
         upd = { time: bucket, open: last.open, high: last.high, low: last.low, close: last.close };
       }
+      mainSeries.update(upd);
+    } else {
+      // Tick belongs to a PAST candle — lightweight-charts does not allow
+      // updating historical data. Silently update in-memory data only;
+      // the candle data from the DB/API is already finalized.
+      var pastCandle = null;
+      for (var i = currentCandles.length - 2; i >= 0; i--) {
+        var ct = typeof currentCandles[i].time === 'object' ? currentCandles[i].time._timestamp : Number(currentCandles[i].time);
+        if (ct === bucket) { pastCandle = currentCandles[i]; break; }
+      }
+      if (pastCandle) {
+        pastCandle.high = Math.max(pastCandle.high, tick.price);
+        pastCandle.low = Math.min(pastCandle.low, tick.price);
+        pastCandle.close = tick.price;
+      }
+      return;  // Don't call mainSeries.update for past candles
     }
-    mainSeries.update(upd);
     if (!isLineInterval(currentInterval) && ma3Series && currentCandles.length >= 3) {
       var idx = currentCandles.length - 1, s3 = 0, s5 = 0, s10 = 0;
       for (var j = 0; j < 3 && idx - j >= 0; j++) s3 += currentCandles[idx - j].close;
