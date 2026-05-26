@@ -399,35 +399,55 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       jSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.jLine, lineWidth: 2, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       kSeries.createPriceLine({ price: 0, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
       kSeries.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
-      // Draggable horizontal line at 50 — follows finger when touching KDJ, stays when released
-      var kdjDragLine = kSeries.createPriceLine({
+      // Draggable auxiliary reference line — independent of crosshair
+      var kdjRefLine = kSeries.createPriceLine({
         price: 50, color: '#000000', lineWidth: 1, lineStyle: 0,
         axisLabelVisible: true, title: '',
       });
-      var kdjSyncing = false;  // Flag: true while main chart is syncing crosshair to KDJ
-      function updateKdjDragLine(price) {
-        if (kdjSyncing) return;  // Ignore programmatic sync, only respond to user touch
-        if (kdjDragLine) { try { kSeries.removePriceLine(kdjDragLine); } catch(e) {} }
-        kdjDragLine = kSeries.createPriceLine({
+      function updateRefLine(y) {
+        var price = kSeries.coordinateToPrice(y);
+        if (price === null) return;
+        price = Math.max(0, Math.min(100, price));  // Clamp to 0-100
+        if (kdjRefLine) { try { kSeries.removePriceLine(kdjRefLine); } catch(e) {} }
+        kdjRefLine = kSeries.createPriceLine({
           price: price, color: '#000000', lineWidth: 1, lineStyle: 0,
           axisLabelVisible: true, title: '',
         });
       }
-      kdjChart.subscribeCrosshairMove(function(param) {
-        if (param.point && kSeries) {
-          var price = kSeries.coordinateToPrice(param.point.y);
-          if (price !== null) updateKdjDragLine(price);
-        }
-      });
+      // Touch/mouse drag on KDJ canvas (completely separate from crosshair)
+      (function() {
+        var dragging = false, kc = document.getElementById('kdj-chart');
+        if (!kc) return;
+        function onPointerDown(e) { dragging = true; updateRefLine(e.offsetY || e.layerY); }
+        function onPointerMove(e) { if (dragging) updateRefLine(e.offsetY || e.layerY); }
+        function onPointerUp() { dragging = false; }
+        kc.addEventListener('touchstart', function(e) {
+          var t = e.touches[0];
+          var rect = kc.getBoundingClientRect();
+          onPointerDown({ offsetY: t.clientY - rect.top });
+        });
+        kc.addEventListener('touchmove', function(e) {
+          e.preventDefault();
+          var t = e.touches[0];
+          var rect = kc.getBoundingClientRect();
+          onPointerMove({ offsetY: t.clientY - rect.top });
+        });
+        kc.addEventListener('touchend', onPointerUp);
+        kc.addEventListener('mousedown', function(e) { onPointerDown(e); });
+        kc.addEventListener('mousemove', function(e) { onPointerMove(e); });
+        kc.addEventListener('mouseup', onPointerUp);
+        kc.addEventListener('mouseleave', onPointerUp);
+      })();
       kdjChart.priceScale('right').setVisibleRange({ from: -10, to: 110 });
 
       chart.subscribeCrosshairMove(function(param) {
         if (param.time && kSeries) {
-          kdjSyncing = true;
           var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
           var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
           if (kp) kdjChart.setCrosshairPosition(kp.value, param.time, kSeries);
-          kdjSyncing = false;
+        } else if (kdjChart) {
+          kdjChart.clearCrosshairPosition();
+        }
         } else if (kdjChart) {
           kdjChart.clearCrosshairPosition();
         }
