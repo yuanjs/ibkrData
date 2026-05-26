@@ -383,6 +383,16 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Add 0 and 100 reference lines
       kSeriesRef.current.createPriceLine({ price: 0, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       kSeriesRef.current.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      // Draggable horizontal line at 50 — follows finger when touching KDJ, stays when released
+      let kdjDragLine = kSeriesRef.current.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      kdjChartRef.current.subscribeCrosshairMove((param) => {
+        const kSeries = kSeriesRef.current
+        if (!param.point || !kSeries) return
+        const price = kSeries.coordinateToPrice(param.point.y)
+        if (price == null) return
+        try { kSeries.removePriceLine(kdjDragLine) } catch {}
+        kdjDragLine = kSeries.createPriceLine({ price, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      })
 
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
