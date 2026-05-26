@@ -385,11 +385,13 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       kSeriesRef.current.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       // Draggable auxiliary reference line — completely independent of crosshair
       let kdjRefPrice = 50
+      try { const v = localStorage.getItem('kdjRef_' + symbol); if (v) kdjRefPrice = Math.max(0, Math.min(100, parseFloat(v))) } catch {}
       const setKdjRefLine = (price: number) => {
         const ks = kSeriesRef.current
         if (!ks) return
         const p = Math.max(0, Math.min(100, price))
         kdjRefPrice = p
+        try { localStorage.setItem('kdjRef_' + symbol, String(p)) } catch {}
         try { ks.removePriceLine((ks as any)._refLine) } catch {}
         ;(ks as any)._refLine = ks.createPriceLine({ price: p, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       }

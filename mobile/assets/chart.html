@@ -385,8 +385,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       tip.style.color = colors.text;
     });
 
-    // KDJ sub-chart
-    if (!isLine && currentInterval !== '1w') {
+    // KDJ sub-chart — wrap in try-catch so errors don't break main chart
+    if (!isLine && currentInterval !== '1w') try {
       kdjChart = LightweightCharts.createChart(kc, {
         layout: { background: { color: colors.bg }, textColor: colors.text },
         grid: { vertLines: { color: colors.grid }, horzLines: { color: 'transparent' } },
@@ -404,19 +404,22 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       kSeries.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
       // Draggable auxiliary reference line — completely independent of crosshair
       var kdjRefPrice = 50;
+      var kdjRefKey = 'kdjRef_' + (window._kdjSymbol || '');
+      try { if (window.localStorage) { var v = localStorage.getItem(kdjRefKey); if (v !== null) kdjRefPrice = Math.max(0, Math.min(100, parseFloat(v))); } } catch(e) {}
       var kdjRefLine = kSeries.createPriceLine({
         price: kdjRefPrice, color: '#000000', lineWidth: 1, lineStyle: 0,
         axisLabelVisible: true, title: '',
       });
-      function setRefLine(price) {
+      var setRefLine = function(price) {
         price = Math.max(0, Math.min(100, price));
         kdjRefPrice = price;
+        try { if (window.localStorage) localStorage.setItem(kdjRefKey, String(price)); } catch(e) {}
         if (kdjRefLine) { try { kSeries.removePriceLine(kdjRefLine); } catch(e) {} }
         kdjRefLine = kSeries.createPriceLine({
           price: price, color: '#000000', lineWidth: 1, lineStyle: 0,
           axisLabelVisible: true, title: '',
         });
-      }
+      };
       // Transparent overlay on top of KDJ chart for independent touch/mouse drag
       kdjOverlay = document.createElement('div');
       kc.style.position = 'relative';
@@ -481,6 +484,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         rafId = requestAnimationFrame(syncLoop);
       }
       rafId = requestAnimationFrame(syncLoop);
+    } catch(e) {
+      postToRN({ type: 'log', text: 'KDJ create error: ' + (e.message || e) });
     }
 
     if (currentCandles.length > 0) setData(currentCandles);
@@ -494,6 +499,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
           currentInterval = m.interval || currentInterval;
           intervalSec = invToSec(currentInterval);
           currentCandles = m.data || [];
+          if (m.symbol) window._kdjSymbol = m.symbol;
           if (m.timezone) exchangeTimezone = m.timezone;
           if (m.rollHour != null) rollHour = m.rollHour;
           if (m.rollMinute != null) rollMinute = m.rollMinute;
