@@ -675,7 +675,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const prevSymbol = useRef(symbol)
   if (prevInterval.current !== interval || prevSymbol.current !== symbol) {
     if (chartRef.current) {
-      try { (window as any).__savedChartRange = chartRef.current.timeScale().getVisibleRange() } catch {}
+      try {
+        const key = (symbol || '') + '_' + prevInterval.current
+        const ranges = (window as any).__savedChartRanges || {}
+        ranges[key] = chartRef.current.timeScale().getVisibleRange()
+        ;(window as any).__savedChartRanges = ranges
+      } catch {}
     }
     prevInterval.current = interval
     prevSymbol.current = symbol
@@ -743,7 +748,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       const isIntraday = interval.endsWith('s') || interval.endsWith('m') || interval.endsWith('h') || interval.endsWith('min')
 
       // Restore saved visible range from previous interval, or fit content
-    const savedRange = (window as any).__savedChartRange
+    const ranges = (window as any).__savedChartRanges || {}
+    const rangeKey = (symbol || '') + '_' + interval
+    const savedRange = ranges[rangeKey]
     if (savedRange) {
       try { chartRef.current.timeScale().setVisibleRange(savedRange) } catch {}
     } else if (isIntraday) {
