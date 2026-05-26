@@ -676,9 +676,16 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   if (prevInterval.current !== interval || prevSymbol.current !== symbol) {
     if (chartRef.current) {
       try {
-        const ranges = (window as any).__chartRanges || {}
-        ranges[(symbol || '') + '_' + prevInterval.current] = chartRef.current.timeScale().getVisibleRange()
-        ;(window as any).__chartRanges = ranges
+        const lr = chartRef.current.timeScale().getVisibleLogicalRange()
+        if (lr) {
+          const ranges = (window as any).__chartRanges || {}
+          const total = lastDataRef.current.length
+          ranges[(symbol || '') + '_' + prevInterval.current] = {
+            fromEnd: Math.max(0, total - 1 - lr.from),
+            width: lr.to - lr.from,
+          }
+          ;(window as any).__chartRanges = ranges
+        }
       } catch {}
     }
     prevInterval.current = interval
@@ -747,7 +754,13 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     try {
       const ranges = (window as any).__chartRanges || {}
       const sr = ranges[(symbol || '') + '_' + interval]
-      if (sr) { chartRef.current.timeScale().setVisibleRange(sr) } else { chartRef.current.timeScale().fitContent() }
+      if (sr && sr.fromEnd != null) {
+        const len = normalizedData.length
+        const from = Math.max(0, len - 1 - sr.fromEnd)
+        chartRef.current.timeScale().setVisibleLogicalRange({ from, to: len - 1 })
+      } else {
+        chartRef.current.timeScale().fitContent()
+      }
     } catch(e) { chartRef.current.timeScale().fitContent() }
     }
   }, [data, isLineChart, interval, symbol])

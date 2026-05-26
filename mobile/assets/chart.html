@@ -202,11 +202,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         jSeries.setData(kdjData.j);
       }
     }
-    // Restore zoom state for this product+interval
+    // Restore zoom state: use logical range (candle count from end) for
+    // consistent behavior across intervals with different granularity.
     try {
       var _key = (window._kdjSymbol||'')+'_'+currentInterval;
       var _sr = window._chartRanges ? window._chartRanges[_key] : null;
-      if (_sr) { chart.timeScale().setVisibleRange(_sr); } else { chart.timeScale().fitContent(); }
+      if (_sr && _sr.fromEnd != null) {
+        var _len = currentCandles.length;
+        var _from = Math.max(0, _len - 1 - _sr.fromEnd);
+        chart.timeScale().setVisibleLogicalRange({ from: _from, to: _len - 1 });
+      } else {
+        chart.timeScale().fitContent();
+      }
     } catch(e) { chart.timeScale().fitContent(); }
     // Align KDJ sub-chart to main chart's initial view
     if (kdjChart && kdjData.k.length > 0) {
@@ -501,11 +508,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       var m = typeof s === 'string' ? JSON.parse(s) : s;
       switch (m.type) {
         case 'candles':
-          // Save current zoom state BEFORE updating interval (save uses old key)
+          // Save logical range (candle index) BEFORE updating interval
           if (chart) {
             try {
               if (!window._chartRanges) window._chartRanges = {};
-              window._chartRanges[(window._kdjSymbol||'')+'_'+currentInterval] = chart.timeScale().getVisibleRange();
+              var _lr = chart.timeScale().getVisibleLogicalRange();
+              if (_lr) {
+                var _total = currentCandles.length;
+                window._chartRanges[(window._kdjSymbol||'')+'_'+currentInterval] = {
+                  fromEnd: _total - 1 - _lr.from,
+                  width: _lr.to - _lr.from,
+                };
+              }
             } catch(e) {}
           }
           currentInterval = m.interval || currentInterval;
@@ -528,11 +542,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
           break;
         case 'theme':
           postToRN({ type: 'log', text: 'theme received, keys: ' + Object.keys(m.colors).join(',') });
-          // Save zoom state before recreating chart for theme
+          // Save logical range before recreating chart for theme
           if (chart) {
             try {
               if (!window._chartRanges) window._chartRanges = {};
-              window._chartRanges[(window._kdjSymbol||'')+'_'+currentInterval] = chart.timeScale().getVisibleRange();
+              var _lr = chart.timeScale().getVisibleLogicalRange();
+              if (_lr) {
+                var _total = currentCandles.length;
+                window._chartRanges[(window._kdjSymbol||'')+'_'+currentInterval] = {
+                  fromEnd: _total - 1 - _lr.from,
+                  width: _lr.to - _lr.from,
+                };
+              }
             } catch(e) {}
           }
           for (var k in m.colors) { if (m.colors.hasOwnProperty(k)) colors[k] = m.colors[k]; }
