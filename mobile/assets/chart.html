@@ -296,13 +296,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   }
 
   function create() {
-    // Save zoom state per product+interval before destroying
-    if (chart) {
-      try {
-        if (!window._chartRanges) window._chartRanges = {};
-        window._chartRanges[(window._kdjSymbol||'')+'_'+currentInterval] = chart.timeScale().getVisibleRange();
-      } catch(e) {}
-    }
     destroy();
     var isLine = isLineInterval(currentInterval);
     var mc = document.getElementById('main-chart');
@@ -508,6 +501,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       var m = typeof s === 'string' ? JSON.parse(s) : s;
       switch (m.type) {
         case 'candles':
+          // Save current zoom state BEFORE updating interval (save uses old key)
+          if (chart) {
+            try {
+              if (!window._chartRanges) window._chartRanges = {};
+              window._chartRanges[(window._kdjSymbol||'')+'_'+currentInterval] = chart.timeScale().getVisibleRange();
+            } catch(e) {}
+          }
           currentInterval = m.interval || currentInterval;
           intervalSec = invToSec(currentInterval);
           currentCandles = m.data || [];
@@ -528,6 +528,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
           break;
         case 'theme':
           postToRN({ type: 'log', text: 'theme received, keys: ' + Object.keys(m.colors).join(',') });
+          // Save zoom state before recreating chart for theme
+          if (chart) {
+            try {
+              if (!window._chartRanges) window._chartRanges = {};
+              window._chartRanges[(window._kdjSymbol||'')+'_'+currentInterval] = chart.timeScale().getVisibleRange();
+            } catch(e) {}
+          }
           for (var k in m.colors) { if (m.colors.hasOwnProperty(k)) colors[k] = m.colors[k]; }
           create();
           buildIntervalBtns();
