@@ -383,18 +383,48 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Add 0 and 100 reference lines
       kSeriesRef.current.createPriceLine({ price: 0, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       kSeriesRef.current.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      // Draggable horizontal line at 50 — follows finger when touching KDJ, stays when released
-      let kdjDragLine = kSeriesRef.current.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      let kdjDragSyncing = false  // Flag: true while main chart is syncing crosshair to KDJ
-      kdjChartRef.current.subscribeCrosshairMove((param) => {
-        if (kdjDragSyncing) return  // Ignore programmatic sync from main chart
-        const kSeries = kSeriesRef.current
-        if (!param.point || !kSeries) return
-        const price = kSeries.coordinateToPrice(param.point.y)
-        if (price == null) return
-        try { kSeries.removePriceLine(kdjDragLine) } catch {}
-        kdjDragLine = kSeries.createPriceLine({ price, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
-      })
+      // Draggable auxiliary reference line — completely independent of crosshair
+      let kdjRefPrice = 50
+      const setKdjRefLine = (price: number) => {
+        const ks = kSeriesRef.current
+        if (!ks) return
+        const p = Math.max(0, Math.min(100, price))
+        kdjRefPrice = p
+        try { ks.removePriceLine((ks as any)._refLine) } catch {}
+        ;(ks as any)._refLine = ks.createPriceLine({ price: p, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+      }
+      setKdjRefLine(50)
+      // Transparent overlay on KDJ chart for independent pointer/touch drag
+      const kdjOverlay = document.createElement('div')
+      kdjOverlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;touch-action:none;'
+      kdjContainerRef.current?.appendChild(kdjOverlay)
+      let dragging = false
+      const getY = (e: PointerEvent | TouchEvent) => {
+        const rect = kdjContainerRef.current!.getBoundingClientRect()
+        const cy = 'touches' in e ? e.touches[0].clientY : (e as PointerEvent).clientY
+        return cy - rect.top
+      }
+      const onOverlayDown = (e: PointerEvent | TouchEvent) => {
+        dragging = true
+        const ks = kSeriesRef.current
+        if (!ks) return
+        const p = ks.coordinateToPrice(getY(e))
+        if (p != null) setKdjRefLine(p)
+      }
+      const onOverlayMove = (e: PointerEvent | TouchEvent) => {
+        if (!dragging) return
+        e.preventDefault()
+        const ks = kSeriesRef.current
+        if (!ks) return
+        const p = ks.coordinateToPrice(getY(e))
+        if (p != null) setKdjRefLine(p)
+      }
+      const onOverlayEnd = () => { dragging = false }
+      kdjOverlay.dataset.kdjRef = '1'
+      kdjOverlay.addEventListener('pointerdown', onOverlayDown)
+      kdjOverlay.addEventListener('pointermove', onOverlayMove)
+      kdjOverlay.addEventListener('pointerup', onOverlayEnd)
+      kdjOverlay.addEventListener('pointerleave', onOverlayEnd)
 
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
@@ -446,12 +476,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         const kSeries = kSeriesRef.current
         if (!kdjChart || !kSeries) return
         if (param.time) {
-          kdjDragSyncing = true  // Prevent KDJ drag handler from responding to this sync
           const timeSec = typeof param.time === 'number' ? param.time : Math.floor(new Date(param.time as string).getTime() / 1000)
           const kPoint = kdjDataRef.current.k.find(x => x.time === timeSec)
           const price = kPoint?.value ?? 50
           try { kdjChart.setCrosshairPosition(price, param.time, kSeries) } catch { }
-          kdjDragSyncing = false
         } else {
           try { kdjChart.clearCrosshairPosition() } catch { }
         }
@@ -623,6 +651,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       ma3SeriesRef.current = undefined
       ma5SeriesRef.current = undefined
       ma10SeriesRef.current = undefined
+      // Cleanup KDJ overlay
+      const oldOverlay = kdjContainerRef.current?.querySelector('div[data-kdj-ref]')
+      if (oldOverlay) oldOverlay.parentNode?.removeChild(oldOverlay)
       if (kdjChart) {
         kdjChart.remove()
       }

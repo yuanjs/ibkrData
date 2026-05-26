@@ -279,10 +279,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     }
   }
 
+  var kdjOverlay = null;  // Transparent overlay for KDJ reference line drag
+
   function destroy() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     if (kdjChart) { kdjChart.remove(); kdjChart = null; }
     if (chart) { chart.remove(); chart = null; }
+    if (kdjOverlay && kdjOverlay.parentNode) { kdjOverlay.parentNode.removeChild(kdjOverlay); kdjOverlay = null; }
     mainSeries = null; ma3Series = null; ma5Series = null; ma10Series = null;
     kSeries = null; dSeries = null; jSeries = null;
   }
@@ -399,35 +402,50 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       jSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.jLine, lineWidth: 2, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       kSeries.createPriceLine({ price: 0, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
       kSeries.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
-      // Draggable horizontal line at 50 — follows finger when touching KDJ, stays when released
-      var kdjDragLine = kSeries.createPriceLine({
-        price: 50, color: '#000000', lineWidth: 1, lineStyle: 0,
+      // Draggable auxiliary reference line — completely independent of crosshair
+      var kdjRefPrice = 50;
+      var kdjRefLine = kSeries.createPriceLine({
+        price: kdjRefPrice, color: '#000000', lineWidth: 1, lineStyle: 0,
         axisLabelVisible: true, title: '',
       });
-      var kdjSyncing = false;  // Flag: true while main chart is syncing crosshair to KDJ
-      function updateKdjDragLine(price) {
-        if (kdjSyncing) return;  // Ignore programmatic sync, only respond to user touch
-        if (kdjDragLine) { try { kSeries.removePriceLine(kdjDragLine); } catch(e) {} }
-        kdjDragLine = kSeries.createPriceLine({
+      function setRefLine(price) {
+        price = Math.max(0, Math.min(100, price));
+        kdjRefPrice = price;
+        if (kdjRefLine) { try { kSeries.removePriceLine(kdjRefLine); } catch(e) {} }
+        kdjRefLine = kSeries.createPriceLine({
           price: price, color: '#000000', lineWidth: 1, lineStyle: 0,
           axisLabelVisible: true, title: '',
         });
       }
-      kdjChart.subscribeCrosshairMove(function(param) {
-        if (param.point && kSeries) {
-          var price = kSeries.coordinateToPrice(param.point.y);
-          if (price !== null) updateKdjDragLine(price);
+      // Transparent overlay on top of KDJ chart for independent touch/mouse drag
+      kdjOverlay = document.createElement('div');
+      kdjOverlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;touch-action:none;';
+      kc.appendChild(kdjOverlay);
+      (function() {
+        var dragging = false;
+        function getY(e) {
+          var rect = kc.getBoundingClientRect();
+          var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+          return clientY - rect.top;
         }
-      });
+        function onStart(e) { dragging = true; var p = kSeries.coordinateToPrice(getY(e)); if (p !== null) setRefLine(p); }
+        function onMove(e) { if (!dragging) return; e.preventDefault(); var p = kSeries.coordinateToPrice(getY(e)); if (p !== null) setRefLine(p); }
+        function onEnd() { dragging = false; }
+        kdjOverlay.addEventListener('touchstart', onStart, { passive: true });
+        kdjOverlay.addEventListener('touchmove', onMove, { passive: false });
+        kdjOverlay.addEventListener('touchend', onEnd);
+        kdjOverlay.addEventListener('mousedown', onStart);
+        kdjOverlay.addEventListener('mousemove', onMove);
+        kdjOverlay.addEventListener('mouseup', onEnd);
+        kdjOverlay.addEventListener('mouseleave', onEnd);
+      })();
       kdjChart.priceScale('right').setVisibleRange({ from: -10, to: 110 });
 
       chart.subscribeCrosshairMove(function(param) {
         if (param.time && kSeries) {
-          kdjSyncing = true;
           var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
           var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
           if (kp) kdjChart.setCrosshairPosition(kp.value, param.time, kSeries);
-          kdjSyncing = false;
         } else if (kdjChart) {
           kdjChart.clearCrosshairPosition();
         }
