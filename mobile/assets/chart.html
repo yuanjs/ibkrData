@@ -392,33 +392,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         handleScale: { mouseWheel: false, pinch: false, axisPressedMouseMove: false, axisDoubleClickReset: false },
         rightPriceScale: { minimumWidth: 80, autoScale: false },
         timeScale: { visible: false },
-        crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
+        crosshair: { vertLine: { visible: true, color: '#9ca3af', labelBackgroundColor: '#9ca3af', width: 2, style: 0 }, horzLine: { visible: false, labelVisible: false } },
       });
       kSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.kLine, lineWidth: 1, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       dSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.dLine, lineWidth: 1, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
       jSeries = kdjChart.addSeries(LightweightCharts.LineSeries, { color: colors.jLine, lineWidth: 2, lastValueVisible: true, priceLineVisible: false, crosshairMarkerVisible: false });
+      kSeries.createPriceLine({ price: 0, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
+      kSeries.createPriceLine({ price: 50, color: '#000000', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' });
+      kSeries.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
       kdjChart.priceScale('right').setVisibleRange({ from: -10, to: 110 });
-
-      // Persistent horizontal line for KDJ — follows finger, stays when released
-      var kdjHLine = null;
-      function updateKdjHLine(price) {
-        if (kdjHLine) { try { kSeries.removePriceLine(kdjHLine); } catch(e) {} }
-        kdjHLine = kSeries.createPriceLine({
-          price: price,
-          color: '#000000',
-          lineWidth: 1,
-          lineStyle: 0,
-          axisLabelVisible: true,
-          title: price.toFixed(1),
-        });
-      }
-
-      kdjChart.subscribeCrosshairMove(function(param) {
-        if (param.point && kSeries) {
-          var price = kSeries.coordinateToPrice(param.point.y);
-          if (price !== null) updateKdjHLine(price);
-        }
-      });
 
       chart.subscribeCrosshairMove(function(param) {
         if (param.time && kSeries) {
