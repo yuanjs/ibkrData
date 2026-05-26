@@ -39,6 +39,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
 
   var chart, kdjChart, mainSeries, ma3Series, ma5Series, ma10Series;
   var exchangeTimezone = 'America/New_York';
+  var rollHour = 16;
+  var rollMinute = 0;
   var kSeries, dSeries, jSeries;
   var currentCandles = [];
   var kdjData = { k: [], d: [], j: [] };
@@ -102,6 +104,23 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     if (!t) return '';
     var p = getTzParts(t);
     return p.year + '/' + p.month + '/' + p.day + ' ' + p.hour + ':' + p.minute + ':' + p.second;
+  }
+
+  // Compute the daily bar bucket respecting the product's timezone and rollhour.
+  // After rollhour, the tick belongs to the next trading day.
+  function getDailyBucket(tickTimeSec) {
+    var p = getTzParts(tickTimeSec);
+    var hour = Number(p.hour), minute = Number(p.minute);
+    var y = Number(p.year), m = Number(p.month), day = Number(p.day);
+    if (hour > rollHour || (hour === rollHour && minute >= rollMinute)) {
+      // Advance to next day
+      var next = new Date(Date.UTC(y, m - 1, day + 1));
+      y = next.getUTCFullYear();
+      m = next.getUTCMonth() + 1;
+      day = next.getUTCDate();
+    }
+    // Return UTC noon so the candle aligns with the database bucket_time
+    return Math.floor(Date.UTC(y, m - 1, day, 12) / 1000);
   }
 
   function calcMA(data, period) {
@@ -196,7 +215,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     var tickTime = tick.time ? new Date(tick.time).getTime() / 1000 : Date.now() / 1000;
     var last = currentCandles[currentCandles.length - 1];
     var lastTime = typeof last.time === 'object' ? last.time._timestamp : Number(last.time);
-    var bucket = Math.floor(tickTime / intervalSec) * intervalSec;
+    // For daily bars, use timezone/rollhour-aware bucketing matching the
+    // web frontend's getEffectiveBucketTime logic.
+    var bucket = currentInterval === '1d' ? getDailyBucket(tickTime) : Math.floor(tickTime / intervalSec) * intervalSec;
     var isLine = isLineInterval(currentInterval);
     var upd;
     if (bucket > lastTime) {
@@ -434,6 +455,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
           intervalSec = invToSec(currentInterval);
           currentCandles = m.data || [];
           if (m.timezone) exchangeTimezone = m.timezone;
+          if (m.rollHour != null) rollHour = m.rollHour;
+          if (m.rollMinute != null) rollMinute = m.rollMinute;
           if (m.decimalPlaces != null) decPlaces = m.decimalPlaces;
           if (m.theme) { for (var k in m.theme) { if (m.theme.hasOwnProperty(k)) colors[k] = m.theme[k]; } }
           create();
@@ -441,6 +464,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
           break;
         case 'tick':
           intervalSec = invToSec(currentInterval);
+          if (m.rollHour != null) rollHour = m.rollHour;
+          if (m.rollMinute != null) rollMinute = m.rollMinute;
           updateTick(m.tick);
           break;
         case 'theme':

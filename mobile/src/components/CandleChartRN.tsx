@@ -94,14 +94,16 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
         secondary: c.textSecondary,
       },
     })
-    var tz = getProductConfig(symbolRef.current).timezone
+    var cfg = getProductConfig(symbolRef.current)
     var dp = getSymbolDecimalPlaces(symbolRef.current)
     send({
       type: 'candles',
       data: dataRef.current,
       interval: intervalRef.current,
       symbol: symbolRef.current,
-      timezone: tz,
+      timezone: cfg.timezone,
+      rollHour: cfg.rollHour,
+      rollMinute: cfg.rollMinute,
       decimalPlaces: dp,
       theme: {
         bg: c.background,
@@ -128,14 +130,16 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
 
   // Send candles data when symbol/interval/data changes
   useEffect(() => {
-    var tz = getProductConfig(symbol).timezone
+    var cfg = getProductConfig(symbol)
     const decPlaces = getSymbolDecimalPlaces(symbol)
     send({
       type: 'candles',
       data,
       interval,
       symbol,
-      timezone: tz,
+      timezone: cfg.timezone,
+      rollHour: cfg.rollHour,
+      rollMinute: cfg.rollMinute,
       decimalPlaces: decPlaces,
       theme: {
         bg: colors.background,
@@ -156,11 +160,12 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
     })
   }, [data, interval, symbol, colors, send, getProductConfig])
 
-  // Send tick updates
+  // Send tick updates — include product config for daily bar rollhour logic
   useEffect(() => {
     if (!liveTick || data.length === 0) return
-    send({ type: 'tick', tick: liveTick, interval })
-  }, [liveTick, interval, data.length, send])
+    var cfg = getProductConfig(symbol)
+    send({ type: 'tick', tick: liveTick, interval, timezone: cfg.timezone, rollHour: cfg.rollHour, rollMinute: cfg.rollMinute })
+  }, [liveTick, interval, data.length, send, symbol])
 
   // Send theme updates
   useEffect(() => {
