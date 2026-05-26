@@ -401,6 +401,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       kSeries.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' });
       kdjChart.priceScale('right').setVisibleRange({ from: -10, to: 110 });
 
+      chart.subscribeCrosshairMove(function(param) {
+        if (param.time && kSeries) {
+          var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
+          var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
+          if (kp) kdjChart.setCrosshairPosition(kp.value, param.time, kSeries);
+        } else if (kdjChart) {
+          kdjChart.clearCrosshairPosition();
+        }
+      });
 
       function syncLoop() {
         var mr = chart.timeScale().getVisibleLogicalRange();
