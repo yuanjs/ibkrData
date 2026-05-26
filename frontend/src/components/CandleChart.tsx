@@ -675,7 +675,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const prevSymbol = useRef(symbol)
   if (prevInterval.current !== interval || prevSymbol.current !== symbol) {
     if (chartRef.current) {
-      try { (window as any).__savedChartRange = chartRef.current.timeScale().getVisibleRange() } catch {}
+      try {
+        const ranges = (window as any).__chartRanges || {}
+        ranges[(symbol || '') + '_' + prevInterval.current] = chartRef.current.timeScale().getVisibleRange()
+        ;(window as any).__chartRanges = ranges
+      } catch {}
     }
     prevInterval.current = interval
     prevSymbol.current = symbol
@@ -739,30 +743,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         kdjChartRef.current.timeScale().fitContent()
       }
 
-      // Determine if the interval is intraday (seconds, minutes, or hours)
-      const isIntraday = interval.endsWith('s') || interval.endsWith('m') || interval.endsWith('h') || interval.endsWith('min')
-
-      // Restore saved visible range from previous interval, or fit content
-    const savedRange = (window as any).__savedChartRange
-    if (savedRange) {
-      try { chartRef.current.timeScale().setVisibleRange(savedRange) } catch {}
-    } else if (isIntraday) {
-      // Intraday: default to showing only today's data if available
-      const lastPoint = normalizedData[normalizedData.length - 1]
-      const midnightSec = getMidnightSec(lastPoint.time as number, symbol)
-      const firstTodayIdx = normalizedData.findIndex(d => (d.time as number) >= midnightSec)
-      if (firstTodayIdx > 0) {
-        chartRef.current.timeScale().setVisibleLogicalRange({
-          from: firstTodayIdx,
-          to: normalizedData.length - 1,
-        })
-      } else {
-        chartRef.current.timeScale().fitContent()
-      }
-    } else {
-      // Daily or weekly: show all loaded data
-      chartRef.current.timeScale().fitContent()
-    }
+      // Restore saved visible range for this product+interval, or fit content
+    try {
+      const ranges = (window as any).__chartRanges || {}
+      const sr = ranges[(symbol || '') + '_' + interval]
+      if (sr) { chartRef.current.timeScale().setVisibleRange(sr) } else { chartRef.current.timeScale().fitContent() }
+    } catch(e) { chartRef.current.timeScale().fitContent() }
     }
   }, [data, isLineChart, interval, symbol])
 
