@@ -202,11 +202,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         jSeries.setData(kdjData.j);
       }
     }
-    // Restore saved visible range for this product+interval
-    var rangeKey = (window._kdjSymbol || '') + '_' + currentInterval;
-    var sr = savedRanges[rangeKey];
-    if (sr) {
-      try { chart.timeScale().setVisibleRange(sr); } catch(e) {}
+    // Restore saved visible time range, or fit all data on first load
+    if (savedTimeRange) {
+      try { chart.timeScale().setVisibleRange(savedTimeRange); } catch(e) {}
     } else {
       chart.timeScale().fitContent();
     }
@@ -287,7 +285,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   }
 
   var kdjOverlay = null;  // Transparent overlay for KDJ reference line drag
-  var savedRanges = {};  // {symbol_interval: {from,to}} preserved zoom states
+  var savedTimeRange = null;  // Preserved visible time range across interval switches
 
   function destroy() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
@@ -299,12 +297,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   }
 
   function create() {
-    // Save visible range keyed by product+interval before destroying
+    // Save visible time range before destroying, so switching intervals
+    // preserves the user's zoom/scroll position for the same product.
     if (chart) {
-      try {
-        var key = (window._kdjSymbol || '') + '_' + currentInterval;
-        savedRanges[key] = chart.timeScale().getVisibleRange();
-      } catch(e) {}
+      try { savedTimeRange = chart.timeScale().getVisibleRange(); } catch(e) {}
     }
     destroy();
     var isLine = isLineInterval(currentInterval);
