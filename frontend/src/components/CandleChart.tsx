@@ -670,6 +670,17 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     }
   }, [interval, symbol, isLineChart, getTimezone, formatTime, cssVar])
 
+  // Save visible range on interval/symbol change for restoration after data loads
+  const prevInterval = useRef(interval)
+  const prevSymbol = useRef(symbol)
+  if (prevInterval.current !== interval || prevSymbol.current !== symbol) {
+    if (chartRef.current) {
+      try { (window as any).__savedChartRange = chartRef.current.timeScale().getVisibleRange() } catch {}
+    }
+    prevInterval.current = interval
+    prevSymbol.current = symbol
+  }
+
   // Set data when data changes
   useEffect(() => {
     if (!data.length || !seriesRef.current) return
@@ -731,23 +742,27 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Determine if the interval is intraday (seconds, minutes, or hours)
       const isIntraday = interval.endsWith('s') || interval.endsWith('m') || interval.endsWith('h') || interval.endsWith('min')
 
-      if (isIntraday) {
-        // Intraday: default to showing only today's data if available
-        const lastPoint = normalizedData[normalizedData.length - 1]
-        const midnightSec = getMidnightSec(lastPoint.time as number, symbol)
-        const firstTodayIdx = normalizedData.findIndex(d => (d.time as number) >= midnightSec)
-        if (firstTodayIdx > 0) {
-          chartRef.current.timeScale().setVisibleLogicalRange({
-            from: firstTodayIdx,
-            to: normalizedData.length - 1,
-          })
-        } else {
-          chartRef.current.timeScale().fitContent()
-        }
+      // Restore saved visible range from previous interval, or fit content
+    const savedRange = (window as any).__savedChartRange
+    if (savedRange) {
+      try { chartRef.current.timeScale().setVisibleRange(savedRange) } catch {}
+    } else if (isIntraday) {
+      // Intraday: default to showing only today's data if available
+      const lastPoint = normalizedData[normalizedData.length - 1]
+      const midnightSec = getMidnightSec(lastPoint.time as number, symbol)
+      const firstTodayIdx = normalizedData.findIndex(d => (d.time as number) >= midnightSec)
+      if (firstTodayIdx > 0) {
+        chartRef.current.timeScale().setVisibleLogicalRange({
+          from: firstTodayIdx,
+          to: normalizedData.length - 1,
+        })
       } else {
-        // Daily or weekly: show all loaded data
         chartRef.current.timeScale().fitContent()
       }
+    } else {
+      // Daily or weekly: show all loaded data
+      chartRef.current.timeScale().fitContent()
+    }
     }
   }, [data, isLineChart, interval, symbol])
 
