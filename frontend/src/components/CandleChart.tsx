@@ -396,8 +396,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       setKdjRefLine(50)
       // Transparent overlay on KDJ chart for independent pointer/touch drag
       const kdjOverlay = document.createElement('div')
-      kdjOverlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;touch-action:none;'
-      kdjContainerRef.current?.appendChild(kdjOverlay)
+      const kdjContainer = kdjContainerRef.current
+      if (kdjContainer) {
+        kdjContainer.style.position = 'relative'
+        kdjOverlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;touch-action:none;'
+        kdjContainer.appendChild(kdjOverlay)
+      }
       let dragging = false
       const getY = (e: PointerEvent | TouchEvent) => {
         const rect = kdjContainerRef.current!.getBoundingClientRect()
