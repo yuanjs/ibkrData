@@ -310,23 +310,26 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         color: '#2962ff',
         lineWidth: 2,
         crosshairMarkerVisible: false,
-        lastValueVisible: false,
+        lastValueVisible: true,
         priceLineVisible: false,
+        title: 'MA3',
       })
       ma5SeriesRef.current = chart.addSeries(LineSeries, {
         color: '#ff9800',
         lineWidth: 2,
         crosshairMarkerVisible: false,
-        lastValueVisible: false,
+        lastValueVisible: true,
         priceLineVisible: false,
+        title: 'MA5',
       })
       ma10SeriesRef.current = chart.addSeries(LineSeries, {
         color: '#9c27b0',
         lineWidth: 1,
         lineStyle: 0,
         crosshairMarkerVisible: false,
-        lastValueVisible: false,
+        lastValueVisible: true,
         priceLineVisible: false,
+        title: 'MA10',
       })
     } else {
       ma3SeriesRef.current = undefined

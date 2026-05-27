@@ -352,9 +352,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       mainSeries = chart.addSeries(LightweightCharts.LineSeries, { color: '#2962ff', lineWidth: 2, crosshairMarkerVisible: true, crosshairMarkerRadius: 5, crosshairMarkerBorderColor: '#fff', crosshairMarkerBackgroundColor: '#2962ff' });
     } else {
       mainSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: colors.up, downColor: colors.down, borderUpColor: colors.up, borderDownColor: colors.down, wickUpColor: colors.up, wickDownColor: colors.down });
-      ma3Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma3, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
-      ma5Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma5, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
-      ma10Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma10, lineWidth: 1, lineStyle: 0, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+      ma3Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma3, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: true, priceLineVisible: false, title: 'MA3' });
+      ma5Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma5, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: true, priceLineVisible: false, title: 'MA5' });
+      ma10Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma10, lineWidth: 1, lineStyle: 0, crosshairMarkerVisible: false, lastValueVisible: true, priceLineVisible: false, title: 'MA10' });
     }
 
     chart.subscribeCrosshairMove(function(param) {
