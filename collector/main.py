@@ -14,11 +14,6 @@ import logging
 import asyncpg
 import redis.asyncio as aioredis
 from aiohttp import web
-
-# Apply ib_insync timestamp patch BEFORE importing ibkr_client
-import ibkr_patch
-ibkr_patch.apply()
-
 from config import (
     ACCOUNT_REFRESH_INTERVAL,
     DB_URL,
