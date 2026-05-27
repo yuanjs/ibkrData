@@ -321,7 +321,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         priceLineVisible: false,
       })
       ma10SeriesRef.current = chart.addSeries(LineSeries, {
-        color: '#9c27b0',
+        color: '#6a1b9a',
         lineWidth: 1,
         lineStyle: 0,
         crosshairMarkerVisible: false,
@@ -562,7 +562,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
               <span><span style="${ts}">C</span><span style="color:${cCls}">${cC}</span></span>
               <span><span style="${ts}">3M</span><span style="color:#2962ff">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></span>
               <span><span style="${ts}">5M</span><span style="color:#ff9800">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></span>
-              <span><span style="${ts}">10M</span><span style="color:#9c27b0">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></span>
+              <span><span style="${ts}">10M</span><span style="color:#6a1b9a">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></span>
               <span style="border-left:1px solid var(--border);padding-left:3px"><span style="${ts}">K</span><span style="color:#2962ff">${kVal?.toFixed(2) ?? '-'}</span></span>
               <span><span style="${ts}">D</span><span style="color:#ff9800">${dVal?.toFixed(2) ?? '-'}</span></span>
               <span><span style="${ts}">J</span><span style="color:#9c27b0">${jVal?.toFixed(2) ?? '-'}</span></span>
@@ -596,7 +596,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           <div class="flex gap-4 mt-2 text-[10px] font-mono">
             <div class="flex items-center gap-1"><span style="${ts}">3M:</span><span style="color:#2962ff">${ma3Val?.toFixed(decPlaces) ?? '-'}</span></div>
             <div class="flex items-center gap-1"><span style="${ts}">5M:</span><span style="color:#ff9800">${ma5Val?.toFixed(decPlaces) ?? '-'}</span></div>
-            <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span style="color:#9c27b0">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></div>
+            <div class="flex items-center gap-1"><span style="${ts}">10M:</span><span style="color:#6a1b9a">${ma10Val?.toFixed(decPlaces) ?? '-'}</span></div>
           </div>
           <div class="flex gap-3 mt-1 text-[10px] font-mono pt-1" style="border-top:1px solid var(--border)">
             <div class="flex items-center gap-1"><span style="${ts}">K:</span><span style="color:#2962ff">${kVal?.toFixed(2) ?? '-'}</span></div>
