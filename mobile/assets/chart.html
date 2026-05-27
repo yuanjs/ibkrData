@@ -419,7 +419,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       var kdjRefKey = 'kdjRef_' + (window._kdjSymbol || '');
       try { if (window.localStorage) { var v = localStorage.getItem(kdjRefKey); if (v !== null) kdjRefPrice = Math.max(0, Math.min(100, parseFloat(v))); } } catch(e) {}
       var kdjRefLine = kSeries.createPriceLine({
-        price: kdjRefPrice, color: '#000000', lineWidth: 1, lineStyle: 0,
+        price: kdjRefPrice, color: '#000000', lineWidth: 1, lineStyle: 2,
         axisLabelVisible: true, title: '',
       });
       var setRefLine = function(price) {
@@ -428,7 +428,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         try { if (window.localStorage) localStorage.setItem(kdjRefKey, String(price)); } catch(e) {}
         if (kdjRefLine) { try { kSeries.removePriceLine(kdjRefLine); } catch(e) {} }
         kdjRefLine = kSeries.createPriceLine({
-          price: price, color: '#000000', lineWidth: 1, lineStyle: 0,
+          price: price, color: '#000000', lineWidth: 1, lineStyle: 2,
           axisLabelVisible: true, title: '',
         });
       };

@@ -393,7 +393,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         kdjRefPrice = p
         try { localStorage.setItem('kdjRef_' + symbol, String(p)) } catch {}
         try { ks.removePriceLine((ks as any)._refLine) } catch {}
-        ;(ks as any)._refLine = ks.createPriceLine({ price: p, color: '#000000', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
+        ;(ks as any)._refLine = ks.createPriceLine({ price: p, color: '#000000', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' })
       }
       setKdjRefLine(50)
       // Transparent overlay on KDJ chart for independent pointer/touch drag
