@@ -160,14 +160,14 @@ async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_trac
                     # created by an old collector run before holiday awareness).
                     stale_rows = await conn.fetch(
                         "SELECT date_str FROM daily_bars "
-                        "WHERE symbol=\$1 AND date_str >= \$2 AND date_str < \$3 "
+                        "WHERE symbol=$1 AND date_str >= $2 AND date_str < $3 "
                         "ORDER BY date_str",
                         symbol, backfill_min, latest,
                     )
                     for row in stale_rows:
                         if row["date_str"] not in backfill_dates:
                             await conn.execute(
-                                "DELETE FROM daily_bars WHERE symbol=\$1 AND date_str=\$2",
+                                "DELETE FROM daily_bars WHERE symbol=$1 AND date_str=$2",
                                 symbol, row["date_str"],
                             )
                             logger.info(
