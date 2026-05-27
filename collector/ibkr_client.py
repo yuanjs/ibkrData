@@ -235,7 +235,11 @@ class IBKRClient:
             ):
                 for cb in self._tick_callbacks:
                     try:
-                        cb(symbol, float(price), float(size or 0), ticker.time)
+                        # Prefer exchange timestamp (rtTime from RTVolume)
+                        # over collector system time (ticker.time), so that
+                        # data from different devices has consistent timestamps.
+                        tick_time = ticker.rtTime if ticker.rtTime is not None else ticker.time
+                        cb(symbol, float(price), float(size or 0), tick_time)
                     except Exception as e:
                         logger.error(f"Tick callback error: {e}")
 
