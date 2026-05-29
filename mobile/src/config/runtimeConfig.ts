@@ -2,8 +2,8 @@
 // Defaults from .env, overridable in Settings page at runtime
 
 let config = {
-  apiUrl: process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8888',
-  wsUrl: process.env.EXPO_PUBLIC_WS_URL || 'ws://localhost:8888',
+  apiUrl: process.env.EXPO_PUBLIC_API_URL || 'http://192.168.0.13:8888',
+  wsUrl: process.env.EXPO_PUBLIC_WS_URL || 'ws://192.168.0.13:8888',
   token: process.env.EXPO_PUBLIC_API_TOKEN || 'dev-token',
 }
 
