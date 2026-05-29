@@ -226,6 +226,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         } else {
           chart.timeScale().fitContent();
         }
+      } else if (intervalSec === 86400) {
+        // Daily charts: default to showing last 2 months (~60 trading days)
+        var _d = 60;
+        if (currentCandles.length > _d) {
+          chart.timeScale().setVisibleLogicalRange({ from: currentCandles.length - _d, to: currentCandles.length - 1 });
+        } else {
+          chart.timeScale().fitContent();
+        }
       } else {
         chart.timeScale().fitContent();
       }

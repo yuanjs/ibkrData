@@ -767,6 +767,14 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         } else {
           chartRef.current.timeScale().fitContent()
         }
+      } else if (interval === '1d') {
+        // Daily charts: default to last 2 months (~60 trading days)
+        const twoMonthCandles = 60
+        if (normalizedData.length > twoMonthCandles) {
+          chartRef.current.timeScale().setVisibleLogicalRange({ from: normalizedData.length - twoMonthCandles, to: normalizedData.length - 1 })
+        } else {
+          chartRef.current.timeScale().fitContent()
+        }
       } else {
         chartRef.current.timeScale().fitContent()
       }
