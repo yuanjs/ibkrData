@@ -30,6 +30,7 @@ class IBKRClient:
         self._trading_days: dict[str, set[str]] = {}  # symbol -> set of YYYYMMDD trading days
 
         self._notifier = BarkNotifier(BARK_SERVER, BARK_KEY)
+        self._last_trade_prices: dict[str, float] = {}  # symbol -> last trade price
         self._first_fail_time = None
         self._alert_sent = False
 
@@ -39,6 +40,12 @@ class IBKRClient:
 
         self._reconnect_task = None
         self._data_suspended = False
+
+    def _is_new_trade(self, symbol: str, price: float) -> bool:
+        """Check if this is a genuine new trade, not a bid/ask update with stale last."""
+        prev = self._last_trade_prices.get(symbol)
+        self._last_trade_prices[symbol] = price
+        return prev is None or price != prev
 
     def _on_error(self, reqId, errorCode, errorString, contract):
         if errorCode == 10197:
@@ -225,19 +232,14 @@ class IBKRClient:
                 )
                 self._data_suspended = False
 
-            # 仅当本次批次中有 LAST_PRICE tick (tickType 4/68) 时才记录
-            # 排除 bid/ask 变化触发的无成交更新，与 kdjclient 的 tickType===4 逻辑一致
-            has_last_price = any(
-                t.tickType in (4, 68) for t in getattr(ticker, 'ticks', [])
-            )
             price = ticker.last if hasattr(ticker, "last") else None
             size = ticker.lastSize if hasattr(ticker, "lastSize") else 0.0
 
             if (
-                has_last_price
-                and price is not None
+                price is not None
                 and not (isinstance(price, float) and math.isnan(price))
                 and price > 0
+                and self._is_new_trade(symbol, float(price))
             ):
                 for cb in self._tick_callbacks:
                     try:
