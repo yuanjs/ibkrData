@@ -758,6 +758,15 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         const len = normalizedData.length
         const from = Math.max(0, len - 1 - sr.fromEnd)
         chartRef.current.timeScale().setVisibleLogicalRange({ from, to: len - 1 })
+      } else if (interval.endsWith('m')) {
+        // Minute-level charts: default to last 2 hours
+        const invSec = getIntervalSeconds(interval)
+        const twoHourCandles = Math.floor(7200 / invSec)
+        if (normalizedData.length > twoHourCandles) {
+          chartRef.current.timeScale().setVisibleLogicalRange({ from: normalizedData.length - twoHourCandles, to: normalizedData.length - 1 })
+        } else {
+          chartRef.current.timeScale().fitContent()
+        }
       } else {
         chartRef.current.timeScale().fitContent()
       }

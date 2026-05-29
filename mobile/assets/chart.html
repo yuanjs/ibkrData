@@ -218,6 +218,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         var _len = currentCandles.length;
         var _from = Math.max(0, _len - 1 - _sr.fromEnd);
         chart.timeScale().setVisibleLogicalRange({ from: _from, to: _len - 1 });
+      } else if (intervalSec >= 60 && intervalSec <= 3600) {
+        // Minute-level charts: default to showing last 2 hours
+        var _c = Math.floor(7200 / intervalSec);
+        if (currentCandles.length > _c) {
+          chart.timeScale().setVisibleLogicalRange({ from: currentCandles.length - _c, to: currentCandles.length - 1 });
+        } else {
+          chart.timeScale().fitContent();
+        }
       } else {
         chart.timeScale().fitContent();
       }
