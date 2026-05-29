@@ -29,6 +29,26 @@ from data_writer import DataWriter
 from ibkr_client import IBKRClient
 from publisher import Publisher
 
+# ====== monkey-patch: 捕获 tickType 45 (LAST_TIMESTAMP) 交易所时间戳 ======
+# ib_insync 的 Wrapper.tickString 没有处理 tickType 45，
+# 导致 CASH/FX 产品的交易所秒级时间戳被丢弃。
+# 这里在运行时添加 lastTimestamp 字段 + 补丁处理器。
+from ib_insync.wrapper import Wrapper
+from ib_insync.ticker import Ticker
+from datetime import datetime, timezone
+
+Ticker.lastTimestamp = None  # type: ignore[attr-defined]
+
+_orig_tickString = Wrapper.tickString
+def _patched_tickString(self, reqId, tickType, value):
+    if tickType == 45:
+        ticker = self.reqId2Ticker.get(reqId)
+        if ticker:
+            ticker.lastTimestamp = datetime.fromtimestamp(int(value), timezone.utc)
+    return _orig_tickString(self, reqId, tickType, value)
+Wrapper.tickString = _patched_tickString
+# =======================================================================
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -146,34 +166,7 @@ async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_trac
                     latest = max(b["date_str"] for b in bars)
                     daily_tracker.update_latest_bar_date(symbol, latest)
 
-                # Protection: delete stale DB bars that fall in the gap between
-                # backfill dates but aren't in the backfill results (e.g., holiday
-                # bars incorrectly created by a previous collector run).
-                # Only clean up bars that are BEFORE the current session (latest),
-                # so we don't delete the tracker's active bar.
-                backfill_dates = {b["date_str"] for b in bars}
-                backfill_min = min(backfill_dates)
-                async with pool.acquire() as conn:
-                    # Find bars in the gap between the earliest backfill date
-                    # and the current session that ARE NOT in the backfill
-                    # results. These are holiday leftovers (e.g., a May 25 bar
-                    # created by an old collector run before holiday awareness).
-                    stale_rows = await conn.fetch(
-                        "SELECT date_str FROM daily_bars "
-                        "WHERE symbol=$1 AND date_str >= $2 AND date_str < $3 "
-                        "ORDER BY date_str",
-                        symbol, backfill_min, latest,
-                    )
-                    for row in stale_rows:
-                        if row["date_str"] not in backfill_dates:
-                            await conn.execute(
-                                "DELETE FROM daily_bars WHERE symbol=$1 AND date_str=$2",
-                                symbol, row["date_str"],
-                            )
-                            logger.info(
-                                f"Cleaned up stale holiday bar: {symbol} "
-                                f"date={row['date_str']}"
-                            )
+
         logger.info("Daily bar backfill completed")
     except Exception as e:
         logger.error(f"Daily bar backfill error: {e}")
