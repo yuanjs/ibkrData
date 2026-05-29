@@ -225,22 +225,26 @@ class IBKRClient:
         ticker = self.ib.reqMktData(contract, "", False, False)
         self._tickers[symbol] = ticker
 
-        def _on_mkt_data_update(ticker, symbol=symbol):
+        def _on_mkt_data_update(ticker, symbol=symbol, sec_type=sec_type):
             if self._data_suspended:
                 logger.info(
                     f"Market data received for {symbol}. Stopping auto-reconnect."
                 )
                 self._data_suspended = False
 
-            sec_type = self._subscriptions[symbol]["sec_type"] if symbol in self._subscriptions else None
-
             if sec_type == "CASH":
                 has_bid_ask = (
                     ticker.bid is not None and not math.isnan(ticker.bid) and ticker.bid > 0 and
                     ticker.ask is not None and not math.isnan(ticker.ask) and ticker.ask > 0
                 )
-                price = (ticker.bid + ticker.ask) * 0.5 if has_bid_ask else None
-                size = float((ticker.bidSize or 0) + (ticker.askSize or 0))
+                if not has_bid_ask:
+                    logger.debug(
+                        f"CASH {symbol}: bid/ask unavailable, "
+                        f"bid={ticker.bid}, ask={ticker.ask}"
+                    )
+                    return
+                price = (ticker.bid + ticker.ask) * 0.5
+                size = 0.0  # CASH 无成交笔数，不留 volume 防止 K 线量失真
             else:
                 price = ticker.last if hasattr(ticker, "last") else None
                 size = ticker.lastSize if hasattr(ticker, "lastSize") else 0.0
@@ -249,8 +253,11 @@ class IBKRClient:
                 price is not None
                 and not (isinstance(price, float) and math.isnan(price))
                 and price > 0
-                and self._is_new_trade(symbol, float(price))
             ):
+                # CASH 的 mid price 几乎每次 tick 都变，无需去重
+                # 非 CASH 用价格比较过滤 bid/ask 变化导致的虚假 tick
+                if sec_type != "CASH" and not self._is_new_trade(symbol, float(price)):
+                    return
                 for cb in self._tick_callbacks:
                     try:
                         # 优先级:
