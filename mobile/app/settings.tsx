@@ -3,6 +3,20 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert 
 import { api } from '../src/api/client'
 import { useTheme } from '../src/theme'
 import { getRuntimeConfig, setRuntimeConfig } from '../src/config/runtimeConfig'
+const Field = ({ name, label, value, onChange, type }: { name: string; label: string; value: string; onChange: (v: string) => void; type?: 'text' | 'numeric' }) => {
+  const { colors } = useTheme()
+  return (
+    <View style={styles.fieldRow}>
+      <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>{label}</Text>
+      <TextInput
+        style={[styles.fieldInput, { backgroundColor: colors.surface, color: colors.textPrimary, borderColor: colors.borderDarker }]}
+        value={value}
+        onChangeText={onChange}
+        keyboardType={type === 'numeric' ? 'numeric' : 'default'}
+      />
+    </View>
+  )
+}
 
 export default function Settings() {
   const [settings, setSettings] = useState<Record<string, string>>({})
@@ -58,20 +72,8 @@ export default function Settings() {
     }
   }
 
-  const Field = ({ name, label, value, onChange, type }: { name: string; label: string; value: string; onChange: (v: string) => void; type?: 'text' | 'numeric' }) => (
-    <View style={styles.fieldRow}>
-      <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>{label}</Text>
-      <TextInput
-        style={[styles.fieldInput, { backgroundColor: colors.surface, color: colors.textPrimary, borderColor: colors.borderDarker }]}
-        value={value}
-        onChangeText={onChange}
-        keyboardType={type === 'numeric' ? 'numeric' : 'default'}
-      />
-    </View>
-  )
-
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
+    <ScrollView style={[styles.container, { backgroundColor: colors.background }]} keyboardShouldPersistTaps="handled">
       {/* Server Connection Config */}
       <View style={styles.section}>
         <Text style={[styles.sectionTitle, { color: colors.textHeading }]}>服务器连接（运行时配置，不随打包固化）</Text>
