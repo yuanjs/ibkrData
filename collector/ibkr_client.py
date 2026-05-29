@@ -232,8 +232,18 @@ class IBKRClient:
                 )
                 self._data_suspended = False
 
-            price = ticker.last if hasattr(ticker, "last") else None
-            size = ticker.lastSize if hasattr(ticker, "lastSize") else 0.0
+            sec_type = self._subscriptions[symbol]["sec_type"] if symbol in self._subscriptions else None
+
+            if sec_type == "CASH":
+                has_bid_ask = (
+                    ticker.bid is not None and not math.isnan(ticker.bid) and ticker.bid > 0 and
+                    ticker.ask is not None and not math.isnan(ticker.ask) and ticker.ask > 0
+                )
+                price = (ticker.bid + ticker.ask) * 0.5 if has_bid_ask else None
+                size = float((ticker.bidSize or 0) + (ticker.askSize or 0))
+            else:
+                price = ticker.last if hasattr(ticker, "last") else None
+                size = ticker.lastSize if hasattr(ticker, "lastSize") else 0.0
 
             if (
                 price is not None

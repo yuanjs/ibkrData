@@ -1,4 +1,4 @@
-const BASE = '/api'
+const BASE = import.meta.env.VITE_API_BASE || '/api'
 const TOKEN = import.meta.env.VITE_TOKEN || 'dev-token'
 
 const headers = () => ({ Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' })
