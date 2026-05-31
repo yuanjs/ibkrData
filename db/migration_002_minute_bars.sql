@@ -19,5 +19,3 @@ CREATE TABLE IF NOT EXISTS minute_bars (
 );
 
 SELECT create_hypertable('minute_bars', 'time', if_not_exists => TRUE);
-CREATE INDEX IF NOT EXISTS idx_minute_bars_lookup
-    ON minute_bars (symbol, time DESC);

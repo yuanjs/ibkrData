@@ -6,12 +6,39 @@ the stored range, and detecting time gaps for gap-filling logic.
 """
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_num(val):
+    """Return *val* as float, or None if NaN/Inf/None."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (ValueError, TypeError):
+        return None
+
+
+def _clean_int(val):
+    """Return *val* as int, or None if NaN/Inf/None."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return int(f)
+    except (ValueError, TypeError):
+        return None
 
 _INSERT_SQL = """\
 INSERT INTO minute_bars (time, symbol, open, high, low, close, volume, bar_count)
@@ -88,14 +115,19 @@ class MinuteBarWriter:
             ts: datetime = bar.date
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
+            _open = _clean_num(bar.open)
+            _high = _clean_num(bar.high)
+            _low = _clean_num(bar.low)
+            _close = _clean_num(bar.close)
+            _volume = _clean_int(bar.volume)
             records.append((
                 ts,
                 symbol,
-                bar.open,
-                bar.high,
-                bar.low,
-                bar.close,
-                int(bar.volume) if bar.volume is not None else None,
+                _open,
+                _high,
+                _low,
+                _close,
+                _volume,
                 bar.barCount,
             ))
 
