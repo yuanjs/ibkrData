@@ -10,7 +10,7 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
-from ib_insync import IB, Contract
+from ib_insync import IB, Contract, Future
 
 from backfiller.config import AppConfig, ProductConfig, load_config
 from backfiller.contract import resolve_contract_async, resolve_what_to_show
@@ -195,19 +195,16 @@ class PullScheduler:
         Uses ``ProgressStore`` checkpoints so interrupted runs resume
         where they left off.
 
-        .. note::
-           For *FUT* products, IBKR's CONTFUT contract type does **not**
-           accept an ``endDateTime`` parameter — it always returns data
-           from the current time backward.  Therefore we cannot perform
-           fine-grained windowed backfill for futures.  Instead we pull
-           the maximum available duration (14 days for 1-min bars) from
-           CONTFUT in a single request and accept the API limitation.
+        *FUT*: queries all expired + active contracts via
+        ``Future(includeExpired=True)``, filters to quarterly main
+        contracts, and backfills each contract's active period using
+        the standard windowed approach with ``endDateTime``.
 
-           *CASH* and *STK* products use the full windowed approach.
+        *CASH* / *STK*: windowed backfill directly.
         """
-        # ── FUT special case — CONTFUT single-shot pull ──────────
+        # ── FUT: backfill via expired/active quarterly contracts ──
         if product.sec_type == "FUT":
-            await self._pull_futf_contfut(product)
+            await self._pull_fut_via_expired_contracts(product)
             return
 
         # ── CASH / STK windowed approach ────────────────────────
@@ -294,54 +291,151 @@ class PullScheduler:
         if not self._should_stop:
             logger.info("%s: done — all windows completed", product.symbol)
 
-    async def _pull_futf_contfut(self, product: ProductConfig) -> None:
-        """Single-shot CONTFUT pull for futures (IBKR limitation).
+    # ── FUT: quarterly-contract chain backfill ──────────────────
 
-        CONTFUT does not support endDateTime, so we pull the maximum
-        available duration (14 days for 1-min bars) from the current
-        time backward.  This gives us as much continuous history as
-        IBKR allows.
-        """
-        from backfiller.contract import resolve_what_to_show
+    _QUARTERLY_MONTHS = frozenset({"03", "06", "09", "12"})
 
+    @staticmethod
+    def _is_quarterly_contract(contract: Contract) -> bool:
+        """True for contracts expiring in Mar/Jun/Sep/Dec."""
+        exp = (contract.lastTradeDateOrContractMonth or "0000")
+        return len(exp) >= 6 and exp[4:6] in PullScheduler._QUARTERLY_MONTHS
+
+    async def _resolve_fut_contracts(
+        self, product: ProductConfig,
+    ) -> list[Contract]:
+        """Fetch all available (incl. expired) contracts; return quarterly ones
+        sorted by expiry ascending."""
         if not await self.ensure_connected():
+            return []
+        try:
+            details = await self._ib.reqContractDetailsAsync(
+                Future(product.symbol, exchange=product.exchange,
+                       includeExpired=True),
+            )
+        except Exception as exc:
+            logger.error("%s: failed to list contracts: %s", product.symbol, exc)
+            return []
+
+        quarterly = [
+            d.contract for d in details
+            if self._is_quarterly_contract(d.contract)
+        ]
+        quarterly.sort(key=lambda c: c.lastTradeDateOrContractMonth or "")
+        logger.info(
+            "%s: resolved %d/%d quarterly contracts [%s .. %s]",
+            product.symbol, len(quarterly), len(details),
+            quarterly[0].lastTradeDateOrContractMonth[:6] if quarterly else "?",
+            quarterly[-1].lastTradeDateOrContractMonth[:6] if quarterly else "?",
+        )
+        return quarterly
+
+    async def _pull_fut_via_expired_contracts(
+        self, product: ProductConfig,
+    ) -> None:
+        """Backfill continuous futures by pulling each quarterly contract's
+        active period via windowed ``reqHistoricalData`` with ``endDateTime``.
+
+        Each quarterly contract (expiry months 03/06/09/12) is active
+        from the previous expiry to its own expiry.  We backfill those
+        windows using the individual contract (by conId), which **does**
+        support ``endDateTime`` — unlike CONTFUT.
+
+        The resulting data in *minute_bars* is a continuous chain that
+        the user can roll themselves (or simply use as-is for ML).
+        """
+        contracts = await self._resolve_fut_contracts(product)
+        if not contracts:
+            logger.error("%s: no quarterly contracts available, skipping",
+                         product.symbol)
             return
 
-        contract = Contract(
-            secType="CONTFUT", symbol=product.symbol,
-            exchange=product.exchange, currency=product.currency,
-        )
+        cfg_start = date.fromisoformat(self._config.start)
+        cfg_end = date.fromisoformat(self._config.end)
 
-        # Try decreasing durations until one succeeds
-        for dur in ("14 D", "7 D", "5 D", "3 D", "2 D", "1 D"):
-            for attempt in range(1, RETRY_LIMIT + 1):
+        # Determine each contract's active period and generate windows
+        all_tasks: list[tuple[Contract, list[Window]]] = []
+        prev_expiry: date | None = None
+
+        for c in contracts:
+            exp_str = (c.lastTradeDateOrContractMonth or "")[:8]
+            if len(exp_str) < 8:
+                continue
+            try:
+                exp_date = date.fromisoformat(f"{exp_str[:4]}-{exp_str[4:6]}-{exp_str[6:8]}")
+            except ValueError:
+                continue
+
+            # Active period: from previous expiry (or 3 months back) to this expiry
+            if prev_expiry is None:
+                from datetime import timedelta
+                period_start = max(cfg_start, exp_date - timedelta(days=100))
+            else:
+                period_start = max(cfg_start, prev_expiry)
+            period_end = min(cfg_end, exp_date)
+
+            if period_start >= period_end:
+                prev_expiry = exp_date
+                continue
+
+            windows = split_windows(period_start, period_end)
+            if windows:
+                all_tasks.append((c, windows))
+
+            prev_expiry = exp_date
+
+        logger.info("%s: %d contract-periods to backfill, total ~%d windows",
+                     product.symbol, len(all_tasks),
+                     sum(len(w) for _, w in all_tasks))
+
+        # Process each contract-period using the standard window loop
+        for contract, contract_windows in all_tasks:
+            contract.includeExpired = True
+            for w in contract_windows:
                 if self._should_stop:
                     return
-                try:
-                    bars = await self._ib.reqHistoricalDataAsync(
-                        contract, endDateTime="",
-                        durationStr=dur,
-                        barSizeSetting="1 min",
-                        whatToShow=resolve_what_to_show(product.sec_type),
-                        useRTH=False, formatDate=1,
-                    )
-                    inserted = await self._writer.upsert_bars(product.symbol, bars)
-                    logger.info(
-                        "%s (CONTFUT): pulled %d bars (duration=%s, inserted=%d)",
-                        product.symbol, len(bars), dur, inserted,
-                    )
-                    # Mark all windows as complete — we got what IBKR could give
-                    self._store.clear(product.symbol)
+                if not await self.ensure_connected():
                     return
-                except (ConnectionError, OSError, TimeoutError):
-                    if attempt < RETRY_LIMIT and not await self.ensure_connected():
-                        return
-                except Exception:
-                    if attempt < RETRY_LIMIT:
-                        await asyncio.sleep(5)
-                    continue
-            logger.warning("%s (CONTFUT): duration=%s failed after %d attempts",
-                           product.symbol, dur, RETRY_LIMIT)
 
-        logger.error("%s (CONTFUT): all durations exhausted, could not pull data",
-                     product.symbol)
+                success = False
+                for attempt in range(1, RETRY_LIMIT + 1):
+                    if self._should_stop:
+                        return
+                    try:
+                        end_dt = w[1].replace("-", "") + "-23:59:59"
+                        bars = await self._ib.reqHistoricalDataAsync(
+                            contract, endDateTime=end_dt,
+                            durationStr=f"{WINDOW_DAYS} D",
+                            barSizeSetting="1 min",
+                            whatToShow=resolve_what_to_show(product.sec_type),
+                            useRTH=False, formatDate=1,
+                        )
+                        await self._writer.upsert_bars(product.symbol, bars)
+                        self._connection_ok = True
+                        await asyncio.sleep(
+                            self._config.request_interval_seconds)
+                        success = True
+                        break
+                    except (ConnectionError, OSError, TimeoutError):
+                        if attempt < RETRY_LIMIT and not await self.ensure_connected():
+                            return
+                    except Exception:
+                        if attempt < RETRY_LIMIT:
+                            await asyncio.sleep(
+                                RECONNECT_BASE_DELAY * (2 ** (attempt - 1)))
+                # Log progress every window
+                if not success:
+                    logger.error("%s: failed window %s, moving on", product.symbol, w)
+                elif len(contract_windows) <= 10 or (
+                    contract_windows.index(w) + 1) % 10 == 0:
+                    pct = (contract_windows.index(w) + 1) / len(contract_windows) * 100
+                    logger.info(
+                        "%s (conId=%s exp=%s): %d/%d windows (%d%%)",
+                        product.symbol, contract.conId,
+                        contract.lastTradeDateOrContractMonth,
+                        contract_windows.index(w) + 1,
+                        len(contract_windows), int(pct),
+                    )
+
+        logger.info("%s: FUT backfill complete (%d contract periods)",
+                     product.symbol, len(all_tasks))
