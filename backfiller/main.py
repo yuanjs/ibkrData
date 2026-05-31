@@ -79,10 +79,11 @@ async def cmd_status(args, cfg):
 
 
 # ---------------------------------------------------------------------------
-# --check
+# --check  (纯同步，不涉及 asyncio)
 # ---------------------------------------------------------------------------
 
-async def cmd_check(args, cfg):
+def cmd_check(args, cfg):
+    """Synchronous check: verify IBKR contract resolution + HMDS data availability."""
     print()
     ib = IB()
     ib.RequestTimeout = 30
@@ -139,7 +140,8 @@ async def cmd_pull(args, cfg):
 
     pool = await MinuteBarWriter.create_pool(cfg.db_url)
     writer = MinuteBarWriter(pool)
-    scheduler = PullScheduler(filtered_cfg, writer, PROGRESS_DIR)
+    scheduler = PullScheduler(filtered_cfg, writer, PROGRESS_DIR,
+                              allow_new_products=args.only is None)
 
     # Signal handler for graceful Ctrl+C
     loop = asyncio.get_running_loop()
@@ -195,7 +197,7 @@ def main():
     elif args.status:
         asyncio.run(cmd_status(args, cfg))
     elif args.check:
-        asyncio.run(cmd_check(args, cfg))
+        cmd_check(args, cfg)  # synchronous, no asyncio needed
 
 
 if __name__ == "__main__":

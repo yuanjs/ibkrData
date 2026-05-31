@@ -59,7 +59,8 @@ def load_config(yaml_path: Optional[str] = None) -> AppConfig:
         request_interval_seconds=raw.get("request_interval_seconds", 25),
         ib_host=_env_str("IB_HOST", raw.get("ib_host", "127.0.0.1")),
         ib_port=_env_int("IB_PORT", raw.get("ib_port", 4002)),
-        ib_client_id=_env_int("IB_CLIENT_ID", raw.get("ib_client_id", 99)),
+        # NOTE: ib_client_id 不从 .env 读取，避免与 collector 的 IB_CLIENT_ID 冲突
+        ib_client_id=raw.get("ib_client_id", 99),
         db_url=_env_str("DB_URL", raw.get("db_url",
                         "postgresql://ibkr:password@localhost:5432/ibkrdata")),
     )

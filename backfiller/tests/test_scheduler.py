@@ -15,7 +15,8 @@ def mock_config():
     return AppConfig(
         products=[
             ProductConfig(
-                symbol="SPI", sec_type="FUT", exchange="SNFE", currency="AUD"
+                symbol="USD.JPY", sec_type="CASH", exchange="IDEALPRO",
+                currency="JPY"
             ),
         ],
         start="2024-01-01",
@@ -67,6 +68,39 @@ def test_request_stop(mock_config, mock_writer, tmp_path):
     assert scheduler._should_stop is False
     scheduler.request_stop()
     assert scheduler._should_stop is True
+
+
+def test_disconnect_connected(mock_config, mock_writer, tmp_path):
+    """disconnect on a connected client calls _ib.disconnect()."""
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler.disconnect()
+        ib_instance.disconnect.assert_called_once()
+
+
+def test_disconnect_already_disconnected(mock_config, mock_writer, tmp_path):
+    """disconnect on an already-disconnected client does nothing."""
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = False
+        scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler.disconnect()
+        ib_instance.disconnect.assert_not_called()
+
+
+def test_disconnect_error_handled(mock_config, mock_writer, tmp_path):
+    """disconnect swallows exceptions from _ib.disconnect()."""
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.disconnect.side_effect = RuntimeError("test error")
+        scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler.disconnect()  # must not raise
 
 
 @pytest.mark.asyncio
@@ -150,7 +184,7 @@ async def test_pull_product_basic_flow(mock_config, mock_writer, tmp_path):
     mock_writer.get_range = AsyncMock(return_value=(None, None, 0))
 
     with (patch('backfiller.scheduler.IB') as MockIB,
-          patch('backfiller.scheduler.resolve_contract') as mock_resolve,
+          patch('backfiller.scheduler.resolve_contract_async') as mock_resolve,
           patch('backfiller.scheduler.ProgressStore') as MockStore):
 
         # Mock IB 实例
@@ -162,8 +196,8 @@ async def test_pull_product_basic_flow(mock_config, mock_writer, tmp_path):
         mock_contract = MagicMock()
         mock_resolve.return_value = mock_contract
 
-        # Mock reqHistoricalData 返回空 list
-        ib_instance.reqHistoricalData.return_value = []
+        # Mock reqHistoricalDataAsync 返回空 list
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[])
 
         # Mock store
         store_instance = MockStore.return_value
@@ -179,10 +213,10 @@ async def test_pull_product_basic_flow(mock_config, mock_writer, tmp_path):
         await scheduler._pull_product(mock_config.products[0])
 
         # 验证流程：
-        # 1. resolve_contract 被调用
+        # 1. resolve_contract_async 被调用
         mock_resolve.assert_called_once()
-        # 2. reqHistoricalData 被调用（至少一次）
-        assert ib_instance.reqHistoricalData.call_count >= 1
+        # 2. reqHistoricalDataAsync 被调用（至少一次）
+        assert ib_instance.reqHistoricalDataAsync.call_count >= 1
         # 3. upsert_bars 被调用
         mock_writer.upsert_bars.assert_called()
         # 4. store.save 被调用（保存窗口）
@@ -195,7 +229,8 @@ async def test_pull_product_contract_failure(mock_config, mock_writer, tmp_path)
     mock_writer.get_range = AsyncMock(return_value=(None, None, 0))
 
     with (patch('backfiller.scheduler.IB') as MockIB,
-          patch('backfiller.scheduler.resolve_contract', return_value=None),
+          patch('backfiller.scheduler.resolve_contract_async',
+                return_value=None),
           patch('backfiller.scheduler.ProgressStore') as MockStore):
 
         store_instance = MockStore.return_value
@@ -204,8 +239,8 @@ async def test_pull_product_contract_failure(mock_config, mock_writer, tmp_path)
         scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
         await scheduler._pull_product(mock_config.products[0])
 
-        # 合约解析失败，不应调用 reqHistoricalData
-        MockIB.return_value.reqHistoricalData.assert_not_called()
+        # 合约解析失败，不应调用 reqHistoricalDataAsync
+        MockIB.return_value.reqHistoricalDataAsync.assert_not_called()
         # compute_windows 已执行并保存（save 发生在 resolve_contract 之前）
         store_instance.save.assert_called_once()
         # 不应标记任何窗口为 completed

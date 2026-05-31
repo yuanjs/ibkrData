@@ -10,10 +10,10 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
-from ib_insync import IB
+from ib_insync import IB, Contract
 
 from backfiller.config import AppConfig, ProductConfig, load_config
-from backfiller.contract import resolve_contract, resolve_what_to_show
+from backfiller.contract import resolve_contract_async, resolve_what_to_show
 from backfiller.db_writer import MinuteBarWriter
 from backfiller.progress_store import ProgressStore
 
@@ -59,6 +59,8 @@ class PullScheduler:
 
     def __init__(
         self, config: AppConfig, writer: MinuteBarWriter, progress_dir: Path,
+        *,
+        allow_new_products: bool = True,
     ) -> None:
         self._config = config
         self._writer = writer
@@ -68,6 +70,7 @@ class PullScheduler:
         self._should_stop = False
         self._connection_ok = False
         self._known_symbols: set[str] = set()
+        self._allow_new_products = allow_new_products
 
     # ------------------------------------------------------------------
     # public helpers
@@ -138,6 +141,8 @@ class PullScheduler:
             self._known_symbols.add(product.symbol)
             await self._pull_product(product)
 
+        if not self._allow_new_products:
+            return
         while True:
             new_products = self._check_new_products()
             if not new_products:
@@ -189,8 +194,23 @@ class PullScheduler:
 
         Uses ``ProgressStore`` checkpoints so interrupted runs resume
         where they left off.
+
+        .. note::
+           For *FUT* products, IBKR's CONTFUT contract type does **not**
+           accept an ``endDateTime`` parameter — it always returns data
+           from the current time backward.  Therefore we cannot perform
+           fine-grained windowed backfill for futures.  Instead we pull
+           the maximum available duration (14 days for 1-min bars) from
+           CONTFUT in a single request and accept the API limitation.
+
+           *CASH* and *STK* products use the full windowed approach.
         """
-        # --- restore or compute the window list ---
+        # ── FUT special case — CONTFUT single-shot pull ──────────
+        if product.sec_type == "FUT":
+            await self._pull_futf_contfut(product)
+            return
+
+        # ── CASH / STK windowed approach ────────────────────────
         windows = self._store.load(product.symbol)
         if not windows:
             windows = await self._compute_windows(product)
@@ -209,99 +229,119 @@ class PullScheduler:
 
         while windows and not self._should_stop:
             window = windows[0]
-
-            # --- connection ---
             if not await self.ensure_connected():
                 return
 
-            # --- contract resolution (failure = skip product) ---
+            # resolve contract
             try:
-                contract = resolve_contract(
-                    self._ib,
-                    product.symbol,
-                    product.sec_type,
-                    product.exchange,
-                    product.currency,
+                contract = await resolve_contract_async(
+                    self._ib, product.symbol, product.sec_type,
+                    product.exchange, product.currency,
                 )
             except Exception as exc:
-                logger.error(
-                    "%s: contract resolution raised %s, skipping product",
-                    product.symbol, exc,
-                )
+                logger.error("%s: contract resolution failed: %s, skipping",
+                             product.symbol, exc)
                 return
-
             if contract is None:
-                logger.error(
-                    "%s: contract resolution returned None, skipping product",
-                    product.symbol,
-                )
+                logger.error("%s: contract resolution returned None, skipping",
+                             product.symbol)
                 return
 
-            # --- data-fetch retry loop ---
-            success = False
-            connection_lost = False
-
+            # retry loop
+            success, connection_lost = False, False
             for attempt in range(1, RETRY_LIMIT + 1):
                 if self._should_stop:
                     return
-
                 try:
-                    end_dt = f"{window[1]} 23:59:59"
-                    bars = self._ib.reqHistoricalData(
-                        contract,
-                        endDateTime=end_dt,
+                    end_dt = window[1].replace("-", "") + "-23:59:59"
+                    bars = await self._ib.reqHistoricalDataAsync(
+                        contract, endDateTime=end_dt,
                         durationStr=f"{WINDOW_DAYS} D",
                         barSizeSetting="1 min",
                         whatToShow=resolve_what_to_show(product.sec_type),
-                        useRTH=False,
-                        formatDate=1,
+                        useRTH=False, formatDate=1,
                     )
                     await self._writer.upsert_bars(product.symbol, bars)
                     self._store.mark_completed(product.symbol, window)
                     self._connection_ok = True
-
-                    await asyncio.sleep(
-                        self._config.request_interval_seconds,
-                    )
+                    await asyncio.sleep(self._config.request_interval_seconds)
                     success = True
                     break
-
                 except (ConnectionError, OSError, TimeoutError) as exc:
                     self._connection_ok = False
                     connection_lost = True
-                    logger.warning(
-                        "%s window %s (attempt %d/%d): %s",
-                        product.symbol, window, attempt, RETRY_LIMIT, exc,
-                    )
-                    if attempt < RETRY_LIMIT:
-                        if not await self.ensure_connected():
-                            return  # cannot reconnect — give up
-
+                    logger.warning("%s window %s (attempt %d/%d): %s",
+                                   product.symbol, window, attempt, RETRY_LIMIT, exc)
+                    if attempt < RETRY_LIMIT and not await self.ensure_connected():
+                        return
                 except Exception as exc:
-                    logger.warning(
-                        "%s window %s (attempt %d/%d): %s",
-                        product.symbol, window, attempt, RETRY_LIMIT, exc,
-                    )
+                    logger.warning("%s window %s (attempt %d/%d): %s",
+                                   product.symbol, window, attempt, RETRY_LIMIT, exc)
                     if attempt < RETRY_LIMIT:
-                        await asyncio.sleep(
-                            RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
-                        )
+                        await asyncio.sleep(RECONNECT_BASE_DELAY * (2 ** (attempt - 1)))
 
             if not success:
                 if connection_lost:
-                    logger.error(
-                        "%s: connection lost on window %s, giving up on "
-                        "product", product.symbol, window,
-                    )
+                    logger.error("%s: connection lost on %s, giving up",
+                                 product.symbol, window)
                     return
-                logger.error(
-                    "%s: max retries for window %s, skipping",
-                    product.symbol, window,
-                )
+                logger.error("%s: max retries for %s, skipping",
+                             product.symbol, window)
                 self._store.mark_completed(product.symbol, window)
 
-            # Reload checkpoint state for the next iteration
             windows = self._store.load(product.symbol)
 
         if not self._should_stop:
             logger.info("%s: done — all windows completed", product.symbol)
+
+    async def _pull_futf_contfut(self, product: ProductConfig) -> None:
+        """Single-shot CONTFUT pull for futures (IBKR limitation).
+
+        CONTFUT does not support endDateTime, so we pull the maximum
+        available duration (14 days for 1-min bars) from the current
+        time backward.  This gives us as much continuous history as
+        IBKR allows.
+        """
+        from backfiller.contract import resolve_what_to_show
+
+        if not await self.ensure_connected():
+            return
+
+        contract = Contract(
+            secType="CONTFUT", symbol=product.symbol,
+            exchange=product.exchange, currency=product.currency,
+        )
+
+        # Try decreasing durations until one succeeds
+        for dur in ("14 D", "7 D", "5 D", "3 D", "2 D", "1 D"):
+            for attempt in range(1, RETRY_LIMIT + 1):
+                if self._should_stop:
+                    return
+                try:
+                    bars = await self._ib.reqHistoricalDataAsync(
+                        contract, endDateTime="",
+                        durationStr=dur,
+                        barSizeSetting="1 min",
+                        whatToShow=resolve_what_to_show(product.sec_type),
+                        useRTH=False, formatDate=1,
+                    )
+                    inserted = await self._writer.upsert_bars(product.symbol, bars)
+                    logger.info(
+                        "%s (CONTFUT): pulled %d bars (duration=%s, inserted=%d)",
+                        product.symbol, len(bars), dur, inserted,
+                    )
+                    # Mark all windows as complete — we got what IBKR could give
+                    self._store.clear(product.symbol)
+                    return
+                except (ConnectionError, OSError, TimeoutError):
+                    if attempt < RETRY_LIMIT and not await self.ensure_connected():
+                        return
+                except Exception:
+                    if attempt < RETRY_LIMIT:
+                        await asyncio.sleep(5)
+                    continue
+            logger.warning("%s (CONTFUT): duration=%s failed after %d attempts",
+                           product.symbol, dur, RETRY_LIMIT)
+
+        logger.error("%s (CONTFUT): all durations exhausted, could not pull data",
+                     product.symbol)
