@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from backfiller.scheduler import PullScheduler, split_windows
@@ -116,3 +116,97 @@ def test_check_new_products(mock_config, mock_writer, tmp_path):
     new_products = scheduler._check_new_products()
     # The project's config.yaml defines 8 products
     assert len(new_products) == 8
+
+
+@pytest.mark.asyncio
+async def test_compute_windows_no_db_data(mock_config, mock_writer, tmp_path):
+    """DB中没有数据 → 返回全部窗口"""
+    with patch('backfiller.scheduler.IB'):
+        scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
+        # mock_writer.get_range 默认返回 (None, None, 0)，在 fixture 中已设置
+        windows = await scheduler._compute_windows(mock_config.products[0])
+        # 2024-01-01 ~ 2024-01-05 = 3 个窗口 (2+2+1 天)
+        assert len(windows) == 3
+
+
+@pytest.mark.asyncio
+async def test_compute_windows_partial_db_data(mock_config, mock_writer, tmp_path):
+    """DB中已有部分数据 → 只返回未覆盖的窗口"""
+    mock_writer.get_range = AsyncMock(return_value=(
+        datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),  # min
+        datetime(2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc),  # max
+        1440,  # count
+    ))
+    with patch('backfiller.scheduler.IB'):
+        scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
+        windows = await scheduler._compute_windows(mock_config.products[0])
+        # 2024-01-01 ~ 2024-01-02 已有数据，应只剩 2024-01-03 ~ 2024-01-05
+        assert len(windows) == 2
+
+
+@pytest.mark.asyncio
+async def test_pull_product_basic_flow(mock_config, mock_writer, tmp_path):
+    """验证 _pull_product 的正常流程：resolve → request → upsert → mark_completed"""
+    mock_writer.get_range = AsyncMock(return_value=(None, None, 0))
+
+    with (patch('backfiller.scheduler.IB') as MockIB,
+          patch('backfiller.scheduler.resolve_contract') as mock_resolve,
+          patch('backfiller.scheduler.ProgressStore') as MockStore):
+
+        # Mock IB 实例
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.RequestTimeout = 60
+
+        # Mock contract 解析
+        mock_contract = MagicMock()
+        mock_resolve.return_value = mock_contract
+
+        # Mock reqHistoricalData 返回空 list
+        ib_instance.reqHistoricalData.return_value = []
+
+        # Mock store
+        store_instance = MockStore.return_value
+        store_instance.load.return_value = []  # 无 checkpoint，触发 _compute_windows
+
+        # 避免 request_interval_seconds 带来的 25s 等待
+        mock_config.request_interval_seconds = 0
+
+        scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
+        # 跳过 ensure_connected（isConnected 返回 True）
+        scheduler._known_symbols = {p.symbol for p in mock_config.products}
+
+        await scheduler._pull_product(mock_config.products[0])
+
+        # 验证流程：
+        # 1. resolve_contract 被调用
+        mock_resolve.assert_called_once()
+        # 2. reqHistoricalData 被调用（至少一次）
+        assert ib_instance.reqHistoricalData.call_count >= 1
+        # 3. upsert_bars 被调用
+        mock_writer.upsert_bars.assert_called()
+        # 4. store.save 被调用（保存窗口）
+        store_instance.save.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_product_contract_failure(mock_config, mock_writer, tmp_path):
+    """合约解析失败 → 跳过该产品"""
+    mock_writer.get_range = AsyncMock(return_value=(None, None, 0))
+
+    with (patch('backfiller.scheduler.IB') as MockIB,
+          patch('backfiller.scheduler.resolve_contract', return_value=None),
+          patch('backfiller.scheduler.ProgressStore') as MockStore):
+
+        store_instance = MockStore.return_value
+        store_instance.load.return_value = []
+
+        scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
+        await scheduler._pull_product(mock_config.products[0])
+
+        # 合约解析失败，不应调用 reqHistoricalData
+        MockIB.return_value.reqHistoricalData.assert_not_called()
+        # compute_windows 已执行并保存（save 发生在 resolve_contract 之前）
+        store_instance.save.assert_called_once()
+        # 不应标记任何窗口为 completed
+        store_instance.mark_completed.assert_not_called()
