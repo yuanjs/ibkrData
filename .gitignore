@@ -24,3 +24,6 @@ backups/
 # OS
 .DS_Store
 Thumbs.db
+
+# backfiller progress checkpoints
+backfiller/progress/
