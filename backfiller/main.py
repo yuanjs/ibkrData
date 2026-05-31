@@ -15,7 +15,6 @@ import argparse
 import asyncio
 import logging
 import signal
-import sys
 from pathlib import Path
 
 # Python 3.12+ compatibility for ib_insync's eventkit
@@ -42,39 +41,41 @@ PROGRESS_DIR = Path(__file__).parent / "progress"
 
 async def cmd_status(args, cfg):
     pool = await MinuteBarWriter.create_pool(cfg.db_url)
-    writer = MinuteBarWriter(pool)
-    products = cfg.products
-    if args.only:
-        products = [p for p in products if p.symbol in args.only]
+    try:
+        writer = MinuteBarWriter(pool)
+        products = cfg.products
+        if args.only:
+            products = [p for p in products if p.symbol in args.only]
 
-    print(f"\n产品状态总览:\n")
-    for p in products:
-        t_min, t_max, cnt = await writer.get_range(p.symbol)
-        gaps = await writer.detect_gaps(p.symbol)
-        bar_count = f"{cnt:,}"
-        if t_min and t_max:
-            date_range = f"{t_min.date()} ~ {t_max.date()}"
-            status_icon = "✅"
-            status_str = "已完成"
+        print(f"\n产品状态总览:\n")
+        for p in products:
+            t_min, t_max, cnt = await writer.get_range(p.symbol)
+            gaps = await writer.detect_gaps(p.symbol)
+            bar_count = f"{cnt:,}"
+            if t_min and t_max:
+                date_range = f"{t_min.date()} ~ {t_max.date()}"
+                status_icon = "✅"
+                status_str = "已完成"
+                if gaps:
+                    status_icon = "⚠️"
+                    status_str = f"有缺口 ({len(gaps)}处)"
+            else:
+                date_range = "—"
+                bar_count = "0"
+                status_icon = "🔜"
+                status_str = "尚未拉取"
+
+            print(f"  {p.symbol:<10} ({p.sec_type}/{p.exchange}/{p.currency})  "
+                  f"{status_icon} {status_str}")
+            print(f"  {'':>10} {date_range} | {bar_count} bars")
             if gaps:
-                status_icon = "⚠️"
-                status_str = f"有缺口 ({len(gaps)}处)"
-        else:
-            date_range = "—"
-            bar_count = "0"
-            status_icon = "🔜"
-            status_str = "尚未拉取"
-
-        print(f"  {p.symbol:<10} ({p.sec_type}/{p.exchange}/{p.currency})  "
-              f"{status_icon} {status_str}")
-        print(f"  {'':>10} {date_range} | {bar_count} bars")
-        if gaps:
-            for g in gaps[:3]:
-                print(f"  {'':>10}   ⚠ 缺口 {g['gap_start']} ~ {g['gap_end']} ({g['diff_minutes']}min)")
-            if len(gaps) > 3:
-                print(f"  {'':>10}   ... and {len(gaps)-3} more gaps")
-        print()
-    await pool.close()
+                for g in gaps[:3]:
+                    print(f"  {'':>10}   ⚠ 缺口 {g['gap_start']} ~ {g['gap_end']} ({g['diff_minutes']}min)")
+                if len(gaps) > 3:
+                    print(f"  {'':>10}   ... and {len(gaps)-3} more gaps")
+            print()
+    finally:
+        await pool.close()
 
 
 # ---------------------------------------------------------------------------
@@ -95,26 +96,27 @@ async def cmd_check(args, cfg):
         print(f"  ❌ 无法连接 IB Gateway: {e}")
         return
 
-    for p in products:
-        try:
-            contract = resolve_contract(ib, p.symbol, p.sec_type, p.exchange, p.currency)
-            if contract is None:
-                print(f"  {p.symbol:<10} ❌ 合约解析失败")
-                continue
-            what = resolve_what_to_show(p.sec_type)
-            bars = ib.reqHistoricalData(
-                contract, endDateTime="", durationStr="2 D",
-                barSizeSetting="1 min", whatToShow=what,
-                useRTH=False, formatDate=1,
-            )
-            if bars:
-                print(f"  {p.symbol:<10} ✅ {len(bars)}条1分钟K线")
-            else:
-                print(f"  {p.symbol:<10} ⚠️ 合约有效但无历史数据")
-        except Exception as e:
-            print(f"  {p.symbol:<10} ❌ {e}")
-
-    ib.disconnect()
+    try:
+        for p in products:
+            try:
+                contract = resolve_contract(ib, p.symbol, p.sec_type, p.exchange, p.currency)
+                if contract is None:
+                    print(f"  {p.symbol:<10} ❌ 合约解析失败")
+                    continue
+                what = resolve_what_to_show(p.sec_type)
+                bars = ib.reqHistoricalData(
+                    contract, endDateTime="", durationStr="2 D",
+                    barSizeSetting="1 min", whatToShow=what,
+                    useRTH=False, formatDate=1,
+                )
+                if bars:
+                    print(f"  {p.symbol:<10} ✅ {len(bars)}条1分钟K线")
+                else:
+                    print(f"  {p.symbol:<10} ⚠️ 合约有效但无历史数据")
+            except Exception as e:
+                print(f"  {p.symbol:<10} ❌ {e}")
+    finally:
+        ib.disconnect()
     print()
 
 
