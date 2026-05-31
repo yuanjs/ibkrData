@@ -10,7 +10,8 @@ from backfiller.progress_store import ProgressStore
 WindowType = tuple[str, str]
 
 
-def _save_json(path: Path, data: dict) -> None:
+def _write_json(path: Path, data: dict) -> None:
+    """Helper — write a JSON dict directly, bypassing ProgressStore.save()."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data))
 
@@ -159,4 +160,31 @@ def test_load_corrupted_file_returns_empty(caplog: pytest.LogCaptureFixture):
         result = store.load("BROKEN")
     assert result == []
     assert len(caplog.records) >= 1
-    assert "warning" in caplog.text.lower() or "BROKEN" in caplog.text
+    assert "BROKEN" in caplog.text
+
+
+def test_load_partial_corruption_non_list_remaining(caplog: pytest.LogCaptureFixture):
+    """When 'remaining' is not a list, load() returns empty and warns."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_json(Path(tmp) / "BAD.json", {"remaining": "not-a-list"})
+        store = ProgressStore(Path(tmp))
+        result = store.load("BAD")
+    assert result == []
+    assert "not a list" in caplog.text
+
+
+def test_load_skips_malformed_windows(caplog: pytest.LogCaptureFixture):
+    """Elements with wrong type/size are skipped individually."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_json(Path(tmp) / "MIXED.json", {
+            "remaining": [
+                ["2024-01-01", "2024-01-03"],  # valid
+                ["only-one"],                   # malformed (len=1)
+                [1, 2],                         # malformed (not strings)
+                {"a": 1},                       # malformed (not a list)
+            ]
+        })
+        store = ProgressStore(Path(tmp))
+        result = store.load("MIXED")
+    assert result == [("2024-01-01", "2024-01-03")]
+    assert len(caplog.records) == 3

@@ -2,7 +2,9 @@
 
 Each symbol gets its own ``progress/<symbol>.json`` file with the structure::
 
-    {"remaining": [["2024-01-01", "2024-01-03"], ...], "errors": []}
+    {"remaining": [["2024-01-01", "2024-01-03"], ...]}
+
+Concurrent-safe: save() uses a temporary file + atomic rename on POSIX.
 """
 
 import json
@@ -27,9 +29,16 @@ class ProgressStore:
     # ------------------------------------------------------------------
 
     def save(self, symbol: str, windows: list[Window]) -> None:
-        """Overwrite the remaining window list for *symbol*."""
-        data = {"remaining": [list(w) for w in windows], "errors": []}
-        self._path(symbol).write_text(json.dumps(data))
+        """Overwrite the remaining window list for *symbol*.
+
+        Atomic write: data is written to a ``.tmp`` file first, then renamed
+        to the final path (atomic on POSIX when on the same filesystem).
+        """
+        data = {"remaining": [list(w) for w in windows]}
+        path = self._path(symbol)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False))
+        tmp.rename(path)
 
     def load(self, symbol: str) -> list[Window]:
         """Return outstanding windows.  Empty list = fully caught up."""
@@ -39,7 +48,16 @@ class ProgressStore:
         try:
             data = json.loads(path.read_text())
             raw = data.get("remaining", [])
-            return [tuple(r) for r in raw]  # type: ignore[return-value]
+            if not isinstance(raw, list):
+                logger.warning("Corrupted checkpoint %s: 'remaining' is not a list", path)
+                return []
+            result: list[Window] = []
+            for r in raw:
+                if isinstance(r, list) and len(r) == 2 and all(isinstance(v, str) for v in r):
+                    result.append(tuple(r))
+                else:
+                    logger.warning("Skipping malformed window in %s: %s", path, r)
+            return result
         except (json.JSONDecodeError, OSError, TypeError) as exc:
             logger.warning("Corrupted checkpoint %s: %s", path, exc)
             return []
