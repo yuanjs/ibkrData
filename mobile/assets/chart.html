@@ -307,7 +307,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       }
     }
     if (!isLineInterval(currentInterval) && kSeries && currentCandles.length >= 8) {
-      kdjData = calcKDJ(currentCandles);
+      kdjData = calcKDJ(currentCandles.slice(-30));
       if (kdjData.k.length > 0) kSeries.update(kdjData.k[kdjData.k.length - 1]);
       if (kdjData.d.length > 0) dSeries.update(kdjData.d[kdjData.d.length - 1]);
       if (kdjData.j.length > 0) jSeries.update(kdjData.j[kdjData.j.length - 1]);

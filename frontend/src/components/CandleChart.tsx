@@ -867,9 +867,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         ma10SeriesRef.current?.update({ time: updateTime, value: sum10 / 10 })
       }
 
-      // Update KDJ on live tick using full data for continuity
+      // Update KDJ on live tick using last 30 candles for performance
       if (kSeriesRef.current && dSeriesRef.current && jSeriesRef.current) {
-        const kdj = calculateKDJData(currentData)
+        const sliceData = currentData.slice(-30)
+        const kdj = calculateKDJData(sliceData)
         const lastK = kdj.k[kdj.k.length - 1]
         const lastD = kdj.d[kdj.d.length - 1]
         const lastJ = kdj.j[kdj.j.length - 1]

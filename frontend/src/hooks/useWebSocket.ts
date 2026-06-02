@@ -16,27 +16,42 @@ export function useWebSocket(path: string, onMessage: (data: unknown) => void, o
   optionsRef.current = options
 
   useEffect(() => {
+    let active = true
+
     function connect() {
+      if (!active) return
       const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}?token=${TOKEN}`
-      ws.current = new WebSocket(url)
-      ws.current.onopen = () => {
+      const socket = new WebSocket(url)
+      ws.current = socket
+
+      socket.onopen = () => {
+        if (!active) return
         optionsRef.current?.onOpen?.()
       }
-      ws.current.onmessage = (e) => {
+      socket.onmessage = (e) => {
+        if (!active) return
         try { onMessageRef.current(JSON.parse(e.data)) } catch {}
       }
-      ws.current.onclose = () => {
+      socket.onclose = () => {
+        if (!active) return
         optionsRef.current?.onClose?.()
         reconnectTimer.current = setTimeout(connect, 3000)
       }
     }
     connect()
+
     return () => {
+      active = false
       clearTimeout(reconnectTimer.current)
-      ws.current?.close()
+      if (ws.current) {
+        ws.current.onclose = null
+        ws.current.close()
+        ws.current = null
+      }
     }
   }, [path])
 
   const send = (data: unknown) => ws.current?.readyState === WebSocket.OPEN && ws.current.send(JSON.stringify(data))
   return { send }
 }
+

@@ -21,28 +21,42 @@ export function useWebSocket(
   useEffect(() => {
     const token = process.env.EXPO_PUBLIC_API_TOKEN || 'dev-token'
     const base = wsBaseUrl || process.env.EXPO_PUBLIC_WS_URL || 'ws://localhost:8002'
+    let active = true
 
     function connect() {
+      if (!active) return
       const url = `${base}${path}?token=${token}`
-      ws.current = new WebSocket(url)
-      ws.current.onopen = () => {
+      const socket = new WebSocket(url)
+      ws.current = socket
+
+      socket.onopen = () => {
+        if (!active) return
         optionsRef.current?.onOpen?.()
       }
-      ws.current.onmessage = (e) => {
+      socket.onmessage = (e) => {
+        if (!active) return
         try { onMessageRef.current(JSON.parse(e.data)) } catch {}
       }
-      ws.current.onclose = () => {
+      socket.onclose = () => {
+        if (!active) return
         optionsRef.current?.onClose?.()
         reconnectTimer.current = setTimeout(connect, 3000)
       }
     }
     connect()
+
     return () => {
+      active = false
       clearTimeout(reconnectTimer.current)
-      ws.current?.close()
+      if (ws.current) {
+        ws.current.onclose = null
+        ws.current.close()
+        ws.current = null
+      }
     }
   }, [path, wsBaseUrl])
 
   const send = (data: unknown) => ws.current?.readyState === WebSocket.OPEN && ws.current.send(JSON.stringify(data))
   return { send }
 }
+
