@@ -40,6 +40,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 PREDEFINED_SYMBOLS = [
     {"symbol": "SPI", "sec_type": "FUT", "exchange": "SNFE", "currency": "AUD"},
     {"symbol": "USD.JPY", "sec_type": "CASH", "exchange": "IDEALPRO", "currency": "JPY"},
+    {"symbol": "AUD.USD", "sec_type": "CASH", "exchange": "IDEALPRO", "currency": "USD"},
     {"symbol": "MYM", "sec_type": "FUT", "exchange": "CBOT", "currency": "USD"},
     {"symbol": "N225M", "sec_type": "FUT", "exchange": "OSE.JPN", "currency": "JPY"},
     {"symbol": "10Y", "sec_type": "FUT", "exchange": "CBOT", "currency": "USD"},

@@ -31,6 +31,10 @@ products:
     sec_type: CASH
     exchange: IDEALPRO
     currency: JPY
+  - symbol: AUD.USD
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: USD
 
 start: "2024-01-01"
 end: "2026-05-31"
