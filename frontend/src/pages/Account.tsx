@@ -9,15 +9,18 @@ export function Account() {
   const hasPaper = useAccountStore(s => s.hasPaper)
   const summary = useAccountStore(s => activeGateway === 'live' ? s.live.summary : s.paper.summary)
   const positions = useAccountStore(s => activeGateway === 'live' ? s.live.positions : s.paper.positions)
+  const gatewayMap = useAccountStore(s => s.gatewayMap)
   const setGatewayMap = useAccountStore(s => s.setGatewayMap)
   const orders = useOrderStore(s => s.orders) as Array<Record<string, unknown>>
   const [closePending, setClosePending] = useState<{ closeId: string; symbol: string } | null>(null)
   const [closeMsg, setCloseMsg] = useState<string | null>(null)
 
-  // 加载 gateway map (页面首次挂载时)
+  // 加载 gateway map — 仅在 WebSocket 尚未推送时通过 HTTP 获取
   useEffect(() => {
-    api.get('/gateway/map').then(setGatewayMap).catch(() => {})
-  }, [setGatewayMap])
+    if (Object.keys(gatewayMap).length === 0) {
+      api.get('/gateway/map').then(setGatewayMap).catch(() => {})
+    }
+  }, [gatewayMap, setGatewayMap])
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
