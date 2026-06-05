@@ -80,7 +80,8 @@ export function Account() {
       const avg = pos.avg_cost as number | undefined
       if (last != null && last > 0 && qty != null && qty !== 0 && avg != null && avg > 0) {
         const mult = getProductConfig(sym).multiplier ?? 1
-        return { pnl: (last - avg) * qty * mult, isRealtime: true }
+        // avgCost 已包含乘数（期货 per-contract），公式: (last×mult - avg) × qty
+        return { pnl: (last * mult - avg) * qty, isRealtime: true }
       }
       return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
     }
