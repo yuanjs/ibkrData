@@ -3,7 +3,6 @@ import { api } from '../api/client'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
 import { useMarketStore } from '../store/marketStore'
-import { getProductConfig } from '../config/productConfig'
 
 export function Account() {
   const activeGateway = useAccountStore(s => s.activeGateway)
@@ -70,48 +69,34 @@ export function Account() {
 
   function getQuote(sym: string) { return (quotesRef.current as Record<string, any>)?.[sym] }
 
-  /** 计算实时未实现盈亏，返回 {pnl, isRealtime} */
-  function realtimePnl(pos: Record<string, unknown>): { pnl: number | undefined; isRealtime: boolean } {
-    const sym = pos.symbol as string
-    const ref = pnlRefs.current[sym]
-    if (!ref) {
-      const last = getQuote(sym)?.last
-      const qty = pos.quantity as number | undefined
-      const avg = pos.avg_cost as number | undefined
-      if (last != null && last > 0 && qty != null && qty !== 0 && avg != null && avg > 0) {
-        const mult = getProductConfig(sym).multiplier ?? 1
-        // avgCost 已包含乘数（期货 per-contract），公式: (last×mult - avg) × qty
-        return { pnl: (last * mult - avg) * qty, isRealtime: true }
-      }
-      return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
+  /**
+   * 计算市值和 PnL。
+   * 当 IBKR 提供 market_value/unrealized_pnl 时（实盘），直接用 refRatio 推算；
+   * 当 IBKR 无数据时（模拟），直接用 tick 价格显示不经过 multiplier 的简单估值。
+   */
+  function calcMv(pos: Record<string, unknown>): { mv: number | undefined; src: 'ref' | 'est' | 'raw' } {
+    const ref = pnlRefs.current[pos.symbol as string]
+    if (ref) {
+      const p = getQuote(pos.symbol as string)?.last
+      if (p && p > 0 && ref.refPrice > 0)
+        return { mv: ref.refMarketValue * (p / ref.refPrice), src: 'ref' }
+      return { mv: undefined, src: 'raw' }
     }
-    const currentPrice = getQuote(sym)?.last
-    if (!currentPrice || !ref.refPrice || ref.refPrice <= 0 || !ref.refMarketValue) {
-      return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
-    }
-    const ratio = currentPrice / ref.refPrice
-    const estMv = ref.refMarketValue * ratio
-    const estPnl = ref.refPnl + (estMv - ref.refMarketValue)
-    return { pnl: estPnl, isRealtime: true }
+    // IBKR 无数据时不估算（避免乘数歧义），直接透传 null
+    return { mv: pos.market_value as number | undefined, src: 'raw' }
   }
 
-  function realtimeMarketValue(pos: Record<string, unknown>): { mv: number | undefined; isRealtime: boolean } {
-    const sym = pos.symbol as string
-    const ref = pnlRefs.current[sym]
-    if (!ref) {
-      const last = getQuote(sym)?.last
-      const qty = pos.quantity as number | undefined
-      if (last != null && last > 0 && qty != null && qty !== 0) {
-        const mult = getProductConfig(sym).multiplier ?? 1
-        return { mv: last * qty * mult, isRealtime: true }
+  function calcPnl(pos: Record<string, unknown>): { pnl: number | undefined; src: 'ref' | 'est' | 'raw' } {
+    const ref = pnlRefs.current[pos.symbol as string]
+    if (ref) {
+      const p = getQuote(pos.symbol as string)?.last
+      if (p && p > 0 && ref.refPrice > 0 && ref.refMarketValue) {
+        const ratio = p / ref.refPrice
+        return { pnl: ref.refPnl + (ref.refMarketValue * ratio - ref.refMarketValue), src: 'ref' }
       }
-      return { mv: pos.market_value as number | undefined, isRealtime: false }
+      return { pnl: undefined, src: 'raw' }
     }
-    const currentPrice = getQuote(sym)?.last
-    if (!currentPrice || !ref.refPrice || ref.refPrice <= 0) {
-      return { mv: pos.market_value as number | undefined, isRealtime: false }
-    }
-    return { mv: ref.refMarketValue * (currentPrice / ref.refPrice), isRealtime: true }
+    return { pnl: pos.unrealized_pnl as number | undefined, src: 'raw' }
   }
 
   const RealtimeBadge = () => (
@@ -235,12 +220,12 @@ export function Account() {
                     })()}
                   </td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
-                    {fmt(realtimeMarketValue(p).mv)}
-                    {realtimeMarketValue(p).isRealtime && <RealtimeBadge />}
+                    {(() => { const r = calcMv(p); return r.mv != null ? fmt(r.mv) : '-'; })()}
+                    {calcMv(p).src === 'ref' && <RealtimeBadge />}
                   </td>
-                  <td className="py-2 px-3 text-right font-mono" style={{ color: pnlColor(realtimePnl(p).pnl) }}>
-                    {fmt(realtimePnl(p).pnl)}
-                    {realtimePnl(p).isRealtime && <RealtimeBadge />}
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: pnlColor(calcPnl(p).pnl) }}>
+                    {(() => { const r = calcPnl(p); return r.pnl != null ? fmt(r.pnl) : '-'; })()}
+                    {calcPnl(p).src === 'ref' && <RealtimeBadge />}
                   </td>
                   <td className="py-2 px-3 text-center">
                     <button
