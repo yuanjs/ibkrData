@@ -48,21 +48,22 @@ export default function Account() {
     }
   }, [gatewayMap, setGatewayMap])
 
-  // REST fallback on page load
+  // REST fallback on page load（store 在 gatewayMap 未到时自动放 live 显示）
   useEffect(() => {
-    if (Object.keys(gatewayMap).length === 0) return
     const stored = useAccountStore.getState()
-    const has = (stored.live.summary && Object.keys(stored.live.summary).length) ||
-                (stored.paper.summary && Object.keys(stored.paper.summary).length)
-    if (has) return
-    api.get<Record<string, unknown>[]>('/account').then(accounts => {
-      api.get<Record<string, unknown>[]>('/positions').then(positions => {
-        if (Array.isArray(accounts) && accounts.length) {
-          useAccountStore.getState().setAccount({ accounts, positions: Array.isArray(positions) ? positions : [] })
-        }
-      }).catch(() => {})
+    if (Object.keys(stored.live.summary).length > 0) return
+    Promise.all([
+      api.get<Record<string, unknown>[]>('/account'),
+      api.get<Record<string, unknown>[]>('/positions'),
+    ]).then(([accounts, positions]) => {
+      if (Array.isArray(accounts) && accounts.length) {
+        useAccountStore.getState().setAccount({
+          accounts,
+          positions: Array.isArray(positions) ? positions : [],
+        })
+      }
     }).catch(() => {})
-  }, [gatewayMap])
+  }, [])
 
   // Real-time PnL
   const quotes = useMarketStore(s => s.quotes)

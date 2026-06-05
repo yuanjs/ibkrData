@@ -25,12 +25,19 @@ export const useAccountStore = create<AccountStore>((set) => ({
 
   setAccount: (data) => set(state => {
     const { accounts, positions } = data
-    const result: Record<string, unknown> = {}
+    const gwMap = state.gatewayMap
 
-    const liveAccs = accounts.filter(a => state.gatewayMap[a.account_id as string] === 'live')
-    const paperAccs = accounts.filter(a => state.gatewayMap[a.account_id as string] === 'paper')
-    const livePos = positions.filter(p => state.gatewayMap[p.account_id as string] === 'live')
-    const paperPos = positions.filter(p => state.gatewayMap[p.account_id as string] === 'paper')
+    if (Object.keys(gwMap).length === 0) {
+      return {
+        live: { summary: (accounts[0] as Record<string, unknown>) ?? {}, positions },
+      }
+    }
+
+    const result: Record<string, unknown> = {}
+    const liveAccs = accounts.filter(a => gwMap[a.account_id as string] === 'live')
+    const paperAccs = accounts.filter(a => gwMap[a.account_id as string] === 'paper')
+    const livePos = positions.filter(p => gwMap[p.account_id as string] === 'live')
+    const paperPos = positions.filter(p => gwMap[p.account_id as string] === 'paper')
 
     if (liveAccs.length) result.live = { summary: liveAccs[0], positions: state.live.positions }
     if (paperAccs.length) result.paper = { summary: paperAccs[0], positions: state.paper.positions }
