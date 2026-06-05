@@ -18,6 +18,17 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 _OPEN_STATUSES = ("Filled", "Cancelled", "Inactive")
 
 
+async def _gateway_account_ids(gateway: str) -> list[str]:
+    """从 Redis 获取指定 gateway 的 account_id 列表。"""
+    r = aioredis.from_url(REDIS_URL)
+    raw = await r.get("gateway:account_map")
+    await r.aclose()
+    if raw:
+        mapping = json.loads(raw)
+        return mapping.get(gateway, [])
+    return []
+
+
 async def _resolve_gateway(account_id: str) -> str:
     """根据 account_id 查找对应的 gateway 名称。"""
     r = aioredis.from_url(REDIS_URL)
@@ -36,12 +47,12 @@ class ClosePositionRequest(BaseModel):
 
 
 @router.get("/orders")
-async def get_orders(status: str = "all", start: Optional[datetime] = None, end: Optional[datetime] = None):
+async def get_orders(status: str = "all", start: Optional[datetime] = None,
+                     end: Optional[datetime] = None, gateway: Optional[str] = None):
     pool = await get_pool()
     where = []
     args = []
     if status == "open":
-        # Use parameterized ANY to avoid f-string SQL
         args.append(list(_OPEN_STATUSES))
         where.append(f"status != ALL(${len(args)})")
     if start:
@@ -50,13 +61,19 @@ async def get_orders(status: str = "all", start: Optional[datetime] = None, end:
     if end:
         args.append(end)
         where.append(f"updated_at <= ${len(args)}")
+    if gateway:
+        ids = await _gateway_account_ids(gateway)
+        if ids:
+            args.append(ids)
+            where.append(f"account_id = ANY(${len(args)})")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
     rows = await pool.fetch(f"SELECT * FROM orders {clause} ORDER BY updated_at DESC LIMIT 500", *args)
     return [dict(r) for r in rows]
 
 
 @router.get("/trades")
-async def get_trades(start: Optional[datetime] = None, end: Optional[datetime] = None, symbol: Optional[str] = None):
+async def get_trades(start: Optional[datetime] = None, end: Optional[datetime] = None,
+                     symbol: Optional[str] = None, gateway: Optional[str] = None):
     pool = await get_pool()
     where, args = [], []
     if start:
@@ -68,14 +85,20 @@ async def get_trades(start: Optional[datetime] = None, end: Optional[datetime] =
     if symbol:
         args.append(symbol)
         where.append(f"symbol = ${len(args)}")
+    if gateway:
+        ids = await _gateway_account_ids(gateway)
+        if ids:
+            args.append(ids)
+            where.append(f"account_id = ANY(${len(args)})")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
     rows = await pool.fetch(f"SELECT * FROM executions {clause} ORDER BY time DESC LIMIT 1000", *args)
     return [dict(r) for r in rows]
 
 
 @router.get("/trades/export")
-async def export_trades(start: Optional[datetime] = None, end: Optional[datetime] = None, symbol: Optional[str] = None):
-    rows = await get_trades(start, end, symbol)
+async def export_trades(start: Optional[datetime] = None, end: Optional[datetime] = None,
+                        symbol: Optional[str] = None, gateway: Optional[str] = None):
+    rows = await get_trades(start, end, symbol, gateway)
     buf = io.StringIO()
     if rows:
         w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
@@ -87,12 +110,22 @@ async def export_trades(start: Optional[datetime] = None, end: Optional[datetime
 
 
 @router.get("/pnl")
-async def get_pnl():
+async def get_pnl(gateway: Optional[str] = None):
     pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT symbol, sum(quantity * price * CASE WHEN side='BOT' THEN -1 ELSE 1 END) AS realized_pnl, "
-        "count(*) AS trade_count FROM executions GROUP BY symbol ORDER BY realized_pnl"
-    )
+    query = """
+        SELECT symbol,
+               sum(quantity * price * CASE WHEN side='BOT' THEN -1 ELSE 1 END) AS realized_pnl,
+               count(*) AS trade_count
+        FROM executions
+    """
+    args = []
+    if gateway:
+        ids = await _gateway_account_ids(gateway)
+        if ids:
+            args.append(ids)
+            query += " WHERE account_id = ANY($1)"
+    query += " GROUP BY symbol ORDER BY realized_pnl"
+    rows = await pool.fetch(query, *args)
     return [dict(r) for r in rows]
 
 
