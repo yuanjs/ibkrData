@@ -324,6 +324,14 @@ async def init_paper(pool, redis_client, writer, pub):
         logger.info(f"Paper gateway connecting to {PAPER_IB_HOST}:{PAPER_IB_PORT}...")
         await paper_client.connect_with_retry()
 
+        # 同步历史成交（连接前已完成但未入库的记录）
+        try:
+            fills = await paper_client.ib.reqExecutionsAsync()
+            await writer.sync_executions(fills)
+            logger.info(f"Synced {len(fills)} historical executions for paper account")
+        except Exception as e:
+            logger.warning(f"Failed to sync paper execution history: {e}")
+
         def on_paper_order(trade):
             t = asyncio.ensure_future(writer.upsert_order(trade))
             t.add_done_callback(_on_task_done)

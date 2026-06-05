@@ -160,6 +160,33 @@ class DataWriter:
         except Exception as e:
             logger.error(f"write_execution error: {e}")
 
+    async def sync_executions(self, fills: list):
+        """批量写入历史成交记录（来自 reqExecutionsAsync）。"""
+        if not fills:
+            return
+        try:
+            async with self.pool.acquire() as conn:
+                for fill in fills:
+                    e = fill.execution
+                    await conn.execute(
+                        "INSERT INTO executions(time,exec_id,order_id,account_id,symbol,side,"
+                        "quantity,price,commission) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) "
+                        "ON CONFLICT(exec_id) DO NOTHING",
+                        e.time if hasattr(e, 'time') else datetime.now(timezone.utc),
+                        e.execId,
+                        e.orderId,
+                        e.acctNumber,
+                        fill.contract.symbol,
+                        e.side,
+                        float(e.shares),
+                        float(e.price),
+                        float(fill.commissionReport.commission)
+                        if fill.commissionReport
+                        else None,
+                    )
+        except Exception as e:
+            logger.error(f"sync_executions error: {e}")
+
     async def upsert_daily_bars(self, bars: list[dict], update_open: bool = True):
         if not bars:
             return
