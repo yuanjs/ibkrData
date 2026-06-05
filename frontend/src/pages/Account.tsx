@@ -72,8 +72,9 @@ export function Account() {
 
   /**
    * 计算市值和 PnL。
-   * 当 IBKR 提供 market_value/unrealized_pnl 时（实盘），直接用 refRatio 推算；
-   * 当 IBKR 无数据时（模拟），直接用 tick 价格显示不经过 multiplier 的简单估值。
+   * ref — 有 IBKR 快照时用 ratio 实时推算
+   * est — 无 IBKR 数据时，用 IBKR 提供的 multiplier + tick 价格
+   * raw — 无任何数据，透传 IBKR 原始值（可能 null）
    */
   function calcMv(pos: Record<string, unknown>): { mv: number | undefined; src: 'ref' | 'est' | 'raw' } {
     const ref = pnlRefs.current[pos.symbol as string]
@@ -83,7 +84,12 @@ export function Account() {
         return { mv: ref.refMarketValue * (p / ref.refPrice), src: 'ref' }
       return { mv: undefined, src: 'raw' }
     }
-    // IBKR 无数据时不估算（避免乘数歧义），直接透传 null
+    // 用 IBKR 提供的 multiplier 估值
+    const last = getQuote(pos.symbol as string)?.last
+    const qty = pos.quantity as number | undefined
+    if (last != null && last > 0 && qty != null && qty !== 0) {
+      return { mv: last * qty * getMult(pos), src: 'est' }
+    }
     return { mv: pos.market_value as number | undefined, src: 'raw' }
   }
 
@@ -97,15 +103,30 @@ export function Account() {
       }
       return { pnl: undefined, src: 'raw' }
     }
+    // 用 IBKR 提供的 multiplier + tick 价格
+    const last = getQuote(pos.symbol as string)?.last
+    const qty = pos.quantity as number | undefined
+    const avg = pos.avg_cost as number | undefined
+    if (last != null && last > 0 && qty != null && qty !== 0 && avg != null && avg > 0) {
+      const mult = getMult(pos)
+      // avgCost 已含乘数: PnL = qty × (last × mult - avg)
+      return { pnl: (last * mult - avg) * qty, src: 'est' }
+    }
     return { pnl: pos.unrealized_pnl as number | undefined, src: 'raw' }
+  }
+
+  /** 取合约乘数：优先用 IBKR 实时数据，回退到 productConfig */
+  function getMult(pos: Record<string, unknown>): number {
+    const fromPos = pos.multiplier as number | undefined
+    if (fromPos != null && fromPos > 0) return fromPos
+    return getProductConfig(pos.symbol as string).multiplier ?? 1
   }
 
   /** 开仓价：avgCost ÷ multiplier（还原为产品报价，如指数点数） */
   function entryPrice(pos: Record<string, unknown>): string {
     const avg = pos.avg_cost as number | undefined
     if (avg == null) return '-'
-    const mult = getProductConfig(pos.symbol as string).multiplier ?? 1
-    return fmtPrice(avg / mult)
+    return fmtPrice(avg / getMult(pos))
   }
 
   const RealtimeBadge = () => (
@@ -230,11 +251,11 @@ export function Account() {
                   </td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
                     {(() => { const r = calcMv(p); return r.mv != null ? fmt(r.mv) : '-'; })()}
-                    {calcMv(p).src === 'ref' && <RealtimeBadge />}
+                    {calcMv(p).src !== 'raw' && <RealtimeBadge />}
                   </td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: pnlColor(calcPnl(p).pnl) }}>
                     {(() => { const r = calcPnl(p); return r.pnl != null ? fmt(r.pnl) : '-'; })()}
-                    {calcPnl(p).src === 'ref' && <RealtimeBadge />}
+                    {calcPnl(p).src !== 'raw' && <RealtimeBadge />}
                   </td>
                   <td className="py-2 px-3 text-center">
                     <button

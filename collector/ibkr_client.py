@@ -454,6 +454,9 @@ class IBKRClient:
                 "realized_pnl": float(p.realizedPNL)
                 if hasattr(p, "realizedPNL")
                 else None,
+                "multiplier": float(p.contract.multiplier)
+                if p.contract.multiplier and p.contract.multiplier.strip()
+                else None,
             }
             for p in self.ib.positions()
         ]
