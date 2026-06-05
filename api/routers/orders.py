@@ -4,13 +4,22 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from db import get_pool
 from auth import require_auth
+from pydantic import BaseModel
+from uuid import uuid4
 import io
 import csv
+import json
+import redis.asyncio as aioredis
+from config import REDIS_URL
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
 # Allowed status filter values
 _OPEN_STATUSES = ("Filled", "Cancelled", "Inactive")
+
+
+class ClosePositionRequest(BaseModel):
+    symbol: str
 
 
 @router.get("/orders")
@@ -72,3 +81,53 @@ async def get_pnl():
         "count(*) AS trade_count FROM executions GROUP BY symbol ORDER BY realized_pnl"
     )
     return [dict(r) for r in rows]
+
+
+@router.post("/positions/close")
+async def close_position(req: ClosePositionRequest):
+    pool = await get_pool()
+    close_id = str(uuid4())
+
+    # 查最新持仓
+    row = await pool.fetchrow(
+        "SELECT DISTINCT ON (symbol) * FROM positions "
+        "WHERE symbol = $1 ORDER BY symbol, time DESC",
+        req.symbol
+    )
+    if not row or row["quantity"] == 0:
+        from fastapi import HTTPException
+        raise HTTPException(400, f"{req.symbol} 无持仓")
+
+    # 自动计算平仓方向
+    side = "SELL" if row["quantity"] > 0 else "BUY"
+    qty = abs(row["quantity"])
+
+    # 从 subscriptions 表获取品种参数
+    sub = await pool.fetchrow(
+        "SELECT sec_type, exchange, currency FROM subscriptions WHERE symbol = $1",
+        req.symbol
+    )
+    sec_type = sub["sec_type"] if sub else row.get("sec_type", "STK")
+    exchange = sub["exchange"] if sub else "SMART"
+    currency = sub["currency"] if sub else "USD"
+
+    # 发往 Redis
+    r = aioredis.from_url(REDIS_URL)
+    await r.publish("order:command", json.dumps({
+        "close_id": close_id,
+        "symbol": req.symbol,
+        "side": side,
+        "quantity": qty,
+        "sec_type": sec_type,
+        "exchange": exchange,
+        "currency": currency,
+    }))
+    await r.aclose()
+
+    return {
+        "close_id": close_id,
+        "symbol": req.symbol,
+        "side": side,
+        "quantity": qty,
+        "message": "平仓指令已发送",
+    }

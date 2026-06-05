@@ -8,7 +8,7 @@ from config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS, PRODUCT_ROLL
 from daily_tracker import _bucket_time
 from daily_tracker import _effective_date_str as _get_effective_date_str
 from daily_tracker import _parse_trading_days_str
-from ib_insync import IB, Contract, Stock, Ticker
+from ib_insync import IB, Contract, Stock, Ticker, MarketOrder
 from notifier import BarkNotifier
 
 
@@ -462,6 +462,28 @@ class IBKRClient:
         self.ib.openOrderEvent += on_order
         self.ib.orderStatusEvent += on_order
         self.ib.execDetailsEvent += on_exec
+
+    def cancel_orders_for_symbol(self, symbol: str) -> list[int]:
+        """取消某个品种所有未完成订单，返回取消的 order_id 列表。"""
+        cancelled = []
+        for trade in self.ib.openOrders():
+            if trade.contract.symbol == symbol and \
+               trade.orderStatus.status not in ('Filled', 'Cancelled', 'Inactive'):
+                self.ib.cancelOrder(trade.order.orderId)
+                cancelled.append(trade.order.orderId)
+        return cancelled
+
+    def place_market_order(self, symbol: str, side: str, quantity: float,
+                           sec_type: str, exchange: str, currency: str) -> tuple[int, str]:
+        """下市价单，返回 (orderId, status)。"""
+        contract = Contract()
+        contract.symbol = symbol
+        contract.secType = sec_type
+        contract.exchange = exchange
+        contract.currency = currency
+        order = MarketOrder(side, quantity)
+        trade = self.ib.placeOrder(contract, order)
+        return trade.order.orderId, trade.orderStatus.status
 
     @property
     def is_connected(self) -> bool:

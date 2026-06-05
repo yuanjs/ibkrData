@@ -149,6 +149,45 @@ async def settings_listener(redis_client):
         raise
 
 
+async def order_command_listener(client, pub):
+    """监听 Redis order:command 通道，执行平仓指令。"""
+    redis = aioredis.from_url(REDIS_URL)
+    pubsub = redis.pubsub()
+    await pubsub.subscribe("order:command")
+    logger.info("Order command listener started, subscribed to order:command")
+
+    async for msg in pubsub.listen():
+        if msg["type"] != "message":
+            continue
+        try:
+            data = json.loads(msg["data"])
+            symbol = data["symbol"]
+            close_id = data["close_id"]
+            logger.info(f"Close position command received: {symbol} (close_id={close_id})")
+
+            # 1. 取消该品种所有待成交订单
+            cancelled_ids = client.cancel_orders_for_symbol(symbol)
+
+            # 2. 下市价平仓单
+            order_id, status = client.place_market_order(
+                symbol, data["side"], data["quantity"],
+                data["sec_type"], data["exchange"], data["currency"],
+            )
+
+            # 3. 发布带 close_id 的订单状态（供前端匹配回执）
+            await pub.publish_order({
+                "close_id": close_id,
+                "order_id": order_id,
+                "symbol": symbol,
+                "side": data["side"],
+                "quantity": data["quantity"],
+                "status": status,
+                "cancelled_orders": cancelled_ids,
+            })
+        except Exception as e:
+            logger.error(f"order_command_listener error: {e}")
+
+
 async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=None):
     """Backfill daily bars for all active subscriptions on startup."""
     try:
@@ -330,6 +369,10 @@ async def main():
         ),
         asyncio.create_task(
             trading_days_refresh_loop(client, daily_tracker), name="trading_days_refresh"
+        ),
+        asyncio.create_task(
+            order_command_listener(client, pub),
+            name="order_command_listener",
         ),
     ]
 
