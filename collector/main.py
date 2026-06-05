@@ -54,7 +54,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Mapping of order_id -> close_id for correlating close order status updates
-_close_id_map: dict[int, str] = {}
+_close_id_maps: dict[str, dict[int, str]] = {
+    "live": {},
+    "paper": {},
+}
+_paper_tasks: set[asyncio.Task] = set()
 
 
 async def _update_gateway_map(redis, gateway: str, accounts: list[dict]):
@@ -171,44 +175,59 @@ async def settings_listener(redis_client):
 
 async def order_command_listener(client, pub, channel="order:command:live"):
     """监听 Redis order 通道，执行平仓指令。"""
+    gateway = "paper" if "paper" in channel else "live"
+    close_map = _close_id_maps[gateway]
+
     redis = aioredis.from_url(REDIS_URL)
     pubsub = redis.pubsub()
-    await pubsub.subscribe(channel)
+
+    # 同时监听旧通道(向后兼容)和新通道
+    if channel == "order:command:live":
+        await pubsub.subscribe("order:command", "order:command:live")
+    else:
+        await pubsub.subscribe(channel)
+
     logger.info(f"Order command listener started, subscribed to {channel}")
+    try:
+        async for msg in pubsub.listen():
+            if msg["type"] != "message":
+                continue
+            try:
+                data = json.loads(msg["data"])
+                symbol = data["symbol"]
+                close_id = data["close_id"]
+                logger.info(f"Close position command received: {symbol} (close_id={close_id})")
 
-    async for msg in pubsub.listen():
-        if msg["type"] != "message":
-            continue
-        try:
-            data = json.loads(msg["data"])
-            symbol = data["symbol"]
-            close_id = data["close_id"]
-            logger.info(f"Close position command received: {symbol} (close_id={close_id})")
+                # 1. 取消该品种所有待成交订单
+                cancelled_ids = client.cancel_orders_for_symbol(symbol)
 
-            # 1. 取消该品种所有待成交订单
-            cancelled_ids = client.cancel_orders_for_symbol(symbol)
+                # 2. 下市价平仓单
+                order_id, status = client.place_market_order(
+                    symbol, data["side"], data["quantity"],
+                    data["sec_type"], data["exchange"], data["currency"],
+                )
 
-            # 2. 下市价平仓单
-            order_id, status = client.place_market_order(
-                symbol, data["side"], data["quantity"],
-                data["sec_type"], data["exchange"], data["currency"],
-            )
+                # Track close_id for subsequent on_order callbacks
+                close_map[order_id] = close_id
 
-            # Track close_id for subsequent on_order callbacks
-            _close_id_map[order_id] = close_id
-
-            # 3. 发布带 close_id 的订单状态（供前端匹配回执）
-            await pub.publish_order({
-                "close_id": close_id,
-                "order_id": order_id,
-                "symbol": symbol,
-                "side": data["side"],
-                "quantity": data["quantity"],
-                "status": status,
-                "cancelled_orders": cancelled_ids,
-            })
-        except Exception as e:
-            logger.error(f"order_command_listener ({channel}) error: {e}")
+                # 3. 发布带 close_id 的订单状态（供前端匹配回执）
+                await pub.publish_order({
+                    "close_id": close_id,
+                    "order_id": order_id,
+                    "symbol": symbol,
+                    "side": data["side"],
+                    "quantity": data["quantity"],
+                    "status": status,
+                    "cancelled_orders": cancelled_ids,
+                })
+            except Exception as e:
+                logger.error(f"order_command_listener ({channel}) error: {e}")
+    except asyncio.CancelledError:
+        logger.info(f"Order command listener ({channel}) cancelled, cleaning up...")
+        raise
+    finally:
+        await pubsub.unsubscribe(channel)
+        await redis.aclose()
 
 
 async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=None):
@@ -308,7 +327,14 @@ async def init_paper(pool, redis_client, writer, pub):
         def on_paper_order(trade):
             t = asyncio.ensure_future(writer.upsert_order(trade))
             t.add_done_callback(_on_task_done)
-            payload = {"order_id": trade.order.orderId, "status": trade.orderStatus.status}
+            payload: dict = {"order_id": trade.order.orderId, "status": trade.orderStatus.status}
+            # Attach close_id if this order was initiated by a close command
+            oid = trade.order.orderId
+            paper_map = _close_id_maps["paper"]
+            if oid in paper_map:
+                payload["close_id"] = paper_map[oid]
+                if trade.orderStatus.status in ("Filled", "Cancelled", "Inactive"):
+                    del paper_map[oid]
             t2 = asyncio.ensure_future(pub.publish_order(payload))
             t2.add_done_callback(_on_task_done)
 
@@ -322,15 +348,19 @@ async def init_paper(pool, redis_client, writer, pub):
 
         paper_client.register_order_handlers(on_paper_order, on_paper_exec)
 
-        asyncio.create_task(
+        task1 = asyncio.create_task(
             account_loop(paper_client, writer, pub, ACCOUNT_REFRESH_INTERVAL,
                          gateway="paper", redis=redis_client),
             name="paper_account_loop",
         )
-        asyncio.create_task(
+        _paper_tasks.add(task1)
+        task1.add_done_callback(_paper_tasks.discard)
+        task2 = asyncio.create_task(
             order_command_listener(paper_client, pub, channel="order:command:paper"),
             name="paper_order_listener",
         )
+        _paper_tasks.add(task2)
+        task2.add_done_callback(_paper_tasks.discard)
         logger.info("Paper gateway initialized successfully")
     except Exception as e:
         logger.error(f"Paper gateway init failed (will retry): {e}")
@@ -382,11 +412,11 @@ async def main():
         payload: dict = {"order_id": trade.order.orderId, "status": trade.orderStatus.status}
         # Attach close_id if this order was initiated by a close command
         oid = trade.order.orderId
-        if oid in _close_id_map:
-            payload["close_id"] = _close_id_map[oid]
+        if oid in _close_id_maps["live"]:
+            payload["close_id"] = _close_id_maps["live"][oid]
             # Clean up map when order reaches terminal state
             if trade.orderStatus.status in ("Filled", "Cancelled", "Inactive"):
-                del _close_id_map[oid]
+                del _close_id_maps["live"][oid]
         t2 = asyncio.ensure_future(pub.publish_order(payload))
         t2.add_done_callback(_on_task_done)
 
@@ -446,14 +476,20 @@ async def main():
 
     # Paper Gateway 后台初始化（不阻塞 Live）
     if HAS_PAPER:
-        asyncio.create_task(
+        paper_task = asyncio.create_task(
             init_paper(pool, redis_client, writer, pub),
             name="init_paper",
         )
+        _paper_tasks.add(paper_task)
+        paper_task.add_done_callback(_paper_tasks.discard)
 
     # Wait for shutdown signal
     await shutdown_event.wait()
     logger.info("Shutting down gracefully...")
+
+    # Cancel paper tasks
+    for task in list(_paper_tasks):
+        task.cancel()
 
     # Cancel all tasks
     for task in tasks:
