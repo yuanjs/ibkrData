@@ -18,6 +18,19 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 _OPEN_STATUSES = ("Filled", "Cancelled", "Inactive")
 
 
+async def _resolve_gateway(account_id: str) -> str:
+    """根据 account_id 查找对应的 gateway 名称。"""
+    r = aioredis.from_url(REDIS_URL)
+    raw = await r.get("gateway:account_map")
+    await r.aclose()
+    if raw:
+        mapping = json.loads(raw)
+        for gw, ids in mapping.items():
+            if account_id in ids:
+                return gw
+    return "live"  # fallback
+
+
 class ClosePositionRequest(BaseModel):
     symbol: str
 
@@ -111,9 +124,12 @@ async def close_position(req: ClosePositionRequest):
     exchange = sub["exchange"] if sub else "SMART"
     currency = sub["currency"] if sub else "USD"
 
-    # 发往 Redis
+    # 根据 account_id 路由到正确的 gateway
+    gateway = await _resolve_gateway(row["account_id"])
+    channel = f"order:command:{gateway}"
+
     r = aioredis.from_url(REDIS_URL)
-    await r.publish("order:command", json.dumps({
+    await r.publish(channel, json.dumps({
         "close_id": close_id,
         "symbol": req.symbol,
         "side": side,

@@ -3,16 +3,36 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from db import get_pool
 from auth import require_auth
+import json
+import redis.asyncio as aioredis
+from config import REDIS_URL
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
 
+async def _gateway_account_ids(gateway: str) -> list[str]:
+    """从 Redis 获取指定 gateway 的 account_id 列表。"""
+    r = aioredis.from_url(REDIS_URL)
+    raw = await r.get("gateway:account_map")
+    await r.aclose()
+    if raw:
+        mapping = json.loads(raw)
+        return mapping.get(gateway, [])
+    return []
+
+
 @router.get("/account")
-async def get_account():
+async def get_account(gateway: str | None = None):
     pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT DISTINCT ON (account_id) * FROM account_snapshots ORDER BY account_id, time DESC"
-    )
+    query = "SELECT DISTINCT ON (account_id) * FROM account_snapshots"
+    args = []
+    if gateway:
+        ids = await _gateway_account_ids(gateway)
+        if ids:
+            args.append(ids)
+            query += " WHERE account_id = ANY($1)"
+    query += " ORDER BY account_id, time DESC"
+    rows = await pool.fetch(query, *args)
     return [dict(r) for r in rows]
 
 
@@ -28,9 +48,15 @@ async def get_account_history(start: datetime, end: datetime):
 
 
 @router.get("/positions")
-async def get_positions():
+async def get_positions(gateway: str | None = None):
     pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT DISTINCT ON (account_id, symbol) * FROM positions ORDER BY account_id, symbol, time DESC"
-    )
+    query = "SELECT DISTINCT ON (account_id, symbol) * FROM positions"
+    args = []
+    if gateway:
+        ids = await _gateway_account_ids(gateway)
+        if ids:
+            args.append(ids)
+            query += " WHERE account_id = ANY($1)"
+    query += " ORDER BY account_id, symbol, time DESC"
+    rows = await pool.fetch(query, *args)
     return [dict(r) for r in rows]
