@@ -103,6 +103,7 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     rollMinute: 0,
     multiplier: 5,
   },
+};
 
 function normalizeSymbol(s: string): string {
   if (s === 'SPI' || s === 'AP') return 'ASX200'
