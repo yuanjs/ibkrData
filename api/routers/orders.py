@@ -44,6 +44,7 @@ async def _resolve_gateway(account_id: str) -> str:
 
 class ClosePositionRequest(BaseModel):
     symbol: str
+    gateway: str = "live"
 
 
 @router.get("/orders")
@@ -134,11 +135,17 @@ async def close_position(req: ClosePositionRequest):
     pool = await get_pool()
     close_id = str(uuid4())
 
-    # 查最新持仓
+    # 按 gateway 过滤对应 account_ids，确保只查该 gateway 下的持仓
+    ids = await _gateway_account_ids(req.gateway)
+    if not ids:
+        from fastapi import HTTPException
+        raise HTTPException(400, f"{req.gateway} 网关未就绪，无法查询持仓")
+
     row = await pool.fetchrow(
         "SELECT DISTINCT ON (symbol) * FROM positions "
-        "WHERE symbol = $1 ORDER BY symbol, time DESC",
-        req.symbol
+        "WHERE symbol = $1 AND account_id = ANY($2) "
+        "ORDER BY symbol, time DESC",
+        req.symbol, ids
     )
     if not row or row["quantity"] == 0:
         from fastapi import HTTPException
@@ -146,7 +153,7 @@ async def close_position(req: ClosePositionRequest):
 
     # 自动计算平仓方向
     side = "SELL" if row["quantity"] > 0 else "BUY"
-    qty = abs(row["quantity"])
+    qty = int(abs(row["quantity"]))
 
     # 从 subscriptions 表获取品种参数
     sub = await pool.fetchrow(
@@ -157,9 +164,8 @@ async def close_position(req: ClosePositionRequest):
     exchange = sub["exchange"] if sub else "SMART"
     currency = sub["currency"] if sub else "USD"
 
-    # 根据 account_id 路由到正确的 gateway
-    gateway = await _resolve_gateway(row["account_id"])
-    channel = f"order:command:{gateway}"
+    # 使用请求中明确的 gateway 路由，不依赖 account_id 推测
+    channel = f"order:command:{req.gateway}"
 
     r = aioredis.from_url(REDIS_URL)
     await r.publish(channel, json.dumps({
@@ -170,6 +176,7 @@ async def close_position(req: ClosePositionRequest):
         "sec_type": sec_type,
         "exchange": exchange,
         "currency": currency,
+        "account_id": row["account_id"],
     }))
     await r.aclose()
 

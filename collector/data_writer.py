@@ -80,29 +80,52 @@ class DataWriter:
         except Exception as e:
             logger.error(f"write_account error: {e}")
 
-    async def write_positions(self, positions: list[dict]):
+    async def write_positions(self, positions: list[dict], account_ids: list[str] | None = None):
         now = datetime.now(timezone.utc)
         try:
             async with self.pool.acquire() as conn:
-                await conn.executemany(
-                    "INSERT INTO positions(time,account_id,symbol,sec_type,quantity,avg_cost,"
-                    "market_value,unrealized_pnl,realized_pnl) "
-                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-                    [
-                        (
-                            now,
-                            p["account_id"],
-                            p["symbol"],
-                            p["sec_type"],
-                            _clean_num(p["quantity"]),
-                            _clean_num(p["avg_cost"]),
-                            _clean_num(p.get("market_value")),
-                            _clean_num(p.get("unrealized_pnl")),
-                            _clean_num(p.get("realized_pnl")),
+                # 写入当前仓位
+                if positions:
+                    await conn.executemany(
+                        "INSERT INTO positions(time,account_id,symbol,sec_type,quantity,avg_cost,"
+                        "market_value,unrealized_pnl,realized_pnl) "
+                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                        [
+                            (
+                                now,
+                                p["account_id"],
+                                p["symbol"],
+                                p["sec_type"],
+                                _clean_num(p["quantity"]),
+                                _clean_num(p["avg_cost"]),
+                                _clean_num(p.get("market_value")),
+                                _clean_num(p.get("unrealized_pnl")),
+                                _clean_num(p.get("realized_pnl")),
+                            )
+                            for p in positions
+                        ],
+                    )
+
+                # 若指定了 account_ids，找出当前仓位列表中缺失的 symbol 并写入 quantity=0
+                # 用于处理 ib.positions() 不返回零仓位的情形
+                if account_ids:
+                    current_symbols = {
+                        (p["account_id"], p["symbol"]) for p in positions
+                    }
+                    for aid in account_ids:
+                        held = await conn.fetch(
+                            "SELECT DISTINCT ON (symbol) symbol FROM positions "
+                            "WHERE account_id = $1 AND quantity != 0 "
+                            "ORDER BY symbol, time DESC",
+                            aid,
                         )
-                        for p in positions
-                    ],
-                )
+                        for r in held:
+                            if (aid, r["symbol"]) not in current_symbols:
+                                await conn.execute(
+                                    "INSERT INTO positions(time, account_id, symbol, quantity) "
+                                    "VALUES($1, $2, $3, 0)",
+                                    now, aid, r["symbol"],
+                                )
         except Exception as e:
             logger.error(f"write_positions error: {e}")
 
@@ -125,11 +148,11 @@ class DataWriter:
                     trade.contract.symbol,
                     o.action,
                     o.orderType,
-                    float(o.totalQuantity),
-                    float(o.lmtPrice) if o.lmtPrice else None,
+                    _clean_num(o.totalQuantity),
+                    _clean_num(o.lmtPrice) if o.lmtPrice else None,
                     s.status,
-                    float(s.filled),
-                    float(s.avgFillPrice) if s.avgFillPrice else None,
+                    _clean_num(s.filled),
+                    _clean_num(s.avgFillPrice) if s.avgFillPrice else None,
                     now,
                     now,
                 )

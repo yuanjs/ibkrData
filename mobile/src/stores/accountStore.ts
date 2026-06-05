@@ -29,11 +29,11 @@ export const useAccountStore = create<AccountStore>((set) => ({
     const gwMap = state.gatewayMap
 
     if (Object.keys(gwMap).length === 0) {
-      // gatewayMap 未到：先把数据放 live 默认显示
+      // gatewayMap 未到：只存 summary 用于显示数值，positions 等 WebSocket 推送
       return {
         live: {
           summary: (accounts[0] as Record<string, unknown>) ?? {},
-          positions,
+          positions: state.live.positions,
         },
       }
     }

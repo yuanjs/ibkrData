@@ -137,14 +137,21 @@ export default function Account() {
     if (!closePending) return
     const lastOrder = orders[0] as Record<string, unknown> | undefined
     if (lastOrder?.close_id === closePending.closeId) {
-      if (lastOrder?.status === 'Filled') {
+      const s = lastOrder?.status as string
+      if (s === 'Filled') {
         Alert.alert('平仓成功', `${closePending.symbol} 已平仓`)
         setClosePending(null)
-      } else if (lastOrder?.status === 'Rejected') {
-        Alert.alert('平仓失败', `${closePending.symbol} 被拒绝`)
+      } else if (s === 'Rejected' || s === 'Cancelled' || s === 'Inactive') {
+        Alert.alert('平仓失败', `${closePending.symbol} ${s === 'Cancelled' ? '已取消' : '被拒绝'}`)
         setClosePending(null)
       }
     }
+    // 超时自动清除（30 秒）
+    const timer = setTimeout(() => {
+      Alert.alert('平仓超时', `${closePending.symbol} 未收到成交回报，请手动检查订单状态`)
+      setClosePending(null)
+    }, 30000)
+    return () => clearTimeout(timer)
   }, [orders, closePending])
 
   const handleClose = (symbol: string, quantity: number) => {
@@ -160,7 +167,10 @@ export default function Account() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const res = await api.post<{ close_id: string }>('/positions/close', { symbol })
+              const res = await api.post<{ close_id: string }>('/positions/close', {
+                symbol,
+                gateway: activeGateway,
+              })
               setClosePending({ closeId: res.close_id, symbol })
             } catch (e: unknown) {
               const msg = e instanceof Error ? e.message : String(e)
@@ -218,6 +228,7 @@ export default function Account() {
 
         <View style={[styles.tableHeader, { borderBottomColor: colors.border }]}>
           <Text style={[styles.th, styles.colSym, { color: colors.textSecondary }]}>标的</Text>
+          <Text style={[styles.th, styles.colDir, { color: colors.textSecondary }]}>方向</Text>
           <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>数量</Text>
           <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>开仓价</Text>
           <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>当前报价</Text>
@@ -241,8 +252,14 @@ export default function Account() {
               <Text style={[styles.td, styles.colSym, { color: colors.textPrimary, fontFamily: 'monospace', fontWeight: '700' }]}>
                 {symbol}
               </Text>
+              <Text style={[styles.td, styles.colDir, {
+                color: quantity > 0 ? '#26a641' : quantity < 0 ? '#d32f2f' : colors.textPrimary,
+                fontFamily: 'monospace', fontSize: 12, fontWeight: '600',
+              }]}>
+                {quantity > 0 ? '多' : quantity < 0 ? '空' : '-'}
+              </Text>
               <Text style={[styles.td, styles.colNum, { color: colors.textPrimary, fontFamily: 'monospace' }]}>
-                {quantity}
+                {Math.abs(quantity)}
               </Text>
               <Text style={[styles.td, styles.colNum, { color: colors.textPrimary, fontFamily: 'monospace' }]}>
                 {entryPrice(p)}
@@ -306,6 +323,7 @@ const styles = StyleSheet.create({
   },
   td: { fontSize: 13 },
   colSym: { flex: 1.2 },
+  colDir: { flex: 0.5, textAlign: 'center' },
   colNum: { flex: 1, textAlign: 'right' },
   colAction: { flex: 0.6, alignItems: 'center', justifyContent: 'center' },
   closeBtn: {

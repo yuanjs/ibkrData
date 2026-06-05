@@ -111,31 +111,6 @@ function getEffectiveBucketTime(tickTimeSec: number, sym?: string): number {
   return Math.floor(Date.UTC(y, m - 1, day, 12) / 1000)
 }
 
-/** Get Unix timestamp for midnight (start of the day) for a given time in the product's exchange timezone */
-function getMidnightSec(timeSec: number, symbol?: string): number {
-  const config = symbol ? getProductConfig(symbol) : undefined
-  const tz = config?.timezone || 'America/New_York'
-  const d = new Date(timeSec * 1000)
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz,
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false,
-  }).formatToParts(d)
-
-  const get = (t: string) => {
-    const v = parts.find(p => p.type === t)?.value ?? '0'
-    return parseInt(v, 10)
-  }
-
-  // Some locales or environments might return 24 for midnight; normalize to 0.
-  const hour = get('hour') % 24
-  const minute = get('minute')
-  const second = get('second')
-
-  const elapsedSec = hour * 3600 + minute * 60 + second
-  return timeSec - elapsedSec
-}
-
 export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange }: Props) {
   const mainContainerRef = useRef<HTMLDivElement>(null)
   const kdjContainerRef = useRef<HTMLDivElement>(null)
@@ -384,13 +359,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       kSeriesRef.current.createPriceLine({ price: 0, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       kSeriesRef.current.createPriceLine({ price: 100, color: '#26a641', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })
       // Draggable auxiliary reference line — completely independent of crosshair
-      let kdjRefPrice = 50
-      try { const v = localStorage.getItem('kdjRef_' + symbol); if (v) kdjRefPrice = Math.max(0, Math.min(100, parseFloat(v))) } catch {}
       const setKdjRefLine = (price: number) => {
         const ks = kSeriesRef.current
         if (!ks) return
         const p = Math.max(0, Math.min(100, price))
-        kdjRefPrice = p
         try { localStorage.setItem('kdjRef_' + symbol, String(p)) } catch {}
         try { ks.removePriceLine((ks as any)._refLine) } catch {}
         ;(ks as any)._refLine = ks.createPriceLine({ price: p, color: '#000000', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '' })

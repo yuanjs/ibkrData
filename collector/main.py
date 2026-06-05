@@ -58,6 +58,11 @@ _close_id_maps: dict[str, dict[int, str]] = {
     "live": {},
     "paper": {},
 }
+# 平仓成交后立即唤醒 account_loop 刷新仓位
+_account_refresh_events: dict[str, asyncio.Event] = {
+    "live": asyncio.Event(),
+    "paper": asyncio.Event(),
+}
 _paper_tasks: set[asyncio.Task] = set()
 
 
@@ -144,14 +149,14 @@ async def tick_flush_loop(tick_buffer):
 async def account_loop(client, writer, pub, interval, gateway="live", redis=None):
     first_fetch = True
     while True:
-        await asyncio.sleep(interval)
         try:
             if not client.is_connected:
+                await asyncio.sleep(interval)
                 continue
             accounts = await client.get_account_summary()
             positions = client.get_positions()
             await writer.write_account(accounts)
-            await writer.write_positions(positions)
+            await writer.write_positions(positions, account_ids=[a["account_id"] for a in accounts])
             await pub.publish_account({"accounts": accounts, "positions": positions})
             if first_fetch and redis and accounts:
                 await _update_gateway_map(redis, gateway, accounts)
@@ -160,6 +165,14 @@ async def account_loop(client, writer, pub, interval, gateway="live", redis=None
             raise
         except Exception as e:
             logger.error(f"Account loop ({gateway}) error: {e}")
+
+        # 等待 interval 或被 Event 唤醒（平仓成交后立即刷新仓位）
+        evt = _account_refresh_events[gateway]
+        try:
+            await asyncio.wait_for(evt.wait(), timeout=interval)
+            evt.clear()
+        except asyncio.TimeoutError:
+            pass
 
 
 async def settings_listener(redis_client):
@@ -203,9 +216,10 @@ async def order_command_listener(client, pub, channel="order:command:live"):
                 cancelled_ids = client.cancel_orders_for_symbol(symbol)
 
                 # 2. 下市价平仓单
-                order_id, status = client.place_market_order(
+                order_id, status = await client.place_market_order(
                     symbol, data["side"], data["quantity"],
                     data["sec_type"], data["exchange"], data["currency"],
+                    data.get("account_id"),
                 )
 
                 # Track close_id for subsequent on_order callbacks
@@ -344,6 +358,9 @@ async def init_paper(pool, redis_client, writer, pub):
                 payload["close_id"] = paper_map[oid]
                 if trade.orderStatus.status in ("Filled", "Cancelled", "Inactive"):
                     del paper_map[oid]
+                    # 平仓成交后立即唤醒 account_loop 刷新仓位
+                    if trade.orderStatus.status == "Filled":
+                        _account_refresh_events["paper"].set()
             t2 = asyncio.ensure_future(pub.publish_order(payload))
             t2.add_done_callback(_on_task_done)
 
@@ -426,6 +443,9 @@ async def main():
             # Clean up map when order reaches terminal state
             if trade.orderStatus.status in ("Filled", "Cancelled", "Inactive"):
                 del _close_id_maps["live"][oid]
+                # 平仓成交后立即唤醒 account_loop 刷新仓位
+                if trade.orderStatus.status == "Filled":
+                    _account_refresh_events["live"].set()
         t2 = asyncio.ensure_future(pub.publish_order(payload))
         t2.add_done_callback(_on_task_done)
 

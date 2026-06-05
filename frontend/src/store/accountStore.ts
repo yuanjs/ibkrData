@@ -28,8 +28,9 @@ export const useAccountStore = create<AccountStore>((set) => ({
     const gwMap = state.gatewayMap
 
     if (Object.keys(gwMap).length === 0) {
+      // gatewayMap 未到：只存 summary 用于显示数值，positions 等 WebSocket 推送
       return {
-        live: { summary: (accounts[0] as Record<string, unknown>) ?? {}, positions },
+        live: { summary: (accounts[0] as Record<string, unknown>) ?? {}, positions: state.live.positions },
       }
     }
 
@@ -41,8 +42,8 @@ export const useAccountStore = create<AccountStore>((set) => ({
 
     if (liveAccs.length) result.live = { summary: liveAccs[0], positions: state.live.positions }
     if (paperAccs.length) result.paper = { summary: paperAccs[0], positions: state.paper.positions }
-    result.live = { ...(result.live as GatewayData ?? state.live), positions: livePos }
-    result.paper = { ...(result.paper as GatewayData ?? state.paper), positions: paperPos }
+    if (livePos.length) result.live = { ...(result.live as GatewayData ?? state.live), positions: livePos }
+    if (paperPos.length) result.paper = { ...(result.paper as GatewayData ?? state.paper), positions: paperPos }
 
     return result
   }),

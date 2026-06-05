@@ -20,7 +20,7 @@ export function Account() {
   // 加载 gateway map — 仅在 WebSocket 尚未推送时通过 HTTP 获取
   useEffect(() => {
     if (Object.keys(gatewayMap).length === 0) {
-      api.get('/gateway/map').then(setGatewayMap).catch(() => {})
+      api.get<Record<string, string[]>>('/gateway/map').then(setGatewayMap).catch(() => {})
     }
   }, [gatewayMap, setGatewayMap])
 
@@ -159,14 +159,21 @@ export function Account() {
     if (!closePending) return
     const lastOrder = orders[0] as Record<string, unknown> | undefined
     if (lastOrder?.close_id === closePending.closeId) {
-      if (lastOrder?.status === 'Filled') {
+      const s = lastOrder?.status as string
+      if (s === 'Filled') {
         setCloseMsg(`${closePending.symbol} 平仓成功 🎉`)
-      } else if (lastOrder?.status === 'Rejected') {
-        setCloseMsg(`${closePending.symbol} 平仓失败`)
+      } else if (s === 'Rejected' || s === 'Cancelled' || s === 'Inactive') {
+        setCloseMsg(`${closePending.symbol} 平仓失败${s === 'Cancelled' ? ' (已取消)' : ''}`)
       }
       const timer = setTimeout(() => { setClosePending(null); setCloseMsg(null) }, 4000)
       return () => clearTimeout(timer)
     }
+    // 超时自动清除（30 秒未匹配到 close_id）
+    const timer = setTimeout(() => {
+      setCloseMsg(`${closePending.symbol} 平仓超时，请检查订单`)
+      setTimeout(() => { setClosePending(null); setCloseMsg(null) }, 4000)
+    }, 30000)
+    return () => clearTimeout(timer)
   }, [orders, closePending])
 
   const handleClose = async (symbol: string) => {
@@ -178,7 +185,10 @@ export function Account() {
 
     try {
       setCloseMsg(null)
-      const res = await api.post<{ close_id: string }>('/positions/close', { symbol })
+      const res = await api.post<{ close_id: string }>('/positions/close', {
+        symbol,
+        gateway: activeGateway,
+      })
       setClosePending({ closeId: res.close_id, symbol })
       setCloseMsg(`平仓指令已发送: ${symbol}`)
     } catch (e: any) {
@@ -240,6 +250,7 @@ export function Account() {
           <thead>
             <tr className="border-b" style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>
               <th className="text-left py-2 px-3">标的</th>
+              <th className="text-center py-2 px-3">方向</th>
               <th className="text-right py-2 px-3">数量</th>
               <th className="text-right py-2 px-3">开仓价</th>
               <th className="text-right py-2 px-3">当前报价</th>
@@ -258,7 +269,12 @@ export function Account() {
                   opacity: isPending ? 0.6 : 1,
                 }}>
                   <td className="py-2 px-3 font-mono font-bold" style={{ color: 'var(--text-primary)' }}>{sym}</td>
-                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{p.quantity as number}</td>
+                  <td className="py-2 px-3 text-center font-mono text-xs font-semibold" style={{
+                    color: (p.quantity as number) > 0 ? '#26a641' : (p.quantity as number) < 0 ? '#d32f2f' : 'var(--text-secondary)',
+                  }}>
+                    {(p.quantity as number) > 0 ? '多' : (p.quantity as number) < 0 ? '空' : '-'}
+                  </td>
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{Math.abs(p.quantity as number)}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{entryPrice(p)}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
                     {(() => {

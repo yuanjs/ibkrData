@@ -58,5 +58,7 @@ async def get_positions(gateway: str | None = None):
             args.append(ids)
             query += " WHERE account_id = ANY($1)"
     query += " ORDER BY account_id, symbol, time DESC"
+    # 子查询：先取每 (account_id, symbol) 最新的行，再过滤 quantity=0
+    query = f"SELECT * FROM ({query}) sub WHERE quantity != 0"
     rows = await pool.fetch(query, *args)
     return [dict(r) for r in rows]

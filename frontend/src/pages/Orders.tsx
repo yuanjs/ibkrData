@@ -13,7 +13,15 @@ export function Orders() {
   const [gateway, setGateway] = useState<GatewayFilter>('')
 
   const gatewayMap = useAccountStore(s => s.gatewayMap)
+  const setGatewayMap = useAccountStore(s => s.setGatewayMap)
   const hasPaper = useAccountStore(s => s.hasPaper)
+
+  // 页面刷新后通过 REST 加载 gateway map（不等 WebSocket）
+  useEffect(() => {
+    if (Object.keys(gatewayMap).length === 0) {
+      api.get<Record<string, string[]>>('/gateway/map').then(setGatewayMap).catch(() => {})
+    }
+  }, [gatewayMap, setGatewayMap])
 
   const fetchData = useCallback(() => {
     const params = gateway ? `?gateway=${gateway}` : ''
@@ -48,20 +56,30 @@ export function Orders() {
     )
   }
 
-  const GatewayTabs = () => hasPaper ? (
+  const GatewayTabs = () => (
     <div className="flex gap-2 mb-3">
-      {(['', 'live', 'paper'] as GatewayFilter[]).map(g => (
+      {(['', 'live'] as GatewayFilter[]).map(g => (
         <button key={g} onClick={() => setGateway(g)}
           className={`px-3 py-1 text-xs rounded ${
             gateway === g
               ? 'bg-blue-600 text-white'
               : 'text-[var(--text-secondary)] bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
           }`}>
-          {g === '' ? '全部' : g === 'live' ? '实盘' : '模拟'}
+          {g === '' ? '全部' : '实盘'}
         </button>
       ))}
+      {hasPaper && (
+        <button onClick={() => setGateway('paper')}
+          className={`px-3 py-1 text-xs rounded ${
+            gateway === 'paper'
+              ? 'bg-blue-600 text-white'
+              : 'text-[var(--text-secondary)] bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
+          }`}>
+          模拟
+        </button>
+      )}
     </div>
-  ) : null
+  )
 
   return (
     <div className="p-4">
