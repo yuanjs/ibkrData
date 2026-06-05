@@ -62,14 +62,14 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     rollHour: 17,
     rollMinute: 0,
     decimalPlaces: 3,
-    multiplier: 100000,
+    multiplier: 1,
   },
   'AUDUSD': {
     timezone: 'America/New_York',
     rollHour: 17,
     rollMinute: 0,
     decimalPlaces: 5,
-    multiplier: 100000,
+    multiplier: 1,
   },
   'US10Y': {
     timezone: 'America/Chicago',
