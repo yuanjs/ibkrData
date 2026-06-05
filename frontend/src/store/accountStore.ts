@@ -34,8 +34,8 @@ export const useAccountStore = create<AccountStore>((set) => ({
 
     if (liveAccs.length) result.live = { summary: liveAccs[0], positions: state.live.positions }
     if (paperAccs.length) result.paper = { summary: paperAccs[0], positions: state.paper.positions }
-    if (livePos.length) result.live = { ...(result.live as GatewayData ?? state.live), positions: livePos }
-    if (paperPos.length) result.paper = { ...(result.paper as GatewayData ?? state.paper), positions: paperPos }
+    result.live = { ...(result.live as GatewayData ?? state.live), positions: livePos }
+    result.paper = { ...(result.paper as GatewayData ?? state.paper), positions: paperPos }
 
     return result
   }),
