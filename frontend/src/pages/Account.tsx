@@ -29,7 +29,10 @@ export function Account() {
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
 
   // ===== 实时 PnL：用 tick 价格推算持仓市值变化 =====
+  // 用 ref 持有最新 quotes，避免每 1s tick 触发重渲染
   const quotes = useMarketStore(s => s.quotes)
+  const quotesRef = useRef(quotes)
+  quotesRef.current = quotes
 
   interface PnlRef {
     refPnl: number
@@ -38,32 +41,41 @@ export function Account() {
   }
   const pnlRefs = useRef<Record<string, PnlRef>>({})
 
-  // positions 或 quotes 变化时更新参考点（仅在 positions 变化时重置）
+  // 每 3s 触发一次 PnL 显示刷新（不是每 1s tick）
+  const [, setPnLTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setPnLTick(t => t + 1), 3000)
+    return () => clearInterval(id)
+  }, [])
+
+  // 当前位置的快照行情（用于「当前报价」列 ref 更新）
   const prevPositionsRef = useRef('')
   const positionsKey = JSON.stringify((positions as Array<Record<string, unknown>>).map(p => [p.symbol, p.market_value, p.unrealized_pnl]))
   useEffect(() => {
     if (positionsKey === prevPositionsRef.current) return
     prevPositionsRef.current = positionsKey
     const refs: Record<string, PnlRef> = {}
+    const liveQuotes = quotesRef.current
     for (const pos of (positions as Array<Record<string, unknown>>)) {
       const sym = pos.symbol as string
       const mv = pos.market_value as number | undefined
       const up = pos.unrealized_pnl as number | undefined
-      const last = (quotes as Record<string, any>)?.[sym]?.last
+      const last = (liveQuotes as Record<string, any>)?.[sym]?.last
       if (mv != null && up != null && last != null && last > 0) {
         refs[sym] = { refPnl: up, refMarketValue: mv, refPrice: last }
       }
     }
     if (Object.keys(refs).length) pnlRefs.current = refs
-  }, [positionsKey, quotes])
+  }, [positionsKey])  // 不再依赖 quotes — 用 ref 读取最新值
+
+  function getQuote(sym: string) { return (quotesRef.current as Record<string, any>)?.[sym] }
 
   /** 计算实时未实现盈亏，返回 {pnl, isRealtime} */
   function realtimePnl(pos: Record<string, unknown>): { pnl: number | undefined; isRealtime: boolean } {
     const sym = pos.symbol as string
     const ref = pnlRefs.current[sym]
     if (!ref) {
-      // 无参考点：用 tick 价格 + multiplier 自行估算
-      const last = (quotes as Record<string, any>)?.[sym]?.last
+      const last = getQuote(sym)?.last
       const qty = pos.quantity as number | undefined
       const avg = pos.avg_cost as number | undefined
       if (last != null && last > 0 && qty != null && qty !== 0 && avg != null && avg > 0) {
@@ -72,7 +84,7 @@ export function Account() {
       }
       return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
     }
-    const currentPrice = (quotes as Record<string, any>)?.[sym]?.last
+    const currentPrice = getQuote(sym)?.last
     if (!currentPrice || !ref.refPrice || ref.refPrice <= 0 || !ref.refMarketValue) {
       return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
     }
@@ -86,8 +98,7 @@ export function Account() {
     const sym = pos.symbol as string
     const ref = pnlRefs.current[sym]
     if (!ref) {
-      // 无参考点：用 tick 价格 + multiplier 自行估算
-      const last = (quotes as Record<string, any>)?.[sym]?.last
+      const last = getQuote(sym)?.last
       const qty = pos.quantity as number | undefined
       if (last != null && last > 0 && qty != null && qty !== 0) {
         const mult = getProductConfig(sym).multiplier ?? 1
@@ -95,7 +106,7 @@ export function Account() {
       }
       return { mv: pos.market_value as number | undefined, isRealtime: false }
     }
-    const currentPrice = (quotes as Record<string, any>)?.[sym]?.last
+    const currentPrice = getQuote(sym)?.last
     if (!currentPrice || !ref.refPrice || ref.refPrice <= 0) {
       return { mv: pos.market_value as number | undefined, isRealtime: false }
     }
@@ -201,11 +212,11 @@ export function Account() {
             </tr>
           </thead>
           <tbody>
-            {(positions as Array<Record<string, unknown>>).map((p, i) => {
+            {(positions as Array<Record<string, unknown>>).map((p) => {
               const sym = p.symbol as string
               const isPending = closePending?.symbol === sym
               return (
-                <tr key={i} className="border-b" style={{
+                <tr key={sym} className="border-b" style={{
                   borderColor: 'var(--border-light)',
                   opacity: isPending ? 0.6 : 1,
                 }}>
@@ -214,11 +225,11 @@ export function Account() {
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.avg_cost as number)}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
                     {(() => {
-                      const q = (quotes as Record<string, any>)?.[sym]
+                      const q = getQuote(sym)
                       if (q?.bid != null && q.bid > 0 && q?.ask != null && q.ask > 0) {
                         return `${fmtPrice(q.bid)} / ${fmtPrice(q.ask)}`
                       }
-                      if (q?.last != null && q.last > 0) return fmt(q.last)
+                      if (q?.last != null && q.last > 0) return fmtPrice(q.last)
                       return '-'
                     })()}
                   </td>
