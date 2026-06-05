@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../api/client'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
+import { useMarketStore } from '../store/marketStore'
 
 export function Account() {
   const activeGateway = useAccountStore(s => s.activeGateway)
@@ -24,6 +25,65 @@ export function Account() {
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
+
+  // ===== 实时 PnL：用 tick 价格推算持仓市值变化 =====
+  const quotes = useMarketStore(s => s.quotes)
+
+  interface PnlRef {
+    refPnl: number
+    refMarketValue: number
+    refPrice: number
+  }
+  const pnlRefs = useRef<Record<string, PnlRef>>({})
+
+  // positions 或 quotes 变化时更新参考点（仅在 positions 变化时重置）
+  const prevPositionsRef = useRef('')
+  const positionsKey = JSON.stringify((positions as Array<Record<string, unknown>>).map(p => [p.symbol, p.market_value, p.unrealized_pnl]))
+  useEffect(() => {
+    if (positionsKey === prevPositionsRef.current) return
+    prevPositionsRef.current = positionsKey
+    const refs: Record<string, PnlRef> = {}
+    for (const pos of (positions as Array<Record<string, unknown>>)) {
+      const sym = pos.symbol as string
+      const mv = pos.market_value as number | undefined
+      const up = pos.unrealized_pnl as number | undefined
+      const last = (quotes as Record<string, any>)?.[sym]?.last
+      if (mv != null && up != null && last != null && last > 0) {
+        refs[sym] = { refPnl: up, refMarketValue: mv, refPrice: last }
+      }
+    }
+    if (Object.keys(refs).length) pnlRefs.current = refs
+  }, [positionsKey, quotes])
+
+  /** 计算实时未实现盈亏，返回 {pnl, isRealtime} */
+  function realtimePnl(pos: Record<string, unknown>): { pnl: number | undefined; isRealtime: boolean } {
+    const sym = pos.symbol as string
+    const ref = pnlRefs.current[sym]
+    if (!ref) return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
+    const currentPrice = (quotes as Record<string, any>)?.[sym]?.last
+    if (!currentPrice || !ref.refPrice || ref.refPrice <= 0 || !ref.refMarketValue) {
+      return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
+    }
+    const ratio = currentPrice / ref.refPrice
+    const estMv = ref.refMarketValue * ratio
+    const estPnl = ref.refPnl + (estMv - ref.refMarketValue)
+    return { pnl: estPnl, isRealtime: true }
+  }
+
+  function realtimeMarketValue(pos: Record<string, unknown>): { mv: number | undefined; isRealtime: boolean } {
+    const sym = pos.symbol as string
+    const ref = pnlRefs.current[sym]
+    if (!ref) return { mv: pos.market_value as number | undefined, isRealtime: false }
+    const currentPrice = (quotes as Record<string, any>)?.[sym]?.last
+    if (!currentPrice || !ref.refPrice || ref.refPrice <= 0) {
+      return { mv: pos.market_value as number | undefined, isRealtime: false }
+    }
+    return { mv: ref.refMarketValue * (currentPrice / ref.refPrice), isRealtime: true }
+  }
+
+  const RealtimeBadge = () => (
+    <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', marginLeft: 3, verticalAlign: 'super' }}>⚡</span>
+  )
 
   // Watch for close order result via WebSocket
   useEffect(() => {
@@ -130,9 +190,13 @@ export function Account() {
                   <td className="py-2 px-3 font-mono font-bold" style={{ color: 'var(--text-primary)' }}>{sym}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{p.quantity as number}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.avg_cost as number)}</td>
-                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.market_value as number)}</td>
-                  <td className="py-2 px-3 text-right font-mono" style={{ color: pnlColor(p.unrealized_pnl as number) }}>
-                    {fmt(p.unrealized_pnl as number)}
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
+                    {fmt(realtimeMarketValue(p).mv)}
+                    {realtimeMarketValue(p).isRealtime && <RealtimeBadge />}
+                  </td>
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: pnlColor(realtimePnl(p).pnl) }}>
+                    {fmt(realtimePnl(p).pnl)}
+                    {realtimePnl(p).isRealtime && <RealtimeBadge />}
                   </td>
                   <td className="py-2 px-3 text-center">
                     <button
