@@ -52,6 +52,9 @@ Wrapper.tickString = _patched_tickString
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Mapping of order_id -> close_id for correlating close order status updates
+_close_id_map: dict[int, str] = {}
+
 
 class TickBuffer:
     """Buffers raw ticks and flushes them to the DB in batches."""
@@ -173,6 +176,9 @@ async def order_command_listener(client, pub):
                 symbol, data["side"], data["quantity"],
                 data["sec_type"], data["exchange"], data["currency"],
             )
+
+            # Track close_id for subsequent on_order callbacks
+            _close_id_map[order_id] = close_id
 
             # 3. 发布带 close_id 的订单状态（供前端匹配回执）
             await pub.publish_order({
@@ -316,11 +322,15 @@ async def main():
     def on_order(trade):
         t = asyncio.ensure_future(writer.upsert_order(trade))
         t.add_done_callback(_on_task_done)
-        t2 = asyncio.ensure_future(
-            pub.publish_order(
-                {"order_id": trade.order.orderId, "status": trade.orderStatus.status}
-            )
-        )
+        payload: dict = {"order_id": trade.order.orderId, "status": trade.orderStatus.status}
+        # Attach close_id if this order was initiated by a close command
+        oid = trade.order.orderId
+        if oid in _close_id_map:
+            payload["close_id"] = _close_id_map[oid]
+            # Clean up map when order reaches terminal state
+            if trade.orderStatus.status in ("Filled", "Cancelled", "Inactive"):
+                del _close_id_map[oid]
+        t2 = asyncio.ensure_future(pub.publish_order(payload))
         t2.add_done_callback(_on_task_done)
 
     def on_exec(trade, fill):

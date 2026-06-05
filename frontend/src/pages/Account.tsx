@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { api } from '../api/client'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
@@ -13,10 +13,21 @@ export function Account() {
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
 
-  // 检查 close_id 是否已有成交回执
-  const lastOrder = orders[0] as Record<string, unknown> | undefined
-  const closeConfirmed = closePending && lastOrder?.close_id === closePending.closeId && lastOrder?.status === 'Filled'
-  const closeRejected = closePending && lastOrder?.close_id === closePending.closeId && lastOrder?.status === 'Rejected'
+  // Watch for close order result via WebSocket
+  useEffect(() => {
+    if (!closePending) return
+    const lastOrder = orders[0] as Record<string, unknown> | undefined
+    if (lastOrder?.close_id === closePending.closeId) {
+      if (lastOrder?.status === 'Filled') {
+        setCloseMsg(`${closePending.symbol} 平仓成功 🎉`)
+      } else if (lastOrder?.status === 'Rejected') {
+        setCloseMsg(`${closePending.symbol} 平仓失败`)
+      }
+      // Clear pending state after a brief delay so user sees result
+      const timer = setTimeout(() => { setClosePending(null); setCloseMsg(null) }, 4000)
+      return () => clearTimeout(timer)
+    }
+  }, [orders, closePending])
 
   const handleClose = async (symbol: string) => {
     const pos = positions.find(p => p.symbol === symbol) as Record<string, unknown> | undefined
@@ -35,18 +46,12 @@ export function Account() {
     }
   }
 
-  const closeSymbol = closePending?.symbol ?? ''
-
   return (
     <div className="p-4 space-y-6">
       {closeMsg && (
-        <div className="px-4 py-2 rounded text-sm" style={{
-          backgroundColor: closeConfirmed ? '#1b5e20' : closeRejected ? '#b71c1c' : 'var(--bg-surface)',
-          color: '#fff',
-        }}>
-          {closeConfirmed ? `${closeSymbol} 平仓成功 🎉` :
-           closeRejected ? `${closeSymbol} 平仓失败` :
-           closeMsg}
+        <div className="px-4 py-2 rounded text-sm"
+          style={{ backgroundColor: closeMsg.includes('成功') ? '#1b5e20' : closeMsg.includes('失败') ? '#b71c1c' : 'var(--bg-surface)', color: '#fff' }}>
+          {closeMsg}
         </div>
       )}
 

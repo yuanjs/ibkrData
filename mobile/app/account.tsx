@@ -23,13 +23,18 @@ export default function Account() {
 
   const [closePending, setClosePending] = useState<{ closeId: string; symbol: string } | null>(null)
 
-  // Watch for the close order to be filled
+  // Watch for the close order result via WebSocket
   useEffect(() => {
     if (!closePending) return
     const lastOrder = orders[0] as Record<string, unknown> | undefined
-    if (lastOrder?.close_id === closePending.closeId && lastOrder?.status === 'Filled') {
-      Alert.alert('平仓成功', `${closePending.symbol} 已平仓`)
-      setClosePending(null)
+    if (lastOrder?.close_id === closePending.closeId) {
+      if (lastOrder?.status === 'Filled') {
+        Alert.alert('平仓成功', `${closePending.symbol} 已平仓`)
+        setClosePending(null)
+      } else if (lastOrder?.status === 'Rejected') {
+        Alert.alert('平仓失败', `${closePending.symbol} 被拒绝`)
+        setClosePending(null)
+      }
     }
   }, [orders, closePending])
 
