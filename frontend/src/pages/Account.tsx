@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
 import { useMarketStore } from '../store/marketStore'
+import { getProductConfig } from '../config/productConfig'
 
 export function Account() {
   const activeGateway = useAccountStore(s => s.activeGateway)
@@ -97,6 +98,14 @@ export function Account() {
       return { pnl: undefined, src: 'raw' }
     }
     return { pnl: pos.unrealized_pnl as number | undefined, src: 'raw' }
+  }
+
+  /** 开仓价：avgCost ÷ multiplier（还原为产品报价，如指数点数） */
+  function entryPrice(pos: Record<string, unknown>): string {
+    const avg = pos.avg_cost as number | undefined
+    if (avg == null) return '-'
+    const mult = getProductConfig(pos.symbol as string).multiplier ?? 1
+    return fmtPrice(avg / mult)
   }
 
   const RealtimeBadge = () => (
@@ -208,7 +217,7 @@ export function Account() {
                 }}>
                   <td className="py-2 px-3 font-mono font-bold" style={{ color: 'var(--text-primary)' }}>{sym}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{p.quantity as number}</td>
-                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.avg_cost as number)}</td>
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{entryPrice(p)}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
                     {(() => {
                       const q = getQuote(sym)
