@@ -44,7 +44,7 @@ export default function Account() {
   // Gateway map load
   useEffect(() => {
     if (Object.keys(gatewayMap).length === 0) {
-      api.get('/gateway/map').then(setGatewayMap).catch(() => {})
+      api.get<Record<string, string[]>>('/gateway/map').then(setGatewayMap).catch(() => {})
     }
   }, [gatewayMap, setGatewayMap])
 
