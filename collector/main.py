@@ -23,6 +23,7 @@ from config import (
     IB_HOST,
     IB_PORT,
     REDIS_URL,
+    HAS_PAPER,
 )
 from daily_tracker import DailyBarTracker
 from data_writer import DataWriter
@@ -54,6 +55,16 @@ logger = logging.getLogger(__name__)
 
 # Mapping of order_id -> close_id for correlating close order status updates
 _close_id_map: dict[int, str] = {}
+
+
+async def _update_gateway_map(redis, gateway: str, accounts: list[dict]):
+    key = "gateway:account_map"
+    raw = await redis.get(key)
+    mapping: dict[str, list[str]] = json.loads(raw) if raw else {}
+    ids = [a["account_id"] for a in accounts]
+    mapping[gateway] = ids
+    await redis.set(key, json.dumps(mapping))
+    await redis.publish("gateway:map:update", json.dumps(mapping))
 
 
 class TickBuffer:
@@ -125,19 +136,25 @@ async def tick_flush_loop(tick_buffer):
             logger.error(f"Tick buffer flush error: {e}")
 
 
-async def account_loop(client, writer, pub, interval):
+async def account_loop(client, writer, pub, interval, gateway="live", redis=None):
+    first_fetch = True
     while True:
         await asyncio.sleep(interval)
         try:
+            if not client.is_connected:
+                continue
             accounts = await client.get_account_summary()
             positions = client.get_positions()
             await writer.write_account(accounts)
             await writer.write_positions(positions)
             await pub.publish_account({"accounts": accounts, "positions": positions})
+            if first_fetch and redis and accounts:
+                await _update_gateway_map(redis, gateway, accounts)
+                first_fetch = False
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Account loop error: {e}")
+            logger.error(f"Account loop ({gateway}) error: {e}")
 
 
 async def settings_listener(redis_client):
@@ -152,12 +169,12 @@ async def settings_listener(redis_client):
         raise
 
 
-async def order_command_listener(client, pub):
-    """监听 Redis order:command 通道，执行平仓指令。"""
+async def order_command_listener(client, pub, channel="order:command:live"):
+    """监听 Redis order 通道，执行平仓指令。"""
     redis = aioredis.from_url(REDIS_URL)
     pubsub = redis.pubsub()
-    await pubsub.subscribe("order:command")
-    logger.info("Order command listener started, subscribed to order:command")
+    await pubsub.subscribe(channel)
+    logger.info(f"Order command listener started, subscribed to {channel}")
 
     async for msg in pubsub.listen():
         if msg["type"] != "message":
@@ -191,7 +208,7 @@ async def order_command_listener(client, pub):
                 "cancelled_orders": cancelled_ids,
             })
         except Exception as e:
-            logger.error(f"order_command_listener error: {e}")
+            logger.error(f"order_command_listener ({channel}) error: {e}")
 
 
 async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=None):
@@ -281,6 +298,46 @@ def _on_task_done(task: asyncio.Task):
         logger.error(f"Background task failed: {exc}", exc_info=exc)
 
 
+async def init_paper(pool, redis_client, writer, pub):
+    try:
+        from config import PAPER_IB_HOST, PAPER_IB_PORT, PAPER_IB_CLIENT_ID, ACCOUNT_REFRESH_INTERVAL
+        paper_client = IBKRClient(PAPER_IB_HOST, PAPER_IB_PORT, PAPER_IB_CLIENT_ID)
+        logger.info(f"Paper gateway connecting to {PAPER_IB_HOST}:{PAPER_IB_PORT}...")
+        await paper_client.connect_with_retry()
+
+        def on_paper_order(trade):
+            t = asyncio.ensure_future(writer.upsert_order(trade))
+            t.add_done_callback(_on_task_done)
+            payload = {"order_id": trade.order.orderId, "status": trade.orderStatus.status}
+            t2 = asyncio.ensure_future(pub.publish_order(payload))
+            t2.add_done_callback(_on_task_done)
+
+        def on_paper_exec(trade, fill):
+            t = asyncio.ensure_future(writer.write_execution(trade, fill))
+            t.add_done_callback(_on_task_done)
+            t2 = asyncio.ensure_future(
+                pub.publish_order({"type": "execution", "symbol": trade.contract.symbol})
+            )
+            t2.add_done_callback(_on_task_done)
+
+        paper_client.register_order_handlers(on_paper_order, on_paper_exec)
+
+        asyncio.create_task(
+            account_loop(paper_client, writer, pub, ACCOUNT_REFRESH_INTERVAL,
+                         gateway="paper", redis=redis_client),
+            name="paper_account_loop",
+        )
+        asyncio.create_task(
+            order_command_listener(paper_client, pub, channel="order:command:paper"),
+            name="paper_order_listener",
+        )
+        logger.info("Paper gateway initialized successfully")
+    except Exception as e:
+        logger.error(f"Paper gateway init failed (will retry): {e}")
+        await asyncio.sleep(30)
+        asyncio.create_task(init_paper(pool, redis_client, writer, pub))
+
+
 async def main():
     pool = await asyncpg.create_pool(DB_URL)
     redis_client = aioredis.from_url(REDIS_URL)
@@ -367,8 +424,9 @@ async def main():
         asyncio.create_task(tick_loop(client, pub), name="tick_loop"),
         asyncio.create_task(tick_flush_loop(tick_buffer), name="tick_flush"),
         asyncio.create_task(
-            account_loop(client, writer, pub, ACCOUNT_REFRESH_INTERVAL),
-            name="account_loop",
+            account_loop(client, writer, pub, ACCOUNT_REFRESH_INTERVAL,
+                         gateway="live", redis=redis_client),
+            name="live_account_loop",
         ),
         asyncio.create_task(settings_listener(redis_client), name="settings_listener"),
         asyncio.create_task(
@@ -381,10 +439,17 @@ async def main():
             trading_days_refresh_loop(client, daily_tracker), name="trading_days_refresh"
         ),
         asyncio.create_task(
-            order_command_listener(client, pub),
-            name="order_command_listener",
+            order_command_listener(client, pub, channel="order:command:live"),
+            name="live_order_listener",
         ),
     ]
+
+    # Paper Gateway 后台初始化（不阻塞 Live）
+    if HAS_PAPER:
+        asyncio.create_task(
+            init_paper(pool, redis_client, writer, pub),
+            name="init_paper",
+        )
 
     # Wait for shutdown signal
     await shutdown_event.wait()
