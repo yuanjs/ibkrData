@@ -1,13 +1,21 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native'
 import { useAccountStore } from '../src/stores/accountStore'
+import { useMarketStore } from '../src/stores/marketStore'
 import { useTheme } from '../src/theme'
 import { api } from '../src/api/client'
 import { useOrderStore } from '../src/stores/orderStore'
+import { getProductConfig, getSymbolDecimalPlaces } from '../src/config/productConfig'
 
 function fmt(v: number | undefined) {
   if (v == null) return '-'
   return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function fmtPrice(v: number | undefined, sym?: string) {
+  if (v == null) return '-'
+  const d = sym ? getSymbolDecimalPlaces(sym) : 2
+  return v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
 function pnlColor(v: number | undefined) {
@@ -15,15 +23,115 @@ function pnlColor(v: number | undefined) {
   return v >= 0 ? '#26a641' : '#d32f2f'
 }
 
+interface PnlRef {
+  refPnl: number
+  refMarketValue: number
+  refPrice: number
+}
+
 export default function Account() {
-  const summary = useAccountStore(s => s.summary) as Record<string, number>
-  const positions = useAccountStore(s => s.positions) as Array<Record<string, unknown>>
+  const activeGateway = useAccountStore(s => s.activeGateway)
+  const setActiveGateway = useAccountStore(s => s.setActiveGateway)
+  const hasPaper = useAccountStore(s => s.hasPaper)
+  const gatewayMap = useAccountStore(s => s.gatewayMap)
+  const setGatewayMap = useAccountStore(s => s.setGatewayMap)
+  const summary = useAccountStore(s => activeGateway === 'live' ? s.live.summary : s.paper.summary)
+  const positions = useAccountStore(s => activeGateway === 'live' ? s.live.positions : s.paper.positions)
   const orders = useOrderStore(s => s.orders) as Array<Record<string, unknown>>
   const { colors } = useTheme()
-
   const [closePending, setClosePending] = useState<{ closeId: string; symbol: string } | null>(null)
 
-  // Watch for the close order result via WebSocket
+  // Gateway map load
+  useEffect(() => {
+    if (Object.keys(gatewayMap).length === 0) {
+      api.get('/gateway/map').then(setGatewayMap).catch(() => {})
+    }
+  }, [gatewayMap, setGatewayMap])
+
+  // REST fallback on page load
+  useEffect(() => {
+    if (Object.keys(gatewayMap).length === 0) return
+    const stored = useAccountStore.getState()
+    const has = (stored.live.summary && Object.keys(stored.live.summary).length) ||
+                (stored.paper.summary && Object.keys(stored.paper.summary).length)
+    if (has) return
+    api.get<Record<string, unknown>[]>('/account').then(accounts => {
+      api.get<Record<string, unknown>[]>('/positions').then(positions => {
+        if (Array.isArray(accounts) && accounts.length) {
+          useAccountStore.getState().setAccount({ accounts, positions: Array.isArray(positions) ? positions : [] })
+        }
+      }).catch(() => {})
+    }).catch(() => {})
+  }, [gatewayMap])
+
+  // Real-time PnL
+  const quotes = useMarketStore(s => s.quotes)
+  const quotesRef = useRef(quotes)
+  quotesRef.current = quotes
+  const pnlRefs = useRef<Record<string, PnlRef>>({})
+
+  const prevPosRef = useRef('')
+  const posKey = JSON.stringify((positions as Array<Record<string, unknown>>).map(p => [p.symbol, p.market_value, p.unrealized_pnl]))
+  useEffect(() => {
+    if (posKey === prevPosRef.current) return
+    prevPosRef.current = posKey
+    const refs: Record<string, PnlRef> = {}
+    for (const pos of (positions as Array<Record<string, unknown>>)) {
+      const sym = pos.symbol as string
+      const mv = pos.market_value as number | undefined
+      const up = pos.unrealized_pnl as number | undefined
+      const last = (quotesRef.current as Record<string, any>)?.[sym]?.last
+      if (mv != null && up != null && last != null && last > 0) {
+        refs[sym] = { refPnl: up, refMarketValue: mv, refPrice: last }
+      }
+    }
+    if (Object.keys(refs).length) pnlRefs.current = refs
+  }, [posKey])
+
+  function getMult(pos: Record<string, unknown>): number {
+    const fromPos = pos.multiplier as number | undefined
+    if (fromPos != null && fromPos > 0) return fromPos
+    return getProductConfig(pos.symbol as string).multiplier ?? 1
+  }
+
+  function entryPrice(pos: Record<string, unknown>): string {
+    const avg = pos.avg_cost as number | undefined
+    if (avg == null) return '-'
+    return fmtPrice(avg / getMult(pos), pos.symbol as string)
+  }
+
+  function currentQuote(pos: Record<string, unknown>): string {
+    const q = (quotesRef.current as Record<string, any>)?.[pos.symbol as string]
+    if (q?.bid != null && q.bid > 0 && q?.ask != null && q.ask > 0) {
+      return `${fmtPrice(q.bid, pos.symbol as string)} / ${fmtPrice(q.ask, pos.symbol as string)}`
+    }
+    if (q?.last != null && q.last > 0) return fmtPrice(q.last, pos.symbol as string)
+    return '-'
+  }
+
+  function calcPnl(pos: Record<string, unknown>): { pnl: number | undefined; isRealtime: boolean } {
+    const sym = pos.symbol as string
+    const ref = pnlRefs.current[sym]
+    if (ref) {
+      const p = (quotesRef.current as Record<string, any>)?.[sym]?.last
+      if (p && p > 0 && ref.refPrice > 0 && ref.refMarketValue) {
+        const ratio = p / ref.refPrice
+        return { pnl: ref.refPnl + (ref.refMarketValue * ratio - ref.refMarketValue), isRealtime: true }
+      }
+      return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
+    }
+    // Fallback with IBKR multiplier
+    const last = (quotesRef.current as Record<string, any>)?.[sym]?.last
+    const qty = pos.quantity as number | undefined
+    const avg = pos.avg_cost as number | undefined
+    if (last != null && last > 0 && qty != null && qty !== 0 && avg != null && avg > 0) {
+      const mult = getMult(pos)
+      return { pnl: (last * mult - avg) * qty, isRealtime: true }
+    }
+    return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
+  }
+
+  // Close order watch
   useEffect(() => {
     if (!closePending) return
     const lastOrder = orders[0] as Record<string, unknown> | undefined
@@ -72,6 +180,22 @@ export default function Account() {
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Gateway tabs */}
+      {hasPaper && (
+        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+          {(['live', 'paper'] as const).map(g => (
+            <TouchableOpacity key={g} onPress={() => setActiveGateway(g)}
+              style={[styles.tabBtn, {
+                backgroundColor: activeGateway === g ? '#2563eb' : colors.surface,
+              }]}>
+              <Text style={{ color: activeGateway === g ? '#fff' : colors.textSecondary, fontSize: 14, fontWeight: '600' }}>
+                {g === 'live' ? '实盘' : '模拟'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
       <View style={styles.cardGrid}>
         {cards.map(({ label, key }) => (
           <View key={key} style={[styles.card, { backgroundColor: colors.surface }]}>
@@ -79,10 +203,10 @@ export default function Account() {
             <Text
               style={[
                 styles.cardValue,
-                { color: key.includes('pnl') ? pnlColor(summary[key]) ?? colors.textPrimary : colors.textPrimary },
+                { color: key.includes('pnl') ? pnlColor(summary[key] as number) ?? colors.textPrimary : colors.textPrimary },
               ]}
             >
-              {fmt(summary[key])}
+              {fmt(summary[key] as number)}
             </Text>
           </View>
         ))}
@@ -91,23 +215,23 @@ export default function Account() {
       <View style={styles.section}>
         <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>当前持仓</Text>
 
-        {/* Table header */}
         <View style={[styles.tableHeader, { borderBottomColor: colors.border }]}>
           <Text style={[styles.th, styles.colSym, { color: colors.textSecondary }]}>标的</Text>
           <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>数量</Text>
-          <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>均价</Text>
-          <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>市值</Text>
+          <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>开仓价</Text>
+          <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>当前报价</Text>
           <Text style={[styles.th, styles.colNum, { color: colors.textSecondary }]}>盈亏</Text>
           <Text style={[styles.th, styles.colAction, { color: colors.textSecondary }]}>操作</Text>
         </View>
 
-        {positions.map((p, i) => {
+        {(positions as Array<Record<string, unknown>>).map((p) => {
           const symbol = p.symbol as string
           const quantity = p.quantity as number
           const isPending = closePending?.symbol === symbol
+          const pnl = calcPnl(p)
           return (
             <View
-              key={i}
+              key={symbol}
               style={[
                 styles.tableRow,
                 { borderBottomColor: colors.borderLight, opacity: isPending ? 0.6 : 1 },
@@ -120,13 +244,14 @@ export default function Account() {
                 {quantity}
               </Text>
               <Text style={[styles.td, styles.colNum, { color: colors.textPrimary, fontFamily: 'monospace' }]}>
-                {fmt(p.avg_cost as number)}
+                {entryPrice(p)}
               </Text>
               <Text style={[styles.td, styles.colNum, { color: colors.textPrimary, fontFamily: 'monospace' }]}>
-                {fmt(p.market_value as number)}
+                {currentQuote(p)}
               </Text>
-              <Text style={[styles.td, styles.colNum, { color: pnlColor(p.unrealized_pnl as number) ?? colors.textPrimary, fontFamily: 'monospace' }]}>
-                {fmt(p.unrealized_pnl as number)}
+              <Text style={[styles.td, styles.colNum, { color: pnlColor(pnl.pnl) ?? colors.textPrimary, fontFamily: 'monospace' }]}>
+                {fmt(pnl.pnl)}
+                {pnl.isRealtime ? '⚡' : ''}
               </Text>
               <View style={styles.colAction}>
                 <TouchableOpacity
@@ -160,6 +285,11 @@ const styles = StyleSheet.create({
   cardValue: { fontSize: 17, fontFamily: 'monospace', fontWeight: '700' },
   section: { marginTop: 20 },
   sectionTitle: { fontSize: 13, marginBottom: 8 },
+  tabBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
   tableHeader: {
     flexDirection: 'row',
     borderBottomWidth: 1,
