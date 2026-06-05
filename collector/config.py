@@ -35,3 +35,10 @@ PRODUCT_ROLL_CONFIG = {
     "MNQ": {"timezone": "America/Chicago", "roll_hour": 16, "roll_minute": 0},
     "MES": {"timezone": "America/Chicago", "roll_hour": 16, "roll_minute": 0},
 }
+
+# Paper Gateway (optional — leave PAPER_IB_HOST empty to disable)
+PAPER_IB_HOST = os.getenv("PAPER_IB_HOST", "")
+PAPER_IB_PORT = int(os.getenv("PAPER_IB_PORT", "4002"))
+PAPER_IB_CLIENT_ID = int(os.getenv("PAPER_IB_CLIENT_ID", "99"))
+
+HAS_PAPER = bool(PAPER_IB_HOST)
