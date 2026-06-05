@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert } from 'react-native'
 import { File, Paths, Directory } from 'expo-file-system'
 import * as Sharing from 'expo-sharing'
 import { api } from '../src/api/client'
 import { useTheme } from '../src/theme'
 import { getSymbolDecimalPlaces } from '../src/config/productConfig'
+import { useOrderStore } from '../src/stores/orderStore'
 
 type TabKey = 'orders' | 'trades' | 'pnl'
 
@@ -14,12 +15,24 @@ export default function Orders() {
   const [pnl, setPnl] = useState<unknown[]>([])
   const [tab, setTab] = useState<TabKey>('orders')
   const { colors } = useTheme()
+  const wsOrderCount = useOrderStore(s => s.orders.length)
 
-  useEffect(() => {
+  const fetchData = () => {
     api.get('/orders').then(d => { if (Array.isArray(d)) setOrders(d) })
     api.get('/trades').then(d => { if (Array.isArray(d)) setTrades(d) })
     api.get('/pnl').then(d => { if (Array.isArray(d)) setPnl(d) })
-  }, [])
+  }
+
+  useEffect(() => { fetchData() }, [])
+
+  // WebSocket 有新的订单推送时自动刷新
+  const prevCount = useRef(wsOrderCount)
+  useEffect(() => {
+    if (wsOrderCount !== prevCount.current) {
+      prevCount.current = wsOrderCount
+      fetchData()
+    }
+  }, [wsOrderCount])
 
   const exportCSV = async () => {
     try {

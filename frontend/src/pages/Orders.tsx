@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api/client'
 import { getSymbolDecimalPlaces } from '../config/productConfig'
 import { useAccountStore } from '../store/accountStore'
+import { useOrderStore } from '../store/orderStore'
 
 type GatewayFilter = '' | 'live' | 'paper'
 
@@ -15,6 +16,7 @@ export function Orders() {
   const gatewayMap = useAccountStore(s => s.gatewayMap)
   const setGatewayMap = useAccountStore(s => s.setGatewayMap)
   const hasPaper = useAccountStore(s => s.hasPaper)
+  const wsOrderCount = useOrderStore(s => s.orders.length)
 
   // 页面刷新后通过 REST 加载 gateway map（不等 WebSocket）
   useEffect(() => {
@@ -31,6 +33,15 @@ export function Orders() {
   }, [gateway])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  // WebSocket 有新的订单/成交推送时自动刷新
+  const prevCount = useRef(wsOrderCount)
+  useEffect(() => {
+    if (wsOrderCount !== prevCount.current) {
+      prevCount.current = wsOrderCount
+      fetchData()
+    }
+  }, [wsOrderCount, fetchData])
 
   const gwLabel = (account_id: string | undefined) => {
     if (!account_id) return ''
