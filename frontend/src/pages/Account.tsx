@@ -4,11 +4,20 @@ import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
 
 export function Account() {
-  const summary = useAccountStore(s => s.summary) as Record<string, number>
-  const positions = useAccountStore(s => s.positions) as Array<Record<string, unknown>>
+  const activeGateway = useAccountStore(s => s.activeGateway)
+  const setActiveGateway = useAccountStore(s => s.setActiveGateway)
+  const hasPaper = useAccountStore(s => s.hasPaper)
+  const summary = useAccountStore(s => activeGateway === 'live' ? s.live.summary : s.paper.summary)
+  const positions = useAccountStore(s => activeGateway === 'live' ? s.live.positions : s.paper.positions)
+  const setGatewayMap = useAccountStore(s => s.setGatewayMap)
   const orders = useOrderStore(s => s.orders) as Array<Record<string, unknown>>
   const [closePending, setClosePending] = useState<{ closeId: string; symbol: string } | null>(null)
   const [closeMsg, setCloseMsg] = useState<string | null>(null)
+
+  // 加载 gateway map (页面首次挂载时)
+  useEffect(() => {
+    api.get('/gateway/map').then(setGatewayMap).catch(() => {})
+  }, [setGatewayMap])
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
@@ -23,14 +32,13 @@ export function Account() {
       } else if (lastOrder?.status === 'Rejected') {
         setCloseMsg(`${closePending.symbol} 平仓失败`)
       }
-      // Clear pending state after a brief delay so user sees result
       const timer = setTimeout(() => { setClosePending(null); setCloseMsg(null) }, 4000)
       return () => clearTimeout(timer)
     }
   }, [orders, closePending])
 
   const handleClose = async (symbol: string) => {
-    const pos = positions.find(p => p.symbol === symbol) as Record<string, unknown> | undefined
+    const pos = (positions as Array<Record<string, unknown>>).find(p => p.symbol === symbol)
     if (!pos) return
     const sideLabel = (pos.quantity as number) > 0 ? '卖出' : '买入'
     const qty = Math.abs(pos.quantity as number)
@@ -48,6 +56,28 @@ export function Account() {
 
   return (
     <div className="p-4 space-y-6">
+      {/* Gateway 切换标签 — 仅在有 paper 账户时显示 */}
+      {hasPaper && (
+        <div className="flex gap-2 mb-2">
+          <button onClick={() => setActiveGateway('live')}
+            className={`px-4 py-1.5 text-sm rounded ${
+              activeGateway === 'live'
+                ? 'bg-blue-600 text-white'
+                : 'text-[var(--text-secondary)] bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
+            }`}>
+            实盘
+          </button>
+          <button onClick={() => setActiveGateway('paper')}
+            className={`px-4 py-1.5 text-sm rounded ${
+              activeGateway === 'paper'
+                ? 'bg-blue-600 text-white'
+                : 'text-[var(--text-secondary)] bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
+            }`}>
+            模拟
+          </button>
+        </div>
+      )}
+
       {closeMsg && (
         <div className="px-4 py-2 rounded text-sm"
           style={{ backgroundColor: closeMsg.includes('成功') ? '#1b5e20' : closeMsg.includes('失败') ? '#b71c1c' : 'var(--bg-surface)', color: '#fff' }}>
@@ -65,8 +95,8 @@ export function Account() {
           <div key={key} className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-surface)' }}>
             <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>{label}</div>
             <div className="text-lg font-mono font-bold"
-              style={{ color: key.includes('pnl') ? pnlColor(summary[key]) : 'var(--text-primary)' }}>
-              {fmt(summary[key])}
+              style={{ color: key.includes('pnl') ? pnlColor(summary[key] as number) : 'var(--text-primary)' }}>
+              {fmt(summary[key] as number)}
             </div>
           </div>
         ))}
@@ -86,7 +116,7 @@ export function Account() {
             </tr>
           </thead>
           <tbody>
-            {positions.map((p, i) => {
+            {(positions as Array<Record<string, unknown>>).map((p, i) => {
               const sym = p.symbol as string
               const isPending = closePending?.symbol === sym
               return (
