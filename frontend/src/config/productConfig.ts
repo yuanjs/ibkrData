@@ -103,11 +103,18 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     rollMinute: 0,
     multiplier: 5,
   },
+  'MICRO_DOW': {
+    timezone: 'America/Chicago',
+    rollHour: 16,
+    rollMinute: 0,
+    multiplier: 0.50,
+  },
 };
 
 function normalizeSymbol(s: string): string {
   if (s === 'SPI' || s === 'AP') return 'ASX200'
-  if (s === 'YM' || s === 'DOW' || s === 'IX.D.DOW.IFA.IP' || s === 'DOW_MINI' || s === 'MYM') return 'WALLSTREET'
+  if (s === 'MYM') return 'MICRO_DOW'
+  if (s === 'YM' || s === 'DOW' || s === 'IX.D.DOW.IFA.IP' || s === 'DOW_MINI') return 'WALLSTREET'
   if (s === 'N225M' || s === '225M') return 'NIKKEI_MINI'
   if (s === 'USD.JPY') return 'USDJPY'
   if (s === 'AUD.USD') return 'AUDUSD'
