@@ -18,6 +18,7 @@ export const SYMBOL_DESCRIPTIONS: Record<string, string> = {
   'US10Y': '美债',
   'ZC': '玉米',
   'CORN': '玉米',
+  'HG': '高级铜',
   'MNQ': '纳指',
   'NQ': '纳指',
   'MES': '标普',
@@ -74,6 +75,12 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     timezone: 'America/Chicago',
     rollHour: 16,
     rollMinute: 0,
+  },
+  'HG': {
+    timezone: 'America/Chicago',
+    rollHour: 16,
+    rollMinute: 0,
+    decimalPlaces: 4,
   },
   'NAS100': {
     timezone: 'America/Chicago',
