@@ -44,7 +44,7 @@ export const useAccountStore = create<AccountStore>((set) => ({
 
   setGatewayMap: (map) => set({
     gatewayMap: Object.entries(map).reduce((acc, [gw, ids]) => {
-      ;(ids as string[]).forEach(id => { acc[id] = gw })
+      ;(ids as string[]).filter(id => id !== 'All').forEach(id => { acc[id] = gw })
       return acc
     }, {} as Record<string, string>),
     hasPaper: Boolean((map.paper as string[] | undefined)?.length),

@@ -62,10 +62,11 @@ _paper_tasks: set[asyncio.Task] = set()
 
 
 async def _update_gateway_map(redis, gateway: str, accounts: list[dict]):
+    """发布 gateway→account_id 映射，排除 "All"（IBKR 虚拟聚合账户，无有效数据）。"""
     key = "gateway:account_map"
     raw = await redis.get(key)
     mapping: dict[str, list[str]] = json.loads(raw) if raw else {}
-    ids = [a["account_id"] for a in accounts]
+    ids = [a["account_id"] for a in accounts if a["account_id"] not in ("All", "", None)]
     mapping[gateway] = ids
     await redis.set(key, json.dumps(mapping))
     await redis.publish("gateway:map:update", json.dumps(mapping))
