@@ -85,8 +85,8 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     multiplier: 50,
   },
   'HG': {
-    timezone: 'America/Chicago',
-    rollHour: 16,
+    timezone: 'America/New_York',
+    rollHour: 17,
     rollMinute: 0,
     decimalPlaces: 4,
     multiplier: 25000,
