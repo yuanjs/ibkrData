@@ -25,6 +25,7 @@ export function Account() {
   }, [gatewayMap, setGatewayMap])
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
+  const fmtPrice = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { maximumFractionDigits: 6 }) : '-'
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
 
   // ===== 实时 PnL：用 tick 价格推算持仓市值变化 =====
@@ -187,12 +188,13 @@ export function Account() {
 
       <div className="overflow-x-auto">
         <h2 className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>当前持仓</h2>
-        <table className="w-full text-sm min-w-[700px] md:min-w-0">
+        <table className="w-full text-sm min-w-[820px] md:min-w-0">
           <thead>
             <tr className="border-b" style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>
               <th className="text-left py-2 px-3">标的</th>
               <th className="text-right py-2 px-3">数量</th>
-              <th className="text-right py-2 px-3">均价</th>
+              <th className="text-right py-2 px-3">开仓价</th>
+              <th className="text-right py-2 px-3">当前报价</th>
               <th className="text-right py-2 px-3">市值</th>
               <th className="text-right py-2 px-3">未实现盈亏</th>
               <th className="text-center py-2 px-3">操作</th>
@@ -210,6 +212,16 @@ export function Account() {
                   <td className="py-2 px-3 font-mono font-bold" style={{ color: 'var(--text-primary)' }}>{sym}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{p.quantity as number}</td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{fmt(p.avg_cost as number)}</td>
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
+                    {(() => {
+                      const q = (quotes as Record<string, any>)?.[sym]
+                      if (q?.bid != null && q.bid > 0 && q?.ask != null && q.ask > 0) {
+                        return `${fmtPrice(q.bid)} / ${fmtPrice(q.ask)}`
+                      }
+                      if (q?.last != null && q.last > 0) return fmt(q.last)
+                      return '-'
+                    })()}
+                  </td>
                   <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>
                     {fmt(realtimeMarketValue(p).mv)}
                     {realtimeMarketValue(p).isRealtime && <RealtimeBadge />}
