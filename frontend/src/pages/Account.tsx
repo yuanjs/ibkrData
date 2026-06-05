@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
 import { useMarketStore } from '../store/marketStore'
-import { getProductConfig } from '../config/productConfig'
+import { getProductConfig, getSymbolDecimalPlaces } from '../config/productConfig'
 
 export function Account() {
   const activeGateway = useAccountStore(s => s.activeGateway)
@@ -25,7 +25,11 @@ export function Account() {
   }, [gatewayMap, setGatewayMap])
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
-  const fmtPrice = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { maximumFractionDigits: 6 }) : '-'
+  const fmtPrice = (v: number | undefined, sym?: string) => {
+    if (v == null) return '-'
+    const d = sym ? getSymbolDecimalPlaces(sym) : 2
+    return v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
+  }
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
 
   // ===== 实时 PnL：用 tick 价格推算持仓市值变化 =====
@@ -126,7 +130,7 @@ export function Account() {
   function entryPrice(pos: Record<string, unknown>): string {
     const avg = pos.avg_cost as number | undefined
     if (avg == null) return '-'
-    return fmtPrice(avg / getMult(pos))
+    return fmtPrice(avg / getMult(pos), pos.symbol as string)
   }
 
   const RealtimeBadge = () => (
@@ -243,9 +247,9 @@ export function Account() {
                     {(() => {
                       const q = getQuote(sym)
                       if (q?.bid != null && q.bid > 0 && q?.ask != null && q.ask > 0) {
-                        return `${fmtPrice(q.bid)} / ${fmtPrice(q.ask)}`
+                        return `${fmtPrice(q.bid, sym)} / ${fmtPrice(q.ask, sym)}`
                       }
-                      if (q?.last != null && q.last > 0) return fmtPrice(q.last)
+                      if (q?.last != null && q.last > 0) return fmtPrice(q.last, sym)
                       return '-'
                     })()}
                   </td>
