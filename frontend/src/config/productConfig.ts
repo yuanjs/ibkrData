@@ -35,6 +35,7 @@ interface ProductConfig {
   rollHour: number
   rollMinute: number
   decimalPlaces?: number
+  multiplier?: number   // 合约乘数，用于实时 PnL 计算
 }
 
 export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
@@ -42,57 +43,66 @@ export const PRODUCT_CONFIGS: Record<string, ProductConfig> = {
     timezone: 'Australia/Sydney',
     rollHour: 17,
     rollMinute: 10,
+    multiplier: 25,
   },
   'WALLSTREET': {
     timezone: 'America/Chicago',
     rollHour: 16,
     rollMinute: 0,
+    multiplier: 5,
   },
   'NIKKEI_MINI': {
     timezone: 'Asia/Tokyo',
     rollHour: 16,
     rollMinute: 30,
+    multiplier: 100,
   },
   'USDJPY': {
     timezone: 'America/New_York',
     rollHour: 17,
     rollMinute: 0,
     decimalPlaces: 3,
+    multiplier: 100000,
   },
   'AUDUSD': {
     timezone: 'America/New_York',
     rollHour: 17,
     rollMinute: 0,
     decimalPlaces: 5,
+    multiplier: 100000,
   },
   'US10Y': {
     timezone: 'America/Chicago',
     rollHour: 16,
     rollMinute: 0,
     decimalPlaces: 3,
+    multiplier: 1000,
   },
   'CORN': {
     timezone: 'America/Chicago',
     rollHour: 16,
     rollMinute: 0,
+    multiplier: 50,
   },
   'HG': {
     timezone: 'America/Chicago',
     rollHour: 16,
     rollMinute: 0,
     decimalPlaces: 4,
+    multiplier: 25000,
   },
   'NAS100': {
     timezone: 'America/Chicago',
     rollHour: 16,
     rollMinute: 0,
+    multiplier: 2,
   },
   'SP500': {
     timezone: 'America/Chicago',
     rollHour: 16,
     rollMinute: 0,
+    multiplier: 5,
   },
-};
 
 function normalizeSymbol(s: string): string {
   if (s === 'SPI' || s === 'AP') return 'ASX200'

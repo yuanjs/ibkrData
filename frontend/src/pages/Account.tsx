@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
 import { useMarketStore } from '../store/marketStore'
+import { getProductConfig } from '../config/productConfig'
 
 export function Account() {
   const activeGateway = useAccountStore(s => s.activeGateway)
@@ -59,7 +60,17 @@ export function Account() {
   function realtimePnl(pos: Record<string, unknown>): { pnl: number | undefined; isRealtime: boolean } {
     const sym = pos.symbol as string
     const ref = pnlRefs.current[sym]
-    if (!ref) return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
+    if (!ref) {
+      // 无参考点：用 tick 价格 + multiplier 自行估算
+      const last = (quotes as Record<string, any>)?.[sym]?.last
+      const qty = pos.quantity as number | undefined
+      const avg = pos.avg_cost as number | undefined
+      if (last != null && last > 0 && qty != null && qty !== 0 && avg != null && avg > 0) {
+        const mult = getProductConfig(sym).multiplier ?? 1
+        return { pnl: (last - avg) * qty * mult, isRealtime: true }
+      }
+      return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
+    }
     const currentPrice = (quotes as Record<string, any>)?.[sym]?.last
     if (!currentPrice || !ref.refPrice || ref.refPrice <= 0 || !ref.refMarketValue) {
       return { pnl: pos.unrealized_pnl as number | undefined, isRealtime: false }
@@ -73,7 +84,16 @@ export function Account() {
   function realtimeMarketValue(pos: Record<string, unknown>): { mv: number | undefined; isRealtime: boolean } {
     const sym = pos.symbol as string
     const ref = pnlRefs.current[sym]
-    if (!ref) return { mv: pos.market_value as number | undefined, isRealtime: false }
+    if (!ref) {
+      // 无参考点：用 tick 价格 + multiplier 自行估算
+      const last = (quotes as Record<string, any>)?.[sym]?.last
+      const qty = pos.quantity as number | undefined
+      if (last != null && last > 0 && qty != null && qty !== 0) {
+        const mult = getProductConfig(sym).multiplier ?? 1
+        return { mv: last * qty * mult, isRealtime: true }
+      }
+      return { mv: pos.market_value as number | undefined, isRealtime: false }
+    }
     const currentPrice = (quotes as Record<string, any>)?.[sym]?.last
     if (!currentPrice || !ref.refPrice || ref.refPrice <= 0) {
       return { mv: pos.market_value as number | undefined, isRealtime: false }
