@@ -113,3 +113,16 @@ async def ws_tick(ws: WebSocket, token: str = Query(default="")):
             await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect("tick:", ws)
+
+
+async def ws_gateway_map(ws: WebSocket, token: str = Query(default="")):
+    """WebSocket endpoint for gateway->account_id mapping updates."""
+    if not _verify_token(token):
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+    await manager.connect("gateway:map:update", ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect("gateway:map:update", ws)
