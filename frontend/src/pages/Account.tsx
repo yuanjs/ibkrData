@@ -24,6 +24,23 @@ export function Account() {
     }
   }, [gatewayMap, setGatewayMap])
 
+  // WebSocket 数据到达前的初始加载：从 REST API 拉取账户快照
+  useEffect(() => {
+    if (Object.keys(gatewayMap).length === 0) return
+    const stored = useAccountStore.getState()
+    const hasLive = stored.live.summary && Object.keys(stored.live.summary).length
+    const hasPaper = stored.paper.summary && Object.keys(stored.paper.summary).length
+    if (hasLive && hasPaper) return  // 已有 WebSocket 数据，跳过
+
+    api.get<Record<string, unknown>[]>('/account').then(accounts => {
+      api.get<Record<string, unknown>[]>('/positions').then(positions => {
+        if (Array.isArray(accounts) && accounts.length) {
+          useAccountStore.getState().setAccount({ accounts, positions: Array.isArray(positions) ? positions : [] })
+        }
+      }).catch(() => {})
+    }).catch(() => {})
+  }, [gatewayMap])
+
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
   const fmtPrice = (v: number | undefined, sym?: string) => {
     if (v == null) return '-'
