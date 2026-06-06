@@ -49,8 +49,8 @@ async def cmd_status(args, cfg):
 
         print(f"\n产品状态总览:\n")
         for p in products:
-            t_min, t_max, cnt = await writer.get_range(p.symbol)
-            gaps = await writer.detect_gaps(p.symbol)
+            t_min, t_max, cnt = await writer.get_range(p.symbol, p.sec_type)
+            gaps = await writer.detect_gaps(p.symbol, sec_type=p.sec_type)
             bar_count = f"{cnt:,}"
             if t_min and t_max:
                 date_range = f"{t_min.date()} ~ {t_max.date()}"

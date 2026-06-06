@@ -197,8 +197,8 @@ class PullScheduler:
 
         *FUT*: queries all expired + active contracts via
         ``Future(includeExpired=True)``, filters to quarterly main
-        contracts, and backfills each contract's active period using
-        the standard windowed approach with ``endDateTime``.
+        contracts, and backfills each contract's active period into
+        ``futures_minute_bars`` with contract identity preserved.
 
         *CASH* / *STK*: windowed backfill directly.
         """
@@ -333,7 +333,7 @@ class PullScheduler:
     async def _pull_fut_via_expired_contracts(
         self, product: ProductConfig,
     ) -> None:
-        """Backfill continuous futures by pulling each quarterly contract's
+        """Backfill raw futures by pulling each quarterly contract's
         active period via windowed ``reqHistoricalData`` with ``endDateTime``.
 
         Each quarterly contract (expiry months 03/06/09/12) is active
@@ -341,8 +341,9 @@ class PullScheduler:
         windows using the individual contract (by conId), which **does**
         support ``endDateTime`` — unlike CONTFUT.
 
-        The resulting data in *minute_bars* is a continuous chain that
-        the user can roll themselves (or simply use as-is for ML).
+        The resulting data in *futures_minute_bars* is raw single-contract
+        history.  Continuous futures roll selection and adjustment should be
+        derived from this raw table, not performed during download.
         """
         contracts = await self._resolve_fut_contracts(product)
         if not contracts:
@@ -410,7 +411,9 @@ class PullScheduler:
                             whatToShow=resolve_what_to_show(product.sec_type),
                             useRTH=False, formatDate=1,
                         )
-                        await self._writer.upsert_bars(product.symbol, bars)
+                        await self._writer.upsert_futures_bars(
+                            product.symbol, contract, bars,
+                        )
                         self._connection_ok = True
                         await asyncio.sleep(
                             self._config.request_interval_seconds)

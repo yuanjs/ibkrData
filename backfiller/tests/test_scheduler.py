@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from backfiller.scheduler import PullScheduler, split_windows
-from backfiller.config import AppConfig, ProductConfig
+from backfiller.config import AppConfig, ProductConfig, load_config
 from backfiller.db_writer import MinuteBarWriter
 
 
@@ -31,6 +31,8 @@ def mock_config():
 def mock_writer():
     writer = MagicMock(spec=MinuteBarWriter)
     writer.get_range = AsyncMock(return_value=(None, None, 0))
+    writer.upsert_bars = AsyncMock(return_value=0)
+    writer.upsert_futures_bars = AsyncMock(return_value=0)
     return writer
 
 
@@ -148,8 +150,7 @@ def test_check_new_products(mock_config, mock_writer, tmp_path):
     scheduler = PullScheduler(mock_config, mock_writer, tmp_path)
     scheduler._known_symbols = set()
     new_products = scheduler._check_new_products()
-    # The project's config.yaml defines 8 products
-    assert len(new_products) == 8
+    assert len(new_products) == len(load_config().products)
 
 
 @pytest.mark.asyncio
@@ -245,3 +246,54 @@ async def test_pull_product_contract_failure(mock_config, mock_writer, tmp_path)
         store_instance.save.assert_called_once()
         # 不应标记任何窗口为 completed
         store_instance.mark_completed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_writes_contract_level_raw_bars(mock_writer, tmp_path):
+    """期货回填必须保留 conId，写入 futures_minute_bars 专用路径。"""
+    product = ProductConfig(
+        symbol="MES", sec_type="FUT", exchange="CME", currency="USD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-03-01",
+        end="2024-03-02",
+        request_interval_seconds=0,
+    )
+
+    mock_contract = MagicMock()
+    mock_contract.conId = 123456
+    mock_contract.lastTradeDateOrContractMonth = "20240315"
+    mock_contract.includeExpired = False
+
+    mock_bar = MagicMock()
+    mock_bar.date = datetime(2024, 3, 1, 0, 0, tzinfo=timezone.utc)
+    mock_bar.open = 1
+    mock_bar.high = 2
+    mock_bar.low = 0.5
+    mock_bar.close = 1.5
+    mock_bar.volume = 10
+    mock_bar.barCount = 3
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[mock_bar])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(
+            return_value=[mock_contract],
+        )
+
+        await scheduler._pull_product(product)
+
+    mock_writer.upsert_futures_bars.assert_awaited()
+    called_symbol, called_contract, called_bars = (
+        mock_writer.upsert_futures_bars.await_args.args
+    )
+    assert called_symbol == "MES"
+    assert called_contract is mock_contract
+    assert called_bars == [mock_bar]
+    mock_writer.upsert_bars.assert_not_awaited()
+    assert mock_contract.includeExpired is True
