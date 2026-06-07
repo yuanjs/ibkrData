@@ -4,11 +4,14 @@ IBKR 历史 1 分钟 K 线数据拉取工具
 
 Usage:
   python -m backfiller.main --pull
+  python -m backfiller.main --pull-daily
   python -m backfiller.main --pull --only SPI MNQ
+  python -m backfiller.main --pull-daily --only SPI MNQ
   python -m backfiller.main --status
   python -m backfiller.main --status --only SPI
   python -m backfiller.main --check
   python -m backfiller.main --check --only AAPL
+  python -m backfiller.main --roll-calendar --only SPI --dry-run
 """
 
 import argparse
@@ -28,6 +31,7 @@ from ib_insync import IB
 from backfiller.config import load_config, AppConfig
 from backfiller.contract import resolve_contract, resolve_what_to_show
 from backfiller.db_writer import MinuteBarWriter
+from backfiller.roll_calendar import RollCalendarGenerator
 from backfiller.scheduler import PullScheduler
 
 logger = logging.getLogger(__name__)
@@ -125,18 +129,23 @@ def cmd_check(args, cfg):
 # --pull
 # ---------------------------------------------------------------------------
 
-async def cmd_pull(args, cfg):
+def _filtered_pull_config(args, cfg):
     products = cfg.products
     if args.only:
         products = [p for p in products if p.symbol in args.only]
 
-    filtered_cfg = AppConfig(
+    return AppConfig(
         products=products,
         start=cfg.start, end=cfg.end,
+        futures_overlap_trading_days=cfg.futures_overlap_trading_days,
         request_interval_seconds=cfg.request_interval_seconds,
         ib_host=cfg.ib_host, ib_port=cfg.ib_port,
         ib_client_id=cfg.ib_client_id, db_url=cfg.db_url,
     )
+
+
+async def cmd_pull(args, cfg):
+    filtered_cfg = _filtered_pull_config(args, cfg)
 
     pool = await MinuteBarWriter.create_pool(cfg.db_url)
     writer = MinuteBarWriter(pool)
@@ -162,6 +171,69 @@ async def cmd_pull(args, cfg):
 
 
 # ---------------------------------------------------------------------------
+# --pull-daily
+# ---------------------------------------------------------------------------
+
+async def cmd_pull_daily(args, cfg):
+    filtered_cfg = _filtered_pull_config(args, cfg)
+
+    pool = await MinuteBarWriter.create_pool(cfg.db_url)
+    writer = MinuteBarWriter(pool)
+    scheduler = PullScheduler(filtered_cfg, writer, PROGRESS_DIR,
+                              allow_new_products=False)
+
+    loop = asyncio.get_running_loop()
+
+    def _signal_handler():
+        logger.info("SIGINT received, finishing current daily window...")
+        scheduler.request_stop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signal_handler)
+
+    try:
+        await scheduler.run_daily()
+    finally:
+        scheduler.disconnect()
+        await pool.close()
+    logger.info("Daily pull complete")
+
+
+# ---------------------------------------------------------------------------
+# --roll-calendar
+# ---------------------------------------------------------------------------
+
+async def cmd_roll_calendar(args, cfg):
+    products = [p for p in cfg.products if p.sec_type == "FUT"]
+    if args.only:
+        products = [p for p in products if p.symbol in args.only]
+
+    pool = await MinuteBarWriter.create_pool(cfg.db_url)
+    generator = RollCalendarGenerator(pool)
+    try:
+        for p in products:
+            events = await generator.generate(
+                p.symbol,
+                fallback_days_before_expiry=args.fallback_days,
+                min_confirm_days=args.confirm_days,
+                replace=args.replace_rolls,
+                dry_run=args.dry_run,
+            )
+            mode = "DRY RUN" if args.dry_run else "SAVED"
+            print(f"\n{p.symbol} roll calendar ({mode}): {len(events)} events")
+            for e in events:
+                print(
+                    f"  {e.from_local_symbol:<6} -> {e.to_local_symbol:<6} "
+                    f"{e.roll_time.date()} "
+                    f"gap={e.price_gap:.4f} ratio={e.ratio:.8f} "
+                    f"old_vol={e.old_volume} new_vol={e.new_volume} "
+                    f"rule={e.roll_rule}"
+                )
+    finally:
+        await pool.close()
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -174,11 +246,23 @@ def parse_args(argv=None):
 
     sub = parser.add_mutually_exclusive_group(required=True)
     sub.add_argument("--pull", action="store_true", help="拉取历史数据")
+    sub.add_argument("--pull-daily", action="store_true",
+                     help="拉取历史日K数据")
     sub.add_argument("--status", action="store_true", help="查询已拉取数据状态")
     sub.add_argument("--check", action="store_true", help="验证 IBKR 可拉取性")
+    sub.add_argument("--roll-calendar", action="store_true",
+                     help="生成期货换月日历")
 
     parser.add_argument("--only", nargs="+", default=None,
                         help="只操作指定产品 (空格分隔)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="预览 roll calendar，不写入数据库")
+    parser.add_argument("--replace-rolls", action="store_true",
+                        help="写入前删除目标 symbol 的旧 roll events")
+    parser.add_argument("--fallback-days", type=int, default=5,
+                        help="无成交量切换信号时，默认在到期前 N 个工作日换月")
+    parser.add_argument("--confirm-days", type=int, default=2,
+                        help="新合约活跃度连续超过旧合约 N 天后换月")
     return parser.parse_args(argv)
 
 
@@ -194,10 +278,14 @@ def main():
 
     if args.pull:
         asyncio.run(cmd_pull(args, cfg))
+    elif args.pull_daily:
+        asyncio.run(cmd_pull_daily(args, cfg))
     elif args.status:
         asyncio.run(cmd_status(args, cfg))
     elif args.check:
         cmd_check(args, cfg)  # synchronous, no asyncio needed
+    elif args.roll_calendar:
+        asyncio.run(cmd_roll_calendar(args, cfg))
 
 
 if __name__ == "__main__":

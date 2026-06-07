@@ -27,6 +27,7 @@ class AppConfig:
     products: list[ProductConfig]
     start: str           # "YYYY-MM-DD"
     end: str             # "YYYY-MM-DD"
+    futures_overlap_trading_days: int = 30
     request_interval_seconds: int = 25
     ib_host: str = "127.0.0.1"
     ib_port: int = 4002
@@ -56,6 +57,9 @@ def load_config(yaml_path: Optional[str] = None) -> AppConfig:
         products=products,
         start=raw.get("start", "2024-01-01"),
         end=raw.get("end", "2026-05-31"),
+        futures_overlap_trading_days=raw.get(
+            "futures_overlap_trading_days", 30,
+        ),
         request_interval_seconds=raw.get("request_interval_seconds", 25),
         ib_host=_env_str("IB_HOST", raw.get("ib_host", "127.0.0.1")),
         ib_port=_env_int("IB_PORT", raw.get("ib_port", 4002)),

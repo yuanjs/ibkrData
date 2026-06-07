@@ -74,6 +74,47 @@ def test_mark_completed_nonexistent_window():
         assert store.load("MNQ") == windows
 
 
+def test_task_windows_round_trip():
+    windows: list[WindowType] = [
+        ("2024-03-01", "2024-03-02"),
+        ("2024-03-03", "2024-03-04"),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ProgressStore(Path(tmp))
+        store.save_task_windows("SPI", "FUT:123:202403", windows)
+
+        assert store.has_task("SPI", "FUT:123:202403") is True
+        assert store.load_task_windows("SPI", "FUT:123:202403") == windows
+
+
+def test_mark_task_completed_only_updates_task():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ProgressStore(Path(tmp))
+        store.save("SPI", [("2024-01-01", "2024-01-02")])
+        store.save_task_windows("SPI", "FUT:123:202403", [
+            ("2024-03-01", "2024-03-02"),
+            ("2024-03-03", "2024-03-04"),
+        ])
+
+        store.mark_task_completed(
+            "SPI",
+            "FUT:123:202403",
+            ("2024-03-01", "2024-03-02"),
+        )
+
+        assert store.load("SPI") == [("2024-01-01", "2024-01-02")]
+        assert store.load_task_windows("SPI", "FUT:123:202403") == [
+            ("2024-03-03", "2024-03-04"),
+        ]
+
+
+def test_missing_task_is_not_complete_checkpoint():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ProgressStore(Path(tmp))
+        assert store.has_task("SPI", "FUT:123:202403") is False
+        assert store.load_task_windows("SPI", "FUT:123:202403") == []
+
+
 # ---------------------------------------------------------------------------
 # is_complete
 # ---------------------------------------------------------------------------

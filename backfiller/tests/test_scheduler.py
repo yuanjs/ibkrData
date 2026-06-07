@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from backfiller.scheduler import PullScheduler, split_windows
+from backfiller.scheduler import (
+    PullScheduler,
+    split_date_windows,
+    split_windows,
+    subtract_trading_days,
+)
 from backfiller.config import AppConfig, ProductConfig, load_config
 from backfiller.db_writer import MinuteBarWriter
 
@@ -33,6 +38,11 @@ def mock_writer():
     writer.get_range = AsyncMock(return_value=(None, None, 0))
     writer.upsert_bars = AsyncMock(return_value=0)
     writer.upsert_futures_bars = AsyncMock(return_value=0)
+    writer.upsert_daily_bars = AsyncMock(return_value=0)
+    writer.upsert_futures_daily_bars = AsyncMock(return_value=0)
+    writer.has_daily_window_coverage = AsyncMock(return_value=False)
+    writer.has_futures_daily_window_coverage = AsyncMock(return_value=False)
+    writer.has_futures_window_coverage = AsyncMock(return_value=False)
     return writer
 
 
@@ -57,6 +67,21 @@ def test_split_windows_single_day():
     windows = split_windows(date(2024, 1, 1), date(2024, 1, 1))
     assert len(windows) == 1
     assert windows[0] == ("2024-01-01", "2024-01-01")
+
+
+def test_split_date_windows_uses_requested_size():
+    windows = split_date_windows(date(2024, 1, 1), date(2024, 1, 10), 4)
+
+    assert windows == [
+        ("2024-01-01", "2024-01-04"),
+        ("2024-01-05", "2024-01-08"),
+        ("2024-01-09", "2024-01-10"),
+    ]
+
+
+def test_subtract_trading_days_skips_weekends():
+    assert subtract_trading_days(date(2024, 3, 18), 1) == date(2024, 3, 15)
+    assert subtract_trading_days(date(2024, 3, 18), 5) == date(2024, 3, 11)
 
 
 # ------------------------------------------------------------------
@@ -297,3 +322,239 @@ async def test_pull_fut_writes_contract_level_raw_bars(mock_writer, tmp_path):
     assert called_bars == [mock_bar]
     mock_writer.upsert_bars.assert_not_awaited()
     assert mock_contract.includeExpired is True
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_uses_overlap_before_previous_expiry(
+    mock_writer, tmp_path,
+):
+    """后续期货合约应从上一合约到期日前 N 个交易日开始下载。"""
+    product = ProductConfig(
+        symbol="MES", sec_type="FUT", exchange="CME", currency="USD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-01-01",
+        end="2024-06-30",
+        futures_overlap_trading_days=5,
+        request_interval_seconds=0,
+    )
+
+    first_contract = MagicMock()
+    first_contract.conId = 1
+    first_contract.lastTradeDateOrContractMonth = "20240315"
+
+    second_contract = MagicMock()
+    second_contract.conId = 2
+    second_contract.lastTradeDateOrContractMonth = "20240621"
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(
+            return_value=[first_contract, second_contract],
+        )
+
+        await scheduler._pull_product(product)
+
+    second_contract_windows = [
+        call.kwargs["endDateTime"]
+        for call in ib_instance.reqHistoricalDataAsync.await_args_list
+        if call.args[0] is second_contract
+    ]
+    assert second_contract_windows[0] == "20240309-23:59:59"
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_resumes_from_contract_checkpoint(
+    mock_writer, tmp_path,
+):
+    """已有期货 checkpoint 时只请求剩余窗口，不重复下载完成窗口。"""
+    product = ProductConfig(
+        symbol="MES", sec_type="FUT", exchange="CME", currency="USD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-03-01",
+        end="2024-03-06",
+        request_interval_seconds=0,
+    )
+
+    contract = MagicMock()
+    contract.conId = 123456
+    contract.lastTradeDateOrContractMonth = "20240315"
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(return_value=[contract])
+        scheduler._store.save_task_windows(
+            "MES",
+            "FUT:123456:202403",
+            [("2024-03-05", "2024-03-06")],
+        )
+
+        await scheduler._pull_product(product)
+
+    requested_end_times = [
+        call.kwargs["endDateTime"]
+        for call in ib_instance.reqHistoricalDataAsync.await_args_list
+    ]
+    assert requested_end_times == ["20240306-23:59:59"]
+    assert scheduler._store.load_task_windows("MES", "FUT:123456:202403") == []
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_skips_windows_already_covered_in_db(
+    mock_writer, tmp_path,
+):
+    """首次创建 checkpoint 时，已完整覆盖的窗口不再请求。"""
+    product = ProductConfig(
+        symbol="MES", sec_type="FUT", exchange="CME", currency="USD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-03-01",
+        end="2024-03-04",
+        request_interval_seconds=0,
+    )
+
+    contract = MagicMock()
+    contract.conId = 123456
+    contract.lastTradeDateOrContractMonth = "20240315"
+
+    async def _coverage(_symbol, _con_id, window_start, _window_end):
+        return window_start == "2024-03-01"
+
+    mock_writer.has_futures_window_coverage = AsyncMock(side_effect=_coverage)
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(return_value=[contract])
+
+        await scheduler._pull_product(product)
+
+    requested_end_times = [
+        call.kwargs["endDateTime"]
+        for call in ib_instance.reqHistoricalDataAsync.await_args_list
+    ]
+    assert requested_end_times == ["20240304-23:59:59"]
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_daily_writes_contract_level_daily_bars(
+    mock_writer, tmp_path,
+):
+    """期货日K必须保留 conId，写入 futures_daily_bars 专用路径。"""
+    product = ProductConfig(
+        symbol="MES", sec_type="FUT", exchange="CME", currency="USD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-04-01",
+        end="2024-06-21",
+        request_interval_seconds=0,
+    )
+
+    contract = MagicMock()
+    contract.conId = 123456
+    contract.lastTradeDateOrContractMonth = "20240621"
+    contract.includeExpired = False
+
+    mock_bar = MagicMock()
+    mock_bar.date = "20240301"
+    mock_bar.open = 1
+    mock_bar.high = 2
+    mock_bar.low = 0.5
+    mock_bar.close = 1.5
+    mock_bar.volume = 10
+    mock_bar.barCount = 3
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[mock_bar])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(return_value=[contract])
+
+        await scheduler.run_daily()
+
+    mock_writer.upsert_futures_daily_bars.assert_awaited()
+    called_symbol, called_contract, called_bars = (
+        mock_writer.upsert_futures_daily_bars.await_args.args
+    )
+    assert called_symbol == "MES"
+    assert called_contract is contract
+    assert called_bars == [mock_bar]
+    mock_writer.upsert_daily_bars.assert_not_awaited()
+    assert contract.includeExpired is True
+
+    request = ib_instance.reqHistoricalDataAsync.await_args
+    assert request.kwargs["endDateTime"] == "20240621-23:59:59"
+    assert request.kwargs["durationStr"] == "113 D"
+    assert request.kwargs["barSizeSetting"] == "1 day"
+
+
+@pytest.mark.asyncio
+async def test_pull_daily_non_fut_uses_existing_daily_table(
+    mock_writer, tmp_path,
+):
+    """非期货日K写入 daily_bars，并提前 31 天请求。"""
+    product = ProductConfig(
+        symbol="USD.JPY", sec_type="CASH", exchange="IDEALPRO",
+        currency="JPY",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-04-01",
+        end="2024-04-10",
+        request_interval_seconds=0,
+    )
+
+    mock_contract = MagicMock()
+    mock_bar = MagicMock()
+    mock_bar.date = "20240301"
+    mock_bar.open = 1
+    mock_bar.high = 2
+    mock_bar.low = 0.5
+    mock_bar.close = 1.5
+    mock_bar.volume = 10
+
+    with (
+        patch("backfiller.scheduler.IB") as MockIB,
+        patch("backfiller.scheduler.resolve_contract_async") as mock_resolve,
+    ):
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[mock_bar])
+        mock_resolve.return_value = mock_contract
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+
+        await scheduler.run_daily()
+
+    mock_writer.upsert_daily_bars.assert_awaited_once_with(
+        "USD.JPY",
+        [mock_bar],
+    )
+    mock_writer.upsert_futures_daily_bars.assert_not_awaited()
+    request = ib_instance.reqHistoricalDataAsync.await_args
+    assert request.kwargs["endDateTime"] == "20240410-23:59:59"
+    assert request.kwargs["durationStr"] == "41 D"
+    assert request.kwargs["barSizeSetting"] == "1 day"

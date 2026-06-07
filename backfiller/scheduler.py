@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 Window = tuple[str, str]
 
 WINDOW_DAYS = 2
+DAILY_WINDOW_DAYS = 365
+DAILY_START_PADDING_DAYS = 31
 RECONNECT_BASE_DELAY = 2
 RECONNECT_MAX_DELAY = 60
 HMDS_WARMUP_SECONDS = 3
@@ -42,6 +44,33 @@ def split_windows(start: date, end: date) -> list[Window]:
         windows.append((current.isoformat(), chunk_end.isoformat()))
         current = chunk_end + timedelta(days=1)
     return windows
+
+
+def split_date_windows(start: date, end: date, days: int) -> list[Window]:
+    """Split *start* .. *end* into larger date windows."""
+    windows: list[Window] = []
+    current = start
+    while current <= end:
+        chunk_end = min(current + timedelta(days=days - 1), end)
+        windows.append((current.isoformat(), chunk_end.isoformat()))
+        current = chunk_end + timedelta(days=1)
+    return windows
+
+
+def subtract_trading_days(d: date, days: int) -> date:
+    """Subtract weekday trading days from *d*.
+
+    Exchange-specific holidays are intentionally not handled here; the goal is
+    to create a stable overlap window without adding a calendar dependency to
+    the download path.
+    """
+    current = d
+    remaining = days
+    while remaining > 0:
+        current -= timedelta(days=1)
+        if current.weekday() < 5:
+            remaining -= 1
+    return current
 
 
 class PullScheduler:
@@ -150,6 +179,22 @@ class PullScheduler:
             for product in new_products:
                 self._known_symbols.add(product.symbol)
                 await self._pull_product(product)
+
+    async def run_daily(self) -> None:
+        """Pull historical daily bars for configured products.
+
+        Futures daily bars are written per concrete contract into
+        ``futures_daily_bars``.  Other security types are written into the
+        existing ``daily_bars`` table.  The daily start date is padded by
+        ``DAILY_START_PADDING_DAYS`` so backtests have indicator warm-up data
+        before the configured minute-bar start.
+        """
+        for product in self._config.products:
+            self._known_symbols.add(product.symbol)
+            if product.sec_type == "FUT":
+                await self._pull_fut_daily_via_expired_contracts(product)
+            else:
+                await self._pull_daily_product(product)
 
     # ------------------------------------------------------------------
     # internals
@@ -336,10 +381,12 @@ class PullScheduler:
         """Backfill raw futures by pulling each quarterly contract's
         active period via windowed ``reqHistoricalData`` with ``endDateTime``.
 
-        Each quarterly contract (expiry months 03/06/09/12) is active
-        from the previous expiry to its own expiry.  We backfill those
-        windows using the individual contract (by conId), which **does**
-        support ``endDateTime`` — unlike CONTFUT.
+        Each quarterly contract (expiry months 03/06/09/12) is pulled from
+        the previous expiry minus the configured overlap window to its own
+        expiry.  This preserves a shared trading window between adjacent
+        contracts for later roll selection and gap calculation.  Requests use
+        the individual contract (by conId), which **does** support
+        ``endDateTime`` — unlike CONTFUT.
 
         The resulting data in *futures_minute_bars* is raw single-contract
         history.  Continuous futures roll selection and adjustment should be
@@ -367,12 +414,18 @@ class PullScheduler:
             except ValueError:
                 continue
 
-            # Active period: from previous expiry (or 3 months back) to this expiry
+            # Active period with overlap: start the next contract before the
+            # previous one expires so roll logic can compare both contracts.
             if prev_expiry is None:
-                from datetime import timedelta
                 period_start = max(cfg_start, exp_date - timedelta(days=100))
             else:
-                period_start = max(cfg_start, prev_expiry)
+                period_start = max(
+                    cfg_start,
+                    subtract_trading_days(
+                        prev_expiry,
+                        self._config.futures_overlap_trading_days,
+                    ),
+                )
             period_end = min(cfg_end, exp_date)
 
             if period_start >= period_end:
@@ -380,8 +433,20 @@ class PullScheduler:
                 continue
 
             windows = split_windows(period_start, period_end)
-            if windows:
-                all_tasks.append((c, windows))
+            task_key = self._fut_task_key(c)
+            if windows and not self._store.has_task(product.symbol, task_key):
+                windows = await self._filter_existing_futures_windows(
+                    product.symbol,
+                    c.conId,
+                    windows,
+                )
+                self._store.save_task_windows(product.symbol, task_key, windows)
+
+            remaining_windows = self._store.load_task_windows(
+                product.symbol, task_key,
+            )
+            if remaining_windows:
+                all_tasks.append((c, remaining_windows))
 
             prev_expiry = exp_date
 
@@ -392,6 +457,7 @@ class PullScheduler:
         # Process each contract-period using the standard window loop
         for contract, contract_windows in all_tasks:
             contract.includeExpired = True
+            task_key = self._fut_task_key(contract)
             for w in contract_windows:
                 if self._should_stop:
                     return
@@ -413,6 +479,9 @@ class PullScheduler:
                         )
                         await self._writer.upsert_futures_bars(
                             product.symbol, contract, bars,
+                        )
+                        self._store.mark_task_completed(
+                            product.symbol, task_key, w,
                         )
                         self._connection_ok = True
                         await asyncio.sleep(
@@ -442,3 +511,310 @@ class PullScheduler:
 
         logger.info("%s: FUT backfill complete (%d contract periods)",
                      product.symbol, len(all_tasks))
+
+    async def _pull_daily_product(self, product: ProductConfig) -> None:
+        """Pull non-futures daily bars into ``daily_bars``."""
+        daily_start = (
+            date.fromisoformat(self._config.start)
+            - timedelta(days=DAILY_START_PADDING_DAYS)
+        )
+        cfg_end = date.fromisoformat(self._config.end)
+        windows = split_date_windows(daily_start, cfg_end, DAILY_WINDOW_DAYS)
+        task_key = f"DAILY:{product.symbol}"
+
+        if windows and not self._store.has_task(product.symbol, task_key):
+            windows = await self._filter_existing_daily_windows(
+                product.symbol,
+                windows,
+            )
+            self._store.save_task_windows(product.symbol, task_key, windows)
+
+        windows = self._store.load_task_windows(product.symbol, task_key)
+        if not windows:
+            logger.info("%s: daily bars already covered", product.symbol)
+            return
+
+        logger.info(
+            "%s: pulling %d daily windows from %s to %s",
+            product.symbol,
+            len(windows),
+            windows[0][0],
+            windows[-1][1],
+        )
+
+        contract: Contract | None = None
+        for w in windows:
+            if self._should_stop:
+                return
+            if not await self.ensure_connected():
+                return
+            if contract is None:
+                try:
+                    contract = await resolve_contract_async(
+                        self._ib,
+                        product.symbol,
+                        product.sec_type,
+                        product.exchange,
+                        product.currency,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "%s: daily contract resolution failed: %s",
+                        product.symbol,
+                        exc,
+                    )
+                    return
+                if contract is None:
+                    logger.error(
+                        "%s: daily contract resolution returned None",
+                        product.symbol,
+                    )
+                    return
+
+            success = await self._request_daily_window(
+                product,
+                contract,
+                w,
+                writer_method="daily",
+            )
+            if success:
+                self._store.mark_task_completed(product.symbol, task_key, w)
+            else:
+                logger.error("%s: failed daily window %s, moving on",
+                             product.symbol, w)
+
+        logger.info("%s: daily backfill complete", product.symbol)
+
+    async def _pull_fut_daily_via_expired_contracts(
+        self,
+        product: ProductConfig,
+    ) -> None:
+        """Pull raw daily bars for each quarterly futures contract."""
+        contracts = await self._resolve_fut_contracts(product)
+        if not contracts:
+            logger.error("%s: no quarterly contracts available, skipping daily",
+                         product.symbol)
+            return
+
+        minute_start = date.fromisoformat(self._config.start)
+        daily_start = minute_start - timedelta(days=DAILY_START_PADDING_DAYS)
+        cfg_end = date.fromisoformat(self._config.end)
+
+        all_tasks: list[tuple[Contract, list[Window]]] = []
+        prev_expiry: date | None = None
+
+        for c in contracts:
+            exp_date = self._contract_expiry_date(c)
+            if exp_date is None:
+                continue
+
+            if prev_expiry is None:
+                minute_period_start = max(minute_start, exp_date - timedelta(days=100))
+            else:
+                minute_period_start = max(
+                    minute_start,
+                    subtract_trading_days(
+                        prev_expiry,
+                        self._config.futures_overlap_trading_days,
+                    ),
+                )
+            period_start = max(
+                daily_start,
+                minute_period_start - timedelta(days=DAILY_START_PADDING_DAYS),
+            )
+            period_end = min(cfg_end, exp_date)
+
+            if period_start >= period_end:
+                prev_expiry = exp_date
+                continue
+
+            windows = split_date_windows(period_start, period_end, DAILY_WINDOW_DAYS)
+            task_key = self._fut_daily_task_key(c)
+            if windows and not self._store.has_task(product.symbol, task_key):
+                windows = await self._filter_existing_futures_daily_windows(
+                    product.symbol,
+                    c.conId,
+                    windows,
+                )
+                self._store.save_task_windows(product.symbol, task_key, windows)
+
+            remaining_windows = self._store.load_task_windows(
+                product.symbol, task_key,
+            )
+            if remaining_windows:
+                all_tasks.append((c, remaining_windows))
+
+            prev_expiry = exp_date
+
+        logger.info(
+            "%s: %d contract-periods to daily backfill, total ~%d windows",
+            product.symbol,
+            len(all_tasks),
+            sum(len(w) for _, w in all_tasks),
+        )
+
+        for contract, contract_windows in all_tasks:
+            contract.includeExpired = True
+            task_key = self._fut_daily_task_key(contract)
+            for idx, w in enumerate(contract_windows, start=1):
+                if self._should_stop:
+                    return
+                if not await self.ensure_connected():
+                    return
+
+                success = await self._request_daily_window(
+                    product,
+                    contract,
+                    w,
+                    writer_method="futures_daily",
+                )
+                if success:
+                    self._store.mark_task_completed(product.symbol, task_key, w)
+                    pct = idx / len(contract_windows) * 100
+                    logger.info(
+                        "%s daily (conId=%s exp=%s): %d/%d windows (%d%%)",
+                        product.symbol,
+                        contract.conId,
+                        contract.lastTradeDateOrContractMonth,
+                        idx,
+                        len(contract_windows),
+                        int(pct),
+                    )
+                else:
+                    logger.error("%s: failed daily window %s, moving on",
+                                 product.symbol, w)
+
+        logger.info("%s: FUT daily backfill complete (%d contract periods)",
+                    product.symbol, len(all_tasks))
+
+    async def _request_daily_window(
+        self,
+        product: ProductConfig,
+        contract: Contract,
+        window: Window,
+        *,
+        writer_method: str,
+    ) -> bool:
+        duration_days = (
+            date.fromisoformat(window[1]) - date.fromisoformat(window[0])
+        ).days + 1
+
+        for attempt in range(1, RETRY_LIMIT + 1):
+            if self._should_stop:
+                return False
+            try:
+                end_dt = window[1].replace("-", "") + "-23:59:59"
+                bars = await self._ib.reqHistoricalDataAsync(
+                    contract,
+                    endDateTime=end_dt,
+                    durationStr=f"{duration_days} D",
+                    barSizeSetting="1 day",
+                    whatToShow=resolve_what_to_show(product.sec_type),
+                    useRTH=False,
+                    formatDate=1,
+                )
+                if writer_method == "futures_daily":
+                    await self._writer.upsert_futures_daily_bars(
+                        product.symbol,
+                        contract,
+                        bars,
+                    )
+                else:
+                    await self._writer.upsert_daily_bars(product.symbol, bars)
+                self._connection_ok = True
+                await asyncio.sleep(self._config.request_interval_seconds)
+                return True
+            except (ConnectionError, OSError, TimeoutError):
+                self._connection_ok = False
+                if attempt < RETRY_LIMIT and not await self.ensure_connected():
+                    return False
+            except Exception as exc:
+                logger.warning(
+                    "%s daily window %s (attempt %d/%d): %s",
+                    product.symbol,
+                    window,
+                    attempt,
+                    RETRY_LIMIT,
+                    exc,
+                )
+                if attempt < RETRY_LIMIT:
+                    await asyncio.sleep(
+                        RECONNECT_BASE_DELAY * (2 ** (attempt - 1)))
+        return False
+
+    @staticmethod
+    def _fut_task_key(contract: Contract) -> str:
+        contract_month = (contract.lastTradeDateOrContractMonth or "")[:6]
+        return f"FUT:{contract.conId}:{contract_month}"
+
+    @staticmethod
+    def _fut_daily_task_key(contract: Contract) -> str:
+        contract_month = (contract.lastTradeDateOrContractMonth or "")[:6]
+        return f"FUT_DAILY:{contract.conId}:{contract_month}"
+
+    @staticmethod
+    def _contract_expiry_date(contract: Contract) -> date | None:
+        exp_str = (contract.lastTradeDateOrContractMonth or "")[:8]
+        if len(exp_str) < 8:
+            return None
+        try:
+            return date.fromisoformat(
+                f"{exp_str[:4]}-{exp_str[4:6]}-{exp_str[6:8]}"
+            )
+        except ValueError:
+            return None
+
+    async def _filter_existing_futures_windows(
+        self,
+        symbol: str,
+        con_id: int,
+        windows: list[Window],
+    ) -> list[Window]:
+        """Return only windows not fully covered in futures_minute_bars."""
+        remaining: list[Window] = []
+        for window in windows:
+            is_covered = await self._writer.has_futures_window_coverage(
+                symbol,
+                con_id,
+                window[0],
+                window[1],
+            )
+            if not is_covered:
+                remaining.append(window)
+        return remaining
+
+    async def _filter_existing_daily_windows(
+        self,
+        symbol: str,
+        windows: list[Window],
+    ) -> list[Window]:
+        """Return only daily windows not fully covered in ``daily_bars``."""
+        remaining: list[Window] = []
+        for window in windows:
+            is_covered = await self._writer.has_daily_window_coverage(
+                symbol,
+                window[0],
+                window[1],
+            )
+            if not is_covered:
+                remaining.append(window)
+        return remaining
+
+    async def _filter_existing_futures_daily_windows(
+        self,
+        symbol: str,
+        con_id: int,
+        windows: list[Window],
+    ) -> list[Window]:
+        """Return only daily windows not fully covered in futures daily raw."""
+        remaining: list[Window] = []
+        for window in windows:
+            is_covered = await self._writer.has_futures_daily_window_coverage(
+                symbol,
+                con_id,
+                window[0],
+                window[1],
+            )
+            if not is_covered:
+                remaining.append(window)
+        return remaining
