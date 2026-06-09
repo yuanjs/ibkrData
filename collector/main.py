@@ -276,8 +276,9 @@ async def daily_bar_refresh_loop(client, writer, pool, daily_tracker):
     while True:
         await asyncio.sleep(4 * 3600)  # Refresh every 4 hours
         try:
-            # For periodic refresh, we can fetch a shorter period (e.g., 5 days) to keep it light
-            await backfill_daily_bars(client, writer, pool, duration="5 D", daily_tracker=daily_tracker)
+            # Refresh a wider window so late IBKR daily settlement/CONTFUT
+            # revisions overwrite any live-tick partial bars saved earlier.
+            await backfill_daily_bars(client, writer, pool, duration="30 D", daily_tracker=daily_tracker)
             logger.info("Periodic daily bar refresh completed")
         except asyncio.CancelledError:
             raise
