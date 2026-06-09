@@ -90,6 +90,69 @@ def choose_roll_candidate(
     return None
 
 
+def choose_volume_safety_candidate(
+    rows: list[dict],
+    *,
+    min_confirm_days: int,
+    safety_date: date,
+) -> tuple[Optional[dict], str]:
+    """Choose roll date using volume crossover capped by a safety date.
+
+    The primary signal is the first day where the new contract's daily volume
+    exceeds the old contract's daily volume for ``min_confirm_days``
+    consecutive overlap days.  The safety date is a latest acceptable roll
+    boundary.  If volume confirmation happens after that boundary, or never
+    happens, the first overlap day on/after the safety date is used instead.
+    """
+    volume_candidate = _first_volume_confirmed_candidate(
+        rows,
+        min_confirm_days=min_confirm_days,
+    )
+    safety_candidate = _first_on_or_after(rows, safety_date)
+
+    if volume_candidate is None:
+        return safety_candidate, "safety"
+    if safety_candidate is None:
+        return volume_candidate, "volume"
+
+    if volume_candidate["session_date"] <= safety_candidate["session_date"]:
+        return volume_candidate, "volume"
+    return safety_candidate, "safety"
+
+
+def _first_volume_confirmed_candidate(
+    rows: Iterable[dict],
+    *,
+    min_confirm_days: int,
+) -> Optional[dict]:
+    streak = 0
+    first_in_streak: Optional[dict] = None
+
+    for row in rows:
+        new_volume = row["new_volume"] or 0
+        old_volume = row["old_volume"] or 0
+        is_new_more_active = new_volume > old_volume
+
+        if is_new_more_active:
+            if streak == 0:
+                first_in_streak = row
+            streak += 1
+            if streak >= min_confirm_days:
+                return first_in_streak
+        else:
+            streak = 0
+            first_in_streak = None
+
+    return None
+
+
+def _first_on_or_after(rows: list[dict], fallback_date: date) -> Optional[dict]:
+    for row in rows:
+        if row["session_date"] >= fallback_date:
+            return row
+    return None
+
+
 class RollCalendarGenerator:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
@@ -118,6 +181,37 @@ class RollCalendarGenerator:
 
         if not dry_run:
             await self._save_events(symbol, events, replace=replace)
+
+        return events
+
+    async def generate_volume_safety(
+        self,
+        symbol: str,
+        *,
+        safety_days_before_expiry: int,
+        min_confirm_days: int = 2,
+        replace: bool = False,
+        dry_run: bool = True,
+    ) -> list[RollEvent]:
+        contracts = await self._load_contracts(symbol)
+        events: list[RollEvent] = []
+
+        for old, new in zip(contracts, contracts[1:]):
+            event = await self._generate_volume_safety_pair(
+                old,
+                new,
+                safety_days_before_expiry=safety_days_before_expiry,
+                min_confirm_days=min_confirm_days,
+            )
+            if event is not None:
+                events.append(event)
+
+        if not dry_run:
+            await self._save_volume_safety_events(
+                symbol,
+                events,
+                replace=replace,
+            )
 
         return events
 
@@ -180,6 +274,78 @@ class RollCalendarGenerator:
             candidate = self._first_on_or_after(overlap_rows, fallback_date)
             if candidate is None:
                 return None
+
+        prices = await self._load_roll_prices(
+            old.con_id,
+            new.con_id,
+            candidate["session_date"],
+        )
+        if prices is None:
+            return None
+
+        old_price = prices["old_price"]
+        new_price = prices["new_price"]
+        if old_price is None or old_price == 0 or new_price is None:
+            return None
+
+        price_gap = new_price - old_price
+        ratio = new_price / old_price
+        roll_time = datetime.combine(
+            candidate["session_date"],
+            time.min,
+            tzinfo=timezone.utc,
+        )
+
+        return RollEvent(
+            symbol=old.symbol,
+            from_con_id=old.con_id,
+            to_con_id=new.con_id,
+            from_contract_month=old.contract_month,
+            to_contract_month=new.contract_month,
+            from_local_symbol=old.local_symbol,
+            to_local_symbol=new.local_symbol,
+            roll_time=roll_time,
+            roll_rule=roll_rule,
+            price_gap=price_gap,
+            ratio=ratio,
+            old_price=old_price,
+            new_price=new_price,
+            old_volume=candidate["old_volume"] or 0,
+            new_volume=candidate["new_volume"] or 0,
+            old_bar_count=candidate["old_bar_count"] or 0,
+            new_bar_count=candidate["new_bar_count"] or 0,
+        )
+
+    async def _generate_volume_safety_pair(
+        self,
+        old: ContractSummary,
+        new: ContractSummary,
+        *,
+        safety_days_before_expiry: int,
+        min_confirm_days: int,
+    ) -> Optional[RollEvent]:
+        overlap_rows = await self._load_overlap_days(old, new)
+        if not overlap_rows:
+            return None
+
+        safety_date = default_fallback_roll_date(
+            old.last_trade_date,
+            safety_days_before_expiry,
+        )
+        candidate, rule_source = choose_volume_safety_candidate(
+            overlap_rows,
+            min_confirm_days=min_confirm_days,
+            safety_date=safety_date,
+        )
+        if candidate is None:
+            return None
+
+        roll_rule = (
+            f"volume_{min_confirm_days}d_confirm_safety_"
+            f"{safety_days_before_expiry}bd"
+            if rule_source == "volume"
+            else f"safety_{safety_days_before_expiry}bd_before_expiry"
+        )
 
         prices = await self._load_roll_prices(
             old.con_id,
@@ -294,10 +460,7 @@ class RollCalendarGenerator:
 
     @staticmethod
     def _first_on_or_after(rows: list[dict], fallback_date: date) -> Optional[dict]:
-        for row in rows:
-            if row["session_date"] >= fallback_date:
-                return row
-        return None
+        return _first_on_or_after(rows, fallback_date)
 
     async def _save_events(
         self,
@@ -335,6 +498,77 @@ class RollCalendarGenerator:
                             e.roll_rule,
                             e.price_gap,
                             e.ratio,
+                        )
+                        for e in events
+                    ],
+                )
+
+    async def _save_volume_safety_events(
+        self,
+        symbol: str,
+        events: list[RollEvent],
+        *,
+        replace: bool,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                if replace:
+                    await conn.execute(
+                        """
+                        DELETE FROM futures_roll_events_volume_safety
+                        WHERE symbol = $1
+                        """,
+                        symbol,
+                    )
+                await conn.executemany(
+                    """
+                    INSERT INTO futures_roll_events_volume_safety (
+                        symbol, from_con_id, to_con_id,
+                        from_contract_month, to_contract_month,
+                        from_local_symbol, to_local_symbol,
+                        roll_time, roll_rule, price_gap, ratio,
+                        old_price, new_price, old_volume, new_volume,
+                        old_bar_count, new_bar_count
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+                        $10, $11, $12, $13, $14, $15, $16, $17
+                    )
+                    ON CONFLICT (symbol, from_con_id, to_con_id, roll_time)
+                    DO UPDATE SET
+                        from_contract_month = EXCLUDED.from_contract_month,
+                        to_contract_month = EXCLUDED.to_contract_month,
+                        from_local_symbol = EXCLUDED.from_local_symbol,
+                        to_local_symbol = EXCLUDED.to_local_symbol,
+                        roll_rule = EXCLUDED.roll_rule,
+                        price_gap = EXCLUDED.price_gap,
+                        ratio = EXCLUDED.ratio,
+                        old_price = EXCLUDED.old_price,
+                        new_price = EXCLUDED.new_price,
+                        old_volume = EXCLUDED.old_volume,
+                        new_volume = EXCLUDED.new_volume,
+                        old_bar_count = EXCLUDED.old_bar_count,
+                        new_bar_count = EXCLUDED.new_bar_count
+                    """,
+                    [
+                        (
+                            e.symbol,
+                            e.from_con_id,
+                            e.to_con_id,
+                            e.from_contract_month,
+                            e.to_contract_month,
+                            e.from_local_symbol,
+                            e.to_local_symbol,
+                            e.roll_time,
+                            e.roll_rule,
+                            e.price_gap,
+                            e.ratio,
+                            e.old_price,
+                            e.new_price,
+                            e.old_volume,
+                            e.new_volume,
+                            e.old_bar_count,
+                            e.new_bar_count,
                         )
                         for e in events
                     ],

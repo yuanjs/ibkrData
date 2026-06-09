@@ -12,6 +12,7 @@ Usage:
   python -m backfiller.main --check
   python -m backfiller.main --check --only AAPL
   python -m backfiller.main --roll-calendar --only SPI --dry-run
+  python -m backfiller.main --roll-calendar-volume-safety --only SPI HG
 """
 
 import argparse
@@ -37,6 +38,9 @@ from backfiller.scheduler import PullScheduler
 logger = logging.getLogger(__name__)
 
 PROGRESS_DIR = Path(__file__).parent / "progress"
+
+INDEX_ROLL_SYMBOLS = {"SPI", "MYM", "N225M", "MNQ", "MES"}
+COMMODITY_ROLL_SYMBOLS = {"HG", "ZC"}
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +237,48 @@ async def cmd_roll_calendar(args, cfg):
         await pool.close()
 
 
+def _volume_safety_days(symbol: str, args) -> int:
+    if args.safety_days is not None:
+        return args.safety_days
+    if symbol in COMMODITY_ROLL_SYMBOLS:
+        return args.commodity_safety_days
+    return args.index_safety_days
+
+
+async def cmd_roll_calendar_volume_safety(args, cfg):
+    products = [p for p in cfg.products if p.sec_type == "FUT"]
+    if args.only:
+        products = [p for p in products if p.symbol in args.only]
+
+    pool = await MinuteBarWriter.create_pool(cfg.db_url)
+    generator = RollCalendarGenerator(pool)
+    try:
+        for p in products:
+            safety_days = _volume_safety_days(p.symbol, args)
+            events = await generator.generate_volume_safety(
+                p.symbol,
+                safety_days_before_expiry=safety_days,
+                min_confirm_days=args.confirm_days,
+                replace=args.replace_rolls,
+                dry_run=args.dry_run,
+            )
+            mode = "DRY RUN" if args.dry_run else "SAVED"
+            print(
+                f"\n{p.symbol} volume+safety roll calendar ({mode}): "
+                f"{len(events)} events, safety={safety_days}bd"
+            )
+            for e in events:
+                print(
+                    f"  {e.from_local_symbol:<6} -> {e.to_local_symbol:<6} "
+                    f"{e.roll_time.date()} "
+                    f"gap={e.price_gap:.4f} ratio={e.ratio:.8f} "
+                    f"old_vol={e.old_volume} new_vol={e.new_volume} "
+                    f"rule={e.roll_rule}"
+                )
+    finally:
+        await pool.close()
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -252,6 +298,8 @@ def parse_args(argv=None):
     sub.add_argument("--check", action="store_true", help="验证 IBKR 可拉取性")
     sub.add_argument("--roll-calendar", action="store_true",
                      help="生成期货换月日历")
+    sub.add_argument("--roll-calendar-volume-safety", action="store_true",
+                     help="按成交量超越+安全天数生成期货换月日历")
 
     parser.add_argument("--only", nargs="+", default=None,
                         help="只操作指定产品 (空格分隔)")
@@ -263,6 +311,12 @@ def parse_args(argv=None):
                         help="无成交量切换信号时，默认在到期前 N 个工作日换月")
     parser.add_argument("--confirm-days", type=int, default=2,
                         help="新合约活跃度连续超过旧合约 N 天后换月")
+    parser.add_argument("--index-safety-days", type=int, default=2,
+                        help="volume+safety 规则下指数期货安全换月工作日数")
+    parser.add_argument("--commodity-safety-days", type=int, default=5,
+                        help="volume+safety 规则下商品期货安全换月工作日数")
+    parser.add_argument("--safety-days", type=int, default=None,
+                        help="覆盖 volume+safety 规则下所有产品的安全工作日数")
     return parser.parse_args(argv)
 
 
@@ -286,6 +340,8 @@ def main():
         cmd_check(args, cfg)  # synchronous, no asyncio needed
     elif args.roll_calendar:
         asyncio.run(cmd_roll_calendar(args, cfg))
+    elif args.roll_calendar_volume_safety:
+        asyncio.run(cmd_roll_calendar_volume_safety(args, cfg))
 
 
 if __name__ == "__main__":

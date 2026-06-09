@@ -4,6 +4,7 @@ from datetime import date
 
 from backfiller.roll_calendar import (
     choose_roll_candidate,
+    choose_volume_safety_candidate,
     default_fallback_roll_date,
     subtract_trading_days,
 )
@@ -100,3 +101,55 @@ def test_choose_roll_candidate_returns_none_without_confirmation():
 def test_fallback_roll_date_skips_weekends():
     assert subtract_trading_days(date(2026, 3, 16), 1) == date(2026, 3, 13)
     assert default_fallback_roll_date(date(2026, 3, 16), 5) == date(2026, 3, 9)
+
+
+def test_choose_volume_safety_uses_volume_confirmation_before_safety():
+    rows = [
+        {"session_date": date(2026, 3, 1), "old_volume": 100, "new_volume": 90},
+        {"session_date": date(2026, 3, 2), "old_volume": 100, "new_volume": 120},
+        {"session_date": date(2026, 3, 3), "old_volume": 100, "new_volume": 130},
+        {"session_date": date(2026, 3, 4), "old_volume": 100, "new_volume": 80},
+    ]
+
+    selected, rule_source = choose_volume_safety_candidate(
+        rows,
+        min_confirm_days=2,
+        safety_date=date(2026, 3, 4),
+    )
+
+    assert selected is rows[1]
+    assert rule_source == "volume"
+
+
+def test_choose_volume_safety_caps_late_confirmation_at_safety_date():
+    rows = [
+        {"session_date": date(2026, 3, 1), "old_volume": 100, "new_volume": 90},
+        {"session_date": date(2026, 3, 2), "old_volume": 100, "new_volume": 80},
+        {"session_date": date(2026, 3, 3), "old_volume": 100, "new_volume": 120},
+        {"session_date": date(2026, 3, 4), "old_volume": 100, "new_volume": 130},
+    ]
+
+    selected, rule_source = choose_volume_safety_candidate(
+        rows,
+        min_confirm_days=2,
+        safety_date=date(2026, 3, 2),
+    )
+
+    assert selected is rows[1]
+    assert rule_source == "safety"
+
+
+def test_choose_volume_safety_skips_when_safety_not_reached_without_volume():
+    rows = [
+        {"session_date": date(2026, 3, 1), "old_volume": 100, "new_volume": 90},
+        {"session_date": date(2026, 3, 2), "old_volume": 100, "new_volume": 80},
+    ]
+
+    selected, rule_source = choose_volume_safety_candidate(
+        rows,
+        min_confirm_days=2,
+        safety_date=date(2026, 3, 10),
+    )
+
+    assert selected is None
+    assert rule_source == "safety"
