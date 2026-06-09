@@ -135,6 +135,32 @@ class TestEffectiveDateStr:
         t = dt(2025, 12, 22, 15, 59)
         assert _effective_date_str(t, "MYM") == "20251222"
 
+    def test_latest_bar_date_does_not_override_open_trading_day(self):
+        trading_days = {"20260608", "20260609"}
+        t = dt(2026, 6, 8, 15, 0)  # before CME roll
+        assert (
+            _effective_date_str(
+                t,
+                "MES",
+                trading_days,
+                latest_bar_date="20260609",
+            )
+            == "20260608"
+        )
+
+    def test_latest_bar_date_anchors_known_closed_day(self):
+        trading_days = MYM_TRADING_DAYS
+        t = dt(2025, 12, 25, 10, 0)  # Christmas, closed
+        assert (
+            _effective_date_str(
+                t,
+                "MYM",
+                trading_days,
+                latest_bar_date="20251226",
+            )
+            == "20251226"
+        )
+
 
 # ── DailyBarTracker ───────────────────────────────────────────────────────────
 
@@ -188,3 +214,33 @@ class TestDailyBarTracker:
         tracker.get_dirty_bars()
         tracker.on_tick("MYM", 101.0, 1.0, dt(2025, 12, 22, 11))
         assert len(tracker.get_dirty_bars()) == 1
+
+    def test_latest_bar_date_does_not_delete_normal_prior_trading_day(self):
+        tracker = DailyBarTracker()
+        tracker.trading_days["MES"] = {"20260608", "20260609"}
+        tracker.update_latest_bar_date("MES", "20260609")
+
+        tracker.on_tick("MES", 7368.75, 1.0, dt(2026, 6, 8, 15, 0))
+        bars = tracker.get_dirty_bars()
+        assert bars[0]["date_str"] == "20260608"
+
+        tracker.on_tick("MES", 7413.50, 1.0, dt(2026, 6, 8, 16, 30))
+        bars = tracker.get_dirty_bars()
+        assert bars[0]["date_str"] == "20260609"
+        assert tracker.get_stale_bars() == []
+
+    def test_latest_bar_date_deletes_stale_closed_day_bar(self):
+        tracker = DailyBarTracker()
+        tracker.trading_days["MYM"] = MYM_TRADING_DAYS
+
+        tracker.on_tick("MYM", 100.0, 1.0, dt(2025, 12, 25, 10, 0))
+        bars = tracker.get_dirty_bars()
+        assert bars[0]["date_str"] == "20251225"
+
+        tracker.update_latest_bar_date("MYM", "20251226")
+        tracker.on_tick("MYM", 101.0, 1.0, dt(2025, 12, 25, 11, 0))
+        bars = tracker.get_dirty_bars()
+        assert bars[0]["date_str"] == "20251226"
+        assert tracker.get_stale_bars() == [
+            {"symbol": "MYM", "date_str": "20251225"}
+        ]

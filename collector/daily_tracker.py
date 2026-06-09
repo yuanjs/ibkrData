@@ -29,14 +29,28 @@ def _next_trading_day(dt: datetime, trading_days: set[str] | None) -> str:
         d += timedelta(days=1)
 
 
+def _should_anchor_to_latest(
+    date_str: str,
+    latest_bar_date: str | None,
+    trading_days: set[str] | None,
+) -> bool:
+    """Return True only when a known closed day should map to latest_bar_date."""
+    if latest_bar_date is None or date_str >= latest_bar_date:
+        return False
+    if trading_days is None:
+        return False
+    return date_str not in trading_days and latest_bar_date in trading_days
+
+
 def _effective_date_str(bar_time, symbol: str, trading_days: set[str] | None = None,
                          latest_bar_date: str | None = None) -> str:
     """Adjust bar date based on product roll time, skipping weekends and holidays.
 
-    If latest_bar_date is provided and the clock-based result is BEFORE it,
-    the latest_bar_date is used instead. This handles cases where the first
-    trading day after a holiday has already started (e.g., Memorial Day),
-    meaning ticks belong to the next session, not the holiday calendar date.
+    If latest_bar_date is provided and the clock-based result is a known
+    closed day before it, latest_bar_date is used instead. This handles cases
+    where the first trading day after a holiday has already started
+    (e.g., Memorial Day), meaning ticks belong to the next session, not the
+    holiday calendar date.
     """
     # IBKR formatDate=1 returns date-only objects (no time → no roll adjustment needed)
     if isinstance(bar_time, date) and not isinstance(bar_time, datetime):
@@ -56,10 +70,11 @@ def _effective_date_str(bar_time, symbol: str, trading_days: set[str] | None = N
             or (local_dt.hour == config["roll_hour"] and local_dt.minute >= config["roll_minute"])):
         return _next_trading_day(local_dt, trading_days)
     result = local_dt.strftime("%Y%m%d")
-    # If the latest backfill bar date is AHEAD of the clock-based result,
-    # use it instead. This handles holiday sessions (e.g., Memorial Day)
-    # where CME assigns the trade date to the next business day.
-    if latest_bar_date is not None and result < latest_bar_date:
+    # If the clock-based date is a known closed day and backfill already
+    # anchored the session to a later trading date, follow that anchor.  Do not
+    # override normal open days; otherwise a valid day like MES 20260608 can be
+    # swallowed when IBKR exposes the next daily bar early.
+    if _should_anchor_to_latest(result, latest_bar_date, trading_days):
         return latest_bar_date
     return result
 
@@ -121,23 +136,33 @@ class DailyBarTracker:
             old_date = bar["date_str"]
             latest = self._latest_bar_dates.get(symbol)
             if latest is None:
-                # latest_bar_date not yet populated (startup before backfill
-                # completes). _effective_date_str may return a clock-time
-                # fallback that's wrong for holiday sessions. Keep the loaded
-                # bar and continue updating it until backfill provides data.
-                bar["high"] = max(bar["high"], price)
-                bar["low"] = min(bar["low"], price)
-                bar["close"] = price
-                bar["volume"] += float(size)
-                bar["_dirty"] = True
-                return
+                trading_days = self.trading_days.get(symbol)
+                date_is_known_closed = (
+                    trading_days is not None and date_str not in trading_days
+                )
+                if date_is_known_closed or old_date > date_str:
+                    # latest_bar_date not yet populated (startup before
+                    # backfill completes).  If the clock-derived date is a
+                    # known closed day, keep the loaded bar until backfill
+                    # supplies the exchange-assigned session date.
+                    bar["high"] = max(bar["high"], price)
+                    bar["low"] = min(bar["low"], price)
+                    bar["close"] = price
+                    bar["volume"] += float(size)
+                    bar["_dirty"] = True
+                    return
             # New trading day — reset
-            if old_date > date_str or old_date < latest:
+            trading_days = self.trading_days.get(symbol)
+            old_is_stale_closed_day = _should_anchor_to_latest(
+                old_date,
+                latest,
+                trading_days,
+            )
+            if old_date > date_str or old_is_stale_closed_day:
                 # old_date > date_str: stale future bar (loaded from previous session)
-                # old_date < latest: old bar is behind the backfill-anchored date
-                #                     (e.g., clock returned "20260525" but backfill
-                #                      says latest is "20260526")
-                if old_date < date_str and old_date < latest:
+                # old_is_stale_closed_day: old bar is a known closed day behind
+                #                          the backfill-anchored session date
+                if old_is_stale_closed_day and old_date < date_str:
                     # Transitioning from a holiday bar to the correct later date
                     self._stale_date_strs[symbol] = old_date
                 elif old_date > date_str:
