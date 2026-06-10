@@ -243,9 +243,12 @@ confirm_days = 2
 历史上可以知道 D1 是连续信号的第一天，但真实在 D2 收盘后才知道。因此：
 
 - `decision_session_date = D1`
-- `known_at = D2 session close`，或保守使用 D2 后的 UTC 日期边界
-- `effective_roll_time = next open session after known_at`
-- `price_session_date = D2`，使用 D2 的 old/new close 计算 gap
+- `known_at = effective_roll_time`，使用 D2 后下一交易 session 的交易所本地
+  session boundary，再转换为 UTC `timestamptz` 存储
+- `effective_roll_time = next open session after known_at`，不能使用 UTC 00:00 作为
+  通用换月边界
+- `price_session_date = D2`，使用 D2 的 old/new 日 K close 计算 gap，价格来源必须
+  与交易 session 对齐，不能使用 UTC 日期最后一根 1 分钟 K 代替
 
 安全换月规则：
 
@@ -574,4 +577,3 @@ for (const minuteBar of rawActiveMinuteBars) {
 5. **性能**
    - as-of daily function 可以按交易日缓存。
    - 如果回测很长，可生成带 `as_of_date` 维度的 snapshot 表，但不能覆盖成单条最终序列。
-

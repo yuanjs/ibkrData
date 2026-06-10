@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Iterable, Optional
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -40,6 +41,59 @@ class RollEvent:
     new_bar_count: int
 
 
+@dataclass(frozen=True)
+class AsOfRollEvent:
+    symbol: str
+    from_con_id: int
+    to_con_id: int
+    from_contract_month: str
+    to_contract_month: str
+    from_local_symbol: str
+    to_local_symbol: str
+    effective_roll_time: datetime
+    known_at: datetime
+    decision_session_date: date
+    price_session_date: date
+    roll_rule: str
+    price_gap: Decimal
+    ratio: Decimal
+    old_price: Decimal
+    new_price: Decimal
+    old_volume: int
+    new_volume: int
+    old_bar_count: int
+    new_bar_count: int
+
+    @property
+    def roll_time(self) -> datetime:
+        return self.effective_roll_time
+
+
+@dataclass(frozen=True)
+class AsOfRollCandidate:
+    decision_row: dict
+    known_row: dict
+    rule_source: str
+
+
+@dataclass(frozen=True)
+class SessionBoundary:
+    timezone_name: str
+    roll_time: time
+
+
+SESSION_BOUNDARIES = {
+    "SPI": SessionBoundary("Australia/Sydney", time(17, 10)),
+    "MYM": SessionBoundary("America/Chicago", time(16, 0)),
+    "MES": SessionBoundary("America/Chicago", time(16, 0)),
+    "MNQ": SessionBoundary("America/Chicago", time(16, 0)),
+    "10Y": SessionBoundary("America/Chicago", time(16, 0)),
+    "ZC": SessionBoundary("America/Chicago", time(16, 0)),
+    "N225M": SessionBoundary("Asia/Tokyo", time(16, 30)),
+    "HG": SessionBoundary("America/New_York", time(17, 0)),
+}
+
+
 def subtract_trading_days(d: date, days: int) -> date:
     current = d
     remaining = days
@@ -52,6 +106,27 @@ def subtract_trading_days(d: date, days: int) -> date:
 
 def default_fallback_roll_date(last_trade_date: date, days_before: int) -> date:
     return subtract_trading_days(last_trade_date, days_before)
+
+
+def next_weekday(d: date) -> date:
+    current = d + timedelta(days=1)
+    while current.weekday() >= 5:
+        current += timedelta(days=1)
+    return current
+
+
+def session_start_time_utc(symbol: str, session_date: date) -> datetime:
+    boundary = SESSION_BOUNDARIES.get(
+        symbol,
+        SessionBoundary("UTC", time.min),
+    )
+    local_date = session_date - timedelta(days=1)
+    local_dt = datetime.combine(
+        local_date,
+        boundary.roll_time,
+        tzinfo=ZoneInfo(boundary.timezone_name),
+    )
+    return local_dt.astimezone(timezone.utc)
 
 
 def choose_roll_candidate(
@@ -120,6 +195,55 @@ def choose_volume_safety_candidate(
     return safety_candidate, "safety"
 
 
+def choose_volume_safety_candidate_asof(
+    rows: list[dict],
+    *,
+    min_confirm_days: int,
+    safety_date: date,
+) -> Optional[AsOfRollCandidate]:
+    """Choose an auditable as-of roll candidate.
+
+    ``decision_row`` is the first day in the volume confirmation streak.
+    ``known_row`` is the day where the confirmation becomes knowable.  For
+    safety rolls both rows are the safety candidate.
+    """
+    volume_candidate = _first_volume_confirmed_candidate_asof(
+        rows,
+        min_confirm_days=min_confirm_days,
+    )
+    safety_candidate = _first_on_or_after(rows, safety_date)
+
+    if volume_candidate is None:
+        if safety_candidate is None:
+            return None
+        return AsOfRollCandidate(
+            decision_row=safety_candidate,
+            known_row=safety_candidate,
+            rule_source="safety",
+        )
+
+    if safety_candidate is None:
+        decision_row, known_row = volume_candidate
+        return AsOfRollCandidate(
+            decision_row=decision_row,
+            known_row=known_row,
+            rule_source="volume",
+        )
+
+    decision_row, known_row = volume_candidate
+    if known_row["session_date"] <= safety_candidate["session_date"]:
+        return AsOfRollCandidate(
+            decision_row=decision_row,
+            known_row=known_row,
+            rule_source="volume",
+        )
+    return AsOfRollCandidate(
+        decision_row=safety_candidate,
+        known_row=safety_candidate,
+        rule_source="safety",
+    )
+
+
 def _first_volume_confirmed_candidate(
     rows: Iterable[dict],
     *,
@@ -146,9 +270,42 @@ def _first_volume_confirmed_candidate(
     return None
 
 
+def _first_volume_confirmed_candidate_asof(
+    rows: Iterable[dict],
+    *,
+    min_confirm_days: int,
+) -> Optional[tuple[dict, dict]]:
+    streak = 0
+    first_in_streak: Optional[dict] = None
+
+    for row in rows:
+        new_volume = row["new_volume"] or 0
+        old_volume = row["old_volume"] or 0
+        is_new_more_active = new_volume > old_volume
+
+        if is_new_more_active:
+            if streak == 0:
+                first_in_streak = row
+            streak += 1
+            if streak >= min_confirm_days:
+                return first_in_streak, row
+        else:
+            streak = 0
+            first_in_streak = None
+
+    return None
+
+
 def _first_on_or_after(rows: list[dict], fallback_date: date) -> Optional[dict]:
     for row in rows:
         if row["session_date"] >= fallback_date:
+            return row
+    return None
+
+
+def _first_after(rows: list[dict], after_date: date) -> Optional[dict]:
+    for row in rows:
+        if row["session_date"] > after_date:
             return row
     return None
 
@@ -212,6 +369,33 @@ class RollCalendarGenerator:
                 events,
                 replace=replace,
             )
+
+        return events
+
+    async def generate_asof(
+        self,
+        symbol: str,
+        *,
+        safety_days_before_expiry: int,
+        min_confirm_days: int = 2,
+        replace: bool = False,
+        dry_run: bool = True,
+    ) -> list[AsOfRollEvent]:
+        contracts = await self._load_contracts(symbol)
+        events: list[AsOfRollEvent] = []
+
+        for old, new in zip(contracts, contracts[1:]):
+            event = await self._generate_asof_pair(
+                old,
+                new,
+                safety_days_before_expiry=safety_days_before_expiry,
+                min_confirm_days=min_confirm_days,
+            )
+            if event is not None:
+                events.append(event)
+
+        if not dry_run:
+            await self._save_asof_events(symbol, events, replace=replace)
 
         return events
 
@@ -388,6 +572,90 @@ class RollCalendarGenerator:
             new_bar_count=candidate["new_bar_count"] or 0,
         )
 
+    async def _generate_asof_pair(
+        self,
+        old: ContractSummary,
+        new: ContractSummary,
+        *,
+        safety_days_before_expiry: int,
+        min_confirm_days: int,
+    ) -> Optional[AsOfRollEvent]:
+        overlap_rows = await self._load_overlap_days(old, new)
+        if not overlap_rows:
+            return None
+
+        safety_date = default_fallback_roll_date(
+            old.last_trade_date,
+            safety_days_before_expiry,
+        )
+        candidate = choose_volume_safety_candidate_asof(
+            overlap_rows,
+            min_confirm_days=min_confirm_days,
+            safety_date=safety_date,
+        )
+        if candidate is None:
+            return None
+
+        known_session_date = candidate.known_row["session_date"]
+        price_session_date = known_session_date
+        effective_row = _first_after(overlap_rows, known_session_date)
+        effective_session_date = (
+            effective_row["session_date"]
+            if effective_row is not None
+            else next_weekday(known_session_date)
+        )
+
+        roll_rule = (
+            f"volume_{min_confirm_days}d_confirm_asof_safety_"
+            f"{safety_days_before_expiry}bd"
+            if candidate.rule_source == "volume"
+            else f"safety_{safety_days_before_expiry}bd_before_expiry_asof"
+        )
+
+        prices = await self._load_roll_prices(
+            old.con_id,
+            new.con_id,
+            price_session_date,
+        )
+        if prices is None:
+            return None
+
+        old_price = prices["old_price"]
+        new_price = prices["new_price"]
+        if old_price is None or old_price == 0 or new_price is None:
+            return None
+
+        price_gap = new_price - old_price
+        ratio = new_price / old_price
+        effective_roll_time = session_start_time_utc(
+            old.symbol,
+            effective_session_date,
+        )
+        known_at = effective_roll_time
+
+        return AsOfRollEvent(
+            symbol=old.symbol,
+            from_con_id=old.con_id,
+            to_con_id=new.con_id,
+            from_contract_month=old.contract_month,
+            to_contract_month=new.contract_month,
+            from_local_symbol=old.local_symbol,
+            to_local_symbol=new.local_symbol,
+            effective_roll_time=effective_roll_time,
+            known_at=known_at,
+            decision_session_date=candidate.decision_row["session_date"],
+            price_session_date=price_session_date,
+            roll_rule=roll_rule,
+            price_gap=price_gap,
+            ratio=ratio,
+            old_price=old_price,
+            new_price=new_price,
+            old_volume=candidate.known_row["old_volume"] or 0,
+            new_volume=candidate.known_row["new_volume"] or 0,
+            old_bar_count=candidate.known_row["old_bar_count"] or 0,
+            new_bar_count=candidate.known_row["new_bar_count"] or 0,
+        )
+
     async def _load_overlap_days(
         self,
         old: ContractSummary,
@@ -397,20 +665,18 @@ class RollCalendarGenerator:
             rows = await conn.fetch(
                 """
                 WITH old_daily AS (
-                    SELECT time::date AS session_date,
-                           SUM(COALESCE(volume, 0)) AS old_volume,
-                           SUM(COALESCE(bar_count, 0)) AS old_bar_count
-                    FROM futures_minute_bars
+                    SELECT session_date,
+                           COALESCE(volume, 0) AS old_volume,
+                           COALESCE(bar_count, 0) AS old_bar_count
+                    FROM futures_daily_bars_session_normalized
                     WHERE symbol = $1 AND con_id = $2
-                    GROUP BY time::date
                 ),
                 new_daily AS (
-                    SELECT time::date AS session_date,
-                           SUM(COALESCE(volume, 0)) AS new_volume,
-                           SUM(COALESCE(bar_count, 0)) AS new_bar_count
-                    FROM futures_minute_bars
+                    SELECT session_date,
+                           COALESCE(volume, 0) AS new_volume,
+                           COALESCE(bar_count, 0) AS new_bar_count
+                    FROM futures_daily_bars_session_normalized
                     WHERE symbol = $1 AND con_id = $3
-                    GROUP BY time::date
                 )
                 SELECT o.session_date, o.old_volume, n.new_volume,
                        o.old_bar_count, n.new_bar_count
@@ -436,17 +702,13 @@ class RollCalendarGenerator:
                 """
                 WITH old_bar AS (
                     SELECT close AS old_price
-                    FROM futures_minute_bars
-                    WHERE con_id = $1 AND time::date = $3
-                    ORDER BY time DESC
-                    LIMIT 1
+                    FROM futures_daily_bars_session_normalized
+                    WHERE con_id = $1 AND session_date = $3
                 ),
                 new_bar AS (
                     SELECT close AS new_price
-                    FROM futures_minute_bars
-                    WHERE con_id = $2 AND time::date = $3
-                    ORDER BY time DESC
-                    LIMIT 1
+                    FROM futures_daily_bars_session_normalized
+                    WHERE con_id = $2 AND session_date = $3
                 )
                 SELECT old_price, new_price
                 FROM old_bar CROSS JOIN new_bar
@@ -560,6 +822,86 @@ class RollCalendarGenerator:
                             e.from_local_symbol,
                             e.to_local_symbol,
                             e.roll_time,
+                            e.roll_rule,
+                            e.price_gap,
+                            e.ratio,
+                            e.old_price,
+                            e.new_price,
+                            e.old_volume,
+                            e.new_volume,
+                            e.old_bar_count,
+                            e.new_bar_count,
+                        )
+                        for e in events
+                    ],
+                )
+
+    async def _save_asof_events(
+        self,
+        symbol: str,
+        events: list[AsOfRollEvent],
+        *,
+        replace: bool,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                if replace:
+                    await conn.execute(
+                        """
+                        DELETE FROM futures_roll_events_asof
+                        WHERE symbol = $1
+                        """,
+                        symbol,
+                    )
+                await conn.executemany(
+                    """
+                    INSERT INTO futures_roll_events_asof (
+                        symbol, from_con_id, to_con_id,
+                        from_contract_month, to_contract_month,
+                        from_local_symbol, to_local_symbol,
+                        effective_roll_time, known_at,
+                        decision_session_date, price_session_date,
+                        roll_rule, price_gap, ratio,
+                        old_price, new_price, old_volume, new_volume,
+                        old_bar_count, new_bar_count
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+                        $10, $11, $12, $13, $14, $15, $16,
+                        $17, $18, $19, $20
+                    )
+                    ON CONFLICT (symbol, from_con_id, to_con_id, effective_roll_time)
+                    DO UPDATE SET
+                        from_contract_month = EXCLUDED.from_contract_month,
+                        to_contract_month = EXCLUDED.to_contract_month,
+                        from_local_symbol = EXCLUDED.from_local_symbol,
+                        to_local_symbol = EXCLUDED.to_local_symbol,
+                        known_at = EXCLUDED.known_at,
+                        decision_session_date = EXCLUDED.decision_session_date,
+                        price_session_date = EXCLUDED.price_session_date,
+                        roll_rule = EXCLUDED.roll_rule,
+                        price_gap = EXCLUDED.price_gap,
+                        ratio = EXCLUDED.ratio,
+                        old_price = EXCLUDED.old_price,
+                        new_price = EXCLUDED.new_price,
+                        old_volume = EXCLUDED.old_volume,
+                        new_volume = EXCLUDED.new_volume,
+                        old_bar_count = EXCLUDED.old_bar_count,
+                        new_bar_count = EXCLUDED.new_bar_count
+                    """,
+                    [
+                        (
+                            e.symbol,
+                            e.from_con_id,
+                            e.to_con_id,
+                            e.from_contract_month,
+                            e.to_contract_month,
+                            e.from_local_symbol,
+                            e.to_local_symbol,
+                            e.effective_roll_time,
+                            e.known_at,
+                            e.decision_session_date,
+                            e.price_session_date,
                             e.roll_rule,
                             e.price_gap,
                             e.ratio,

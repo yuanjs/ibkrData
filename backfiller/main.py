@@ -13,6 +13,7 @@ Usage:
   python -m backfiller.main --check --only AAPL
   python -m backfiller.main --roll-calendar --only SPI --dry-run
   python -m backfiller.main --roll-calendar-volume-safety --only SPI HG
+  python -m backfiller.main --roll-calendar-asof --only SPI --dry-run
 """
 
 import argparse
@@ -279,6 +280,42 @@ async def cmd_roll_calendar_volume_safety(args, cfg):
         await pool.close()
 
 
+async def cmd_roll_calendar_asof(args, cfg):
+    products = [p for p in cfg.products if p.sec_type == "FUT"]
+    if args.only:
+        products = [p for p in products if p.symbol in args.only]
+
+    pool = await MinuteBarWriter.create_pool(cfg.db_url)
+    generator = RollCalendarGenerator(pool)
+    try:
+        for p in products:
+            safety_days = _volume_safety_days(p.symbol, args)
+            events = await generator.generate_asof(
+                p.symbol,
+                safety_days_before_expiry=safety_days,
+                min_confirm_days=args.confirm_days,
+                replace=args.replace_rolls,
+                dry_run=args.dry_run,
+            )
+            mode = "DRY RUN" if args.dry_run else "SAVED"
+            print(
+                f"\n{p.symbol} as-of roll calendar ({mode}): "
+                f"{len(events)} events, safety={safety_days}bd"
+            )
+            for e in events:
+                print(
+                    f"  {e.from_local_symbol:<6} -> {e.to_local_symbol:<6} "
+                    f"decision={e.decision_session_date} "
+                    f"known={e.known_at.isoformat()} "
+                    f"effective={e.effective_roll_time.isoformat()} "
+                    f"gap={e.price_gap:.4f} ratio={e.ratio:.8f} "
+                    f"old_vol={e.old_volume} new_vol={e.new_volume} "
+                    f"rule={e.roll_rule}"
+                )
+    finally:
+        await pool.close()
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -300,6 +337,8 @@ def parse_args(argv=None):
                      help="生成期货换月日历")
     sub.add_argument("--roll-calendar-volume-safety", action="store_true",
                      help="按成交量超越+安全天数生成期货换月日历")
+    sub.add_argument("--roll-calendar-asof", action="store_true",
+                     help="生成 walk-forward/as-of 期货换月日历")
 
     parser.add_argument("--only", nargs="+", default=None,
                         help="只操作指定产品 (空格分隔)")
@@ -342,6 +381,8 @@ def main():
         asyncio.run(cmd_roll_calendar(args, cfg))
     elif args.roll_calendar_volume_safety:
         asyncio.run(cmd_roll_calendar_volume_safety(args, cfg))
+    elif args.roll_calendar_asof:
+        asyncio.run(cmd_roll_calendar_asof(args, cfg))
 
 
 if __name__ == "__main__":
