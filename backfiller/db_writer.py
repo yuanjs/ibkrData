@@ -18,6 +18,8 @@ from typing import Optional
 import asyncpg
 from ib_insync import Contract
 
+from backfiller.roll_calendar import session_start_time_utc
+
 logger = logging.getLogger(__name__)
 
 
@@ -376,7 +378,16 @@ class MinuteBarWriter:
 
         if row is None or row["cnt"] == 0:
             return False
-        return row["min_date"] <= start_date and row["max_date"] >= end_date
+        if not (row["min_date"] <= start_date and row["max_date"] >= end_date):
+            return False
+
+        session_gaps = await self.detect_futures_session_gaps(
+            symbol,
+            start_date=start_date,
+            end_date=end_date,
+            con_id=con_id,
+        )
+        return not session_gaps
 
     async def has_daily_window_coverage(
         self,
@@ -594,3 +605,90 @@ class MinuteBarWriter:
             }
             for r in rows
         ]
+
+    async def detect_futures_session_gaps(
+        self,
+        symbol: str,
+        *,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        con_id: Optional[int] = None,
+        min_minutes: int = 300,
+    ) -> list[dict]:
+        """Find futures sessions whose minute bars are clearly incomplete.
+
+        Timestamp-only gap checks miss products whose sessions cross UTC dates.
+        This uses normalized daily futures bars as the expected-session source
+        and counts minute bars in the matching exchange session window.
+        """
+        filters = ["symbol = $1"]
+        params: list[object] = [symbol]
+        if start_date is not None:
+            params.append(start_date)
+            filters.append(f"session_date >= ${len(params)}")
+        if end_date is not None:
+            params.append(end_date)
+            filters.append(f"session_date <= ${len(params)}")
+        if con_id is not None:
+            params.append(con_id)
+            filters.append(f"con_id = ${len(params)}")
+
+        where = " AND ".join(filters)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT session_date, con_id, local_symbol, contract_month,
+                       volume, bar_count
+                FROM futures_daily_bars_session_normalized
+                WHERE {where}
+                  AND (COALESCE(volume, 0) > 0 OR COALESCE(bar_count, 0) > 0)
+                ORDER BY con_id, session_date
+                """,
+                *params,
+            )
+
+            gaps: list[dict] = []
+            for row in rows:
+                session_date = row["session_date"]
+                session_start = session_start_time_utc(symbol, session_date)
+                session_end = session_start + timedelta(days=1)
+                minute_row = await conn.fetchrow(
+                    """
+                    SELECT MIN(time) AS min_time,
+                           MAX(time) AS max_time,
+                           COUNT(*) AS minute_count,
+                           COALESCE(SUM(volume), 0) AS minute_volume,
+                           COALESCE(SUM(bar_count), 0) AS minute_bar_count
+                    FROM futures_minute_bars
+                    WHERE symbol = $1
+                      AND con_id = $2
+                      AND time >= $3
+                      AND time < $4
+                    """,
+                    symbol,
+                    row["con_id"],
+                    session_start,
+                    session_end,
+                )
+                minute_count = int(minute_row["minute_count"] or 0)
+                if minute_count >= min_minutes:
+                    continue
+                gaps.append(
+                    {
+                        "symbol": symbol,
+                        "con_id": row["con_id"],
+                        "local_symbol": row["local_symbol"],
+                        "contract_month": row["contract_month"],
+                        "session_date": session_date,
+                        "session_start": session_start,
+                        "session_end": session_end,
+                        "minute_count": minute_count,
+                        "minute_min_time": minute_row["min_time"],
+                        "minute_max_time": minute_row["max_time"],
+                        "daily_volume": row["volume"],
+                        "daily_bar_count": row["bar_count"],
+                        "minute_volume": minute_row["minute_volume"],
+                        "minute_bar_count": minute_row["minute_bar_count"],
+                    }
+                )
+        return gaps

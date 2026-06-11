@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import logging
 import signal
+from datetime import date
 from pathlib import Path
 
 # Python 3.12+ compatibility for ib_insync's eventkit
@@ -204,6 +205,59 @@ async def cmd_pull_daily(args, cfg):
     logger.info("Daily pull complete")
 
 
+async def cmd_repair_futures_session_gaps(args, cfg):
+    filtered_cfg = _filtered_pull_config(args, cfg)
+    products = [p for p in filtered_cfg.products if p.sec_type == "FUT"]
+
+    pool = await MinuteBarWriter.create_pool(cfg.db_url)
+    writer = MinuteBarWriter(pool)
+    scheduler = PullScheduler(
+        AppConfig(
+            products=products,
+            start=filtered_cfg.start,
+            end=filtered_cfg.end,
+            futures_overlap_trading_days=filtered_cfg.futures_overlap_trading_days,
+            request_interval_seconds=filtered_cfg.request_interval_seconds,
+            ib_host=filtered_cfg.ib_host,
+            ib_port=filtered_cfg.ib_port,
+            ib_client_id=filtered_cfg.ib_client_id,
+            db_url=filtered_cfg.db_url,
+        ),
+        writer,
+        PROGRESS_DIR,
+        allow_new_products=False,
+    )
+    start_date = date.fromisoformat(args.gap_start) if args.gap_start else None
+    end_date = date.fromisoformat(args.gap_end) if args.gap_end else None
+    try:
+        for product in products:
+            gaps = await scheduler.repair_futures_session_gaps(
+                product,
+                start_date=start_date,
+                end_date=end_date,
+                min_minutes=args.min_session_minutes,
+                dry_run=args.dry_run,
+            )
+            mode = "DRY RUN" if args.dry_run else "REPAIRED"
+            print(
+                f"\n{product.symbol} futures session gap repair ({mode}): "
+                f"{len(gaps)} sessions"
+            )
+            for gap in gaps[:50]:
+                print(
+                    f"  {gap['session_date']} {gap['local_symbol']} "
+                    f"conId={gap['con_id']} minutes={gap['minute_count']} "
+                    f"daily_vol={gap['daily_volume']} "
+                    f"window={gap['session_start']}..{gap['session_end']} "
+                    f"loaded={gap['minute_min_time']}..{gap['minute_max_time']}"
+                )
+            if len(gaps) > 50:
+                print(f"  ... and {len(gaps) - 50} more")
+    finally:
+        scheduler.disconnect()
+        await pool.close()
+
+
 # ---------------------------------------------------------------------------
 # --roll-calendar
 # ---------------------------------------------------------------------------
@@ -331,6 +385,8 @@ def parse_args(argv=None):
     sub.add_argument("--pull", action="store_true", help="拉取历史数据")
     sub.add_argument("--pull-daily", action="store_true",
                      help="拉取历史日K数据")
+    sub.add_argument("--repair-futures-session-gaps", action="store_true",
+                     help="按交易所 session 检测并修复期货分钟K缺口")
     sub.add_argument("--status", action="store_true", help="查询已拉取数据状态")
     sub.add_argument("--check", action="store_true", help="验证 IBKR 可拉取性")
     sub.add_argument("--roll-calendar", action="store_true",
@@ -356,6 +412,12 @@ def parse_args(argv=None):
                         help="volume+safety 规则下商品期货安全换月工作日数")
     parser.add_argument("--safety-days", type=int, default=None,
                         help="覆盖 volume+safety 规则下所有产品的安全工作日数")
+    parser.add_argument("--gap-start", default=None,
+                        help="session gap 检测开始日期 YYYY-MM-DD")
+    parser.add_argument("--gap-end", default=None,
+                        help="session gap 检测结束日期 YYYY-MM-DD")
+    parser.add_argument("--min-session-minutes", type=int, default=300,
+                        help="有日K但分钟数少于该值时认为 session 缺失")
     return parser.parse_args(argv)
 
 
@@ -373,6 +435,8 @@ def main():
         asyncio.run(cmd_pull(args, cfg))
     elif args.pull_daily:
         asyncio.run(cmd_pull_daily(args, cfg))
+    elif args.repair_futures_session_gaps:
+        asyncio.run(cmd_repair_futures_session_gaps(args, cfg))
     elif args.status:
         asyncio.run(cmd_status(args, cfg))
     elif args.check:

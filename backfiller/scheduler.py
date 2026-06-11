@@ -512,6 +512,79 @@ class PullScheduler:
         logger.info("%s: FUT backfill complete (%d contract periods)",
                      product.symbol, len(all_tasks))
 
+    async def repair_futures_session_gaps(
+        self,
+        product: ProductConfig,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        min_minutes: int = 300,
+        dry_run: bool = True,
+    ) -> list[dict]:
+        """Repair futures sessions that have daily bars but too few minutes."""
+        gaps = await self._writer.detect_futures_session_gaps(
+            product.symbol,
+            start_date=start_date,
+            end_date=end_date,
+            min_minutes=min_minutes,
+        )
+        if not gaps:
+            logger.info("%s: no incomplete futures sessions found", product.symbol)
+            return []
+
+        logger.info(
+            "%s: found %d incomplete futures sessions (min_minutes=%d)",
+            product.symbol,
+            len(gaps),
+            min_minutes,
+        )
+        if dry_run:
+            return gaps
+
+        contracts = await self._resolve_fut_contracts(product)
+        contracts_by_con_id = {int(c.conId): c for c in contracts if c.conId}
+
+        for gap in gaps:
+            if self._should_stop:
+                break
+            contract = contracts_by_con_id.get(int(gap["con_id"]))
+            if contract is None:
+                logger.warning(
+                    "%s: cannot resolve conId=%s for session repair",
+                    product.symbol,
+                    gap["con_id"],
+                )
+                continue
+            contract.includeExpired = True
+            if not await self.ensure_connected():
+                break
+
+            session_end = gap["session_end"]
+            end_dt = session_end.strftime("%Y%m%d %H:%M:%S UTC")
+            logger.info(
+                "%s %s conId=%s: repairing session %s (%s..%s), existing minutes=%s",
+                product.symbol,
+                gap["local_symbol"],
+                gap["con_id"],
+                gap["session_date"],
+                gap["session_start"],
+                gap["session_end"],
+                gap["minute_count"],
+            )
+            bars = await self._ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime=end_dt,
+                durationStr=f"{WINDOW_DAYS} D",
+                barSizeSetting="1 min",
+                whatToShow=resolve_what_to_show(product.sec_type),
+                useRTH=False,
+                formatDate=1,
+            )
+            await self._writer.upsert_futures_bars(product.symbol, contract, bars)
+            await asyncio.sleep(self._config.request_interval_seconds)
+
+        return gaps
+
     async def _pull_daily_product(self, product: ProductConfig) -> None:
         """Pull non-futures daily bars into ``daily_bars``."""
         daily_start = (
