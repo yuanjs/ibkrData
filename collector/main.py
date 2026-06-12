@@ -19,6 +19,12 @@ from config import (
     ACCOUNT_REFRESH_INTERVAL,
     DB_URL,
     DEFAULT_SUBSCRIPTIONS,
+    FUTURES_ROLL_CALENDAR_AFTER_SESSION_MINUTES,
+    FUTURES_ROLL_CALENDAR_COMMODITY_SAFETY_DAYS,
+    FUTURES_ROLL_CALENDAR_CONFIRM_DAYS,
+    FUTURES_ROLL_CALENDAR_ENABLED,
+    FUTURES_ROLL_CALENDAR_INDEX_SAFETY_DAYS,
+    FUTURES_ROLL_CALENDAR_INTERVAL_SECONDS,
     HEALTH_PORT,
     IB_CLIENT_ID,
     IB_HOST,
@@ -31,6 +37,7 @@ from daily_tracker import DailyBarTracker
 from data_writer import DataWriter
 from ibkr_client import IBKRClient
 from publisher import Publisher
+from backfiller.roll_calendar import RollCalendarGenerator
 
 # ====== monkey-patch: 捕获 tickType 45 (LAST_TIMESTAMP) 交易所时间戳 ======
 # ib_insync 的 Wrapper.tickString 没有处理 tickType 45，
@@ -38,7 +45,7 @@ from publisher import Publisher
 # 这里在运行时添加 lastTimestamp 字段 + 补丁处理器。
 from ib_insync.wrapper import Wrapper
 from ib_insync.ticker import Ticker
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 Ticker.lastTimestamp = None  # type: ignore[attr-defined]
 
@@ -67,6 +74,9 @@ _account_refresh_events: dict[str, asyncio.Event] = {
 }
 _paper_tasks: set[asyncio.Task] = set()
 
+COMMODITY_ROLL_SYMBOLS = {"HG", "ZC"}
+ROLL_CALENDAR_LOCK_KEY = 817_260_611_001
+
 
 async def _update_gateway_map(redis, gateway: str, accounts: list[dict]):
     """发布 gateway→account_id 映射，排除 "All"（IBKR 虚拟聚合账户，无有效数据）。"""
@@ -77,6 +87,43 @@ async def _update_gateway_map(redis, gateway: str, accounts: list[dict]):
     mapping[gateway] = ids
     await redis.set(key, json.dumps(mapping))
     await redis.publish("gateway:map:update", json.dumps(mapping))
+
+
+def _roll_calendar_safety_days(symbol: str) -> int:
+    if symbol in COMMODITY_ROLL_SYMBOLS:
+        return FUTURES_ROLL_CALENDAR_COMMODITY_SAFETY_DAYS
+    return FUTURES_ROLL_CALENDAR_INDEX_SAFETY_DAYS
+
+
+def _roll_calendar_ready_session_date(
+    symbol: str,
+    now_utc: datetime,
+) -> tuple[date, bool]:
+    config = PRODUCT_ROLL_CONFIG.get(symbol)
+    if not config:
+        return now_utc.date(), True
+
+    local_now = now_utc.astimezone(ZoneInfo(config["timezone"]))
+    boundary = local_now.replace(
+        hour=config["roll_hour"],
+        minute=config["roll_minute"],
+        second=0,
+        microsecond=0,
+    ) + timedelta(minutes=FUTURES_ROLL_CALENDAR_AFTER_SESSION_MINUTES)
+
+    if local_now >= boundary:
+        return local_now.date(), True
+    return (local_now.date() - timedelta(days=1)), True
+
+
+async def _load_active_futures_subscription_symbols(pool) -> list[str]:
+    subscriptions = await load_subscriptions(pool)
+    symbols = {
+        str(s["symbol"]).upper()
+        for s in subscriptions
+        if s.get("sec_type") == "FUT" and s.get("symbol")
+    }
+    return sorted(symbols)
 
 
 class TickBuffer:
@@ -190,13 +237,24 @@ async def load_subscriptions(pool):
     return DEFAULT_SUBSCRIPTIONS
 
 
-async def load_active_futures_contract(pool, symbol: str) -> dict | None:
-    """Return the live active futures contract identity from DB roll state."""
-    if symbol == "N225M":
-        try:
-            raw_row = await pool.fetchrow(
-                """
-                WITH raw AS (
+async def _load_latest_raw_futures_contract(pool, symbol: str) -> dict | None:
+    """Return the newest raw futures contract available in local storage."""
+    try:
+        raw_row = await pool.fetchrow(
+            """
+            WITH raw AS (
+                SELECT
+                    symbol,
+                    con_id,
+                    contract_month,
+                    local_symbol,
+                    trading_class,
+                    exchange,
+                    currency,
+                    multiplier,
+                    last_trade_date,
+                    MAX(time) AS latest_time
+                FROM (
                     SELECT
                         symbol,
                         con_id,
@@ -207,64 +265,54 @@ async def load_active_futures_contract(pool, symbol: str) -> dict | None:
                         currency,
                         multiplier,
                         last_trade_date,
-                        MAX(time) AS latest_time
-                    FROM (
-                        SELECT
-                            symbol,
-                            con_id,
-                            contract_month,
-                            local_symbol,
-                            trading_class,
-                            exchange,
-                            currency,
-                            multiplier,
-                            last_trade_date,
-                            time
-                        FROM futures_minute_bars
-                        WHERE symbol = $1
+                        time
+                    FROM futures_minute_bars
+                    WHERE symbol = $1
 
-                        UNION ALL
+                    UNION ALL
 
-                        SELECT
-                            symbol,
-                            con_id,
-                            contract_month,
-                            local_symbol,
-                            trading_class,
-                            exchange,
-                            currency,
-                            multiplier,
-                            last_trade_date,
-                            time
-                        FROM futures_daily_bars
-                        WHERE symbol = $1
-                    ) x
-                    GROUP BY symbol, con_id, contract_month, local_symbol,
-                             trading_class, exchange, currency, multiplier, last_trade_date
-                    ORDER BY contract_month DESC NULLS LAST, con_id DESC, latest_time DESC
-                    LIMIT 1
-                )
-                SELECT * FROM raw
-                """,
-                symbol,
+                    SELECT
+                        symbol,
+                        con_id,
+                        contract_month,
+                        local_symbol,
+                        trading_class,
+                        exchange,
+                        currency,
+                        multiplier,
+                        last_trade_date,
+                        time
+                    FROM futures_daily_bars
+                    WHERE symbol = $1
+                ) x
+                GROUP BY symbol, con_id, contract_month, local_symbol,
+                         trading_class, exchange, currency, multiplier, last_trade_date
+                ORDER BY contract_month DESC NULLS LAST, con_id DESC, latest_time DESC
+                LIMIT 1
             )
-        except Exception as e:
-            logger.warning(
-                "Failed to load live raw futures contract for %s: %s",
-                symbol,
-                e,
-            )
-        else:
-            if raw_row and raw_row.get("con_id"):
-                data = dict(raw_row)
-                logger.warning(
-                    "Using latest raw contract for %s live subscription: conId=%s month=%s localSymbol=%s",
-                    symbol,
-                    data.get("con_id"),
-                    data.get("contract_month"),
-                    data.get("local_symbol"),
-                )
-                return data
+            SELECT * FROM raw
+            """,
+            symbol,
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to load latest raw futures contract for %s: %s",
+            symbol,
+            e,
+        )
+        return None
+
+    if not raw_row:
+        return None
+
+    data = dict(raw_row)
+    if not data.get("con_id"):
+        return None
+    return data
+
+
+async def load_active_futures_contract(pool, symbol: str) -> dict | None:
+    """Return the live active futures contract identity from DB roll state."""
 
     try:
         row = await pool.fetchrow(
@@ -310,72 +358,16 @@ async def load_active_futures_contract(pool, symbol: str) -> dict | None:
             symbol,
             last_trade_date,
         )
-        try:
-            raw_row = await pool.fetchrow(
-                """
-                WITH raw AS (
-                    SELECT
-                        symbol,
-                        con_id,
-                        contract_month,
-                        local_symbol,
-                        trading_class,
-                        exchange,
-                        currency,
-                        multiplier,
-                        last_trade_date,
-                        MAX(time) AS latest_time
-                    FROM (
-                        SELECT
-                            symbol,
-                            con_id,
-                            contract_month,
-                            local_symbol,
-                            trading_class,
-                            exchange,
-                            currency,
-                            multiplier,
-                            last_trade_date,
-                            time
-                        FROM futures_minute_bars
-                        WHERE symbol = $1
-
-                        UNION ALL
-
-                        SELECT
-                            symbol,
-                            con_id,
-                            contract_month,
-                            local_symbol,
-                            trading_class,
-                            exchange,
-                            currency,
-                            multiplier,
-                            last_trade_date,
-                            time
-                        FROM futures_daily_bars
-                        WHERE symbol = $1
-                    ) x
-                    GROUP BY symbol, con_id, contract_month, local_symbol,
-                             trading_class, exchange, currency, multiplier, last_trade_date
-                    ORDER BY contract_month DESC NULLS LAST, con_id DESC, latest_time DESC
-                    LIMIT 1
-                )
-                SELECT * FROM raw
-                """,
-                symbol,
-            )
-        except Exception as e:
+        raw_data = await _load_latest_raw_futures_contract(pool, symbol)
+        if raw_data:
             logger.warning(
-                "Failed to load latest raw futures contract for %s: %s",
+                "Using latest raw contract for %s live subscription: conId=%s month=%s localSymbol=%s",
                 symbol,
-                e,
+                raw_data.get("con_id"),
+                raw_data.get("contract_month"),
+                raw_data.get("local_symbol"),
             )
-            return None
-        if raw_row:
-            raw_data = dict(raw_row)
-            if raw_data.get("con_id"):
-                return raw_data
+            return raw_data
         return None
     return data
 
@@ -442,6 +434,78 @@ async def futures_roll_state_loop(
             raise
         except Exception as e:
             logger.error(f"Futures roll state loop error: {e}")
+
+
+async def futures_roll_calendar_loop(
+    pool,
+    interval: int = FUTURES_ROLL_CALENDAR_INTERVAL_SECONDS,
+):
+    """Generate as-of futures roll events for active FUT subscriptions.
+
+    The collector owns scheduling only.  Roll rules are delegated to
+    RollCalendarGenerator so backtest and live roll selection stay aligned.
+    """
+    if not FUTURES_ROLL_CALENDAR_ENABLED:
+        logger.info("Futures roll calendar loop disabled")
+        return
+
+    generator = RollCalendarGenerator(pool)
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            symbols = await _load_active_futures_subscription_symbols(pool)
+            if not symbols:
+                await asyncio.sleep(interval)
+                continue
+
+            async with pool.acquire() as lock_conn:
+                async with lock_conn.transaction():
+                    locked = await lock_conn.fetchval(
+                        "SELECT pg_try_advisory_xact_lock($1)",
+                        ROLL_CALENDAR_LOCK_KEY,
+                    )
+                    if not locked:
+                        logger.info(
+                            "Skipping futures roll calendar generation; another collector holds the lock"
+                        )
+                    else:
+                        for symbol in symbols:
+                            session_date, ready = _roll_calendar_ready_session_date(
+                                symbol,
+                                now,
+                            )
+                            if not ready:
+                                continue
+                            safety_days = _roll_calendar_safety_days(symbol)
+                            try:
+                                events = await generator.generate_asof(
+                                    symbol,
+                                    safety_days_before_expiry=safety_days,
+                                    min_confirm_days=FUTURES_ROLL_CALENDAR_CONFIRM_DAYS,
+                                    replace=False,
+                                    dry_run=False,
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    "Failed to generate futures roll calendar for %s: %s",
+                                    symbol,
+                                    e,
+                                )
+                                continue
+
+                            logger.info(
+                                "Generated as-of roll calendar for %s: %s events, session=%s, safety=%sbd",
+                                symbol,
+                                len(events),
+                                session_date,
+                                safety_days,
+                            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Futures roll calendar loop error: {e}")
+
+        await asyncio.sleep(interval)
 
 
 async def tick_loop(client, pub):
@@ -878,6 +942,10 @@ async def main():
                 active_futures_contracts,
             ),
             name="futures_roll_state",
+        ),
+        asyncio.create_task(
+            futures_roll_calendar_loop(pool),
+            name="futures_roll_calendar",
         ),
         asyncio.create_task(
             order_command_listener(client, pub, channel="order:command:live"),

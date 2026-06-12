@@ -1,0 +1,8 @@
+*
+!collector/
+!collector/**
+!backfiller/
+!backfiller/__init__.py
+!backfiller/roll_calendar.py
+**/__pycache__/
+**/*.pyc

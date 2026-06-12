@@ -71,6 +71,28 @@ roll engine 使用新旧合约 overlap 期间的日成交量和 bar_count 判断
 
 结果写入 `futures_roll_events_asof`。
 
+当前 collector 已内置 `futures_roll_calendar_loop` 自动调度该生成过程：
+
+- 复用 `backfiller.roll_calendar.RollCalendarGenerator.generate_asof()`，不在
+  collector 里维护第二套 roll 规则。
+- 产品列表每轮从 active subscriptions 派生，只处理 `sec_type = FUT` 的订阅产品，
+  不需要配置 `FUTURES_ROLL_CALENDAR_SYMBOLS`。
+- 默认每 1800 秒检查一次，并在产品本地 roll/session boundary 后等待 30 分钟再
+  生成，避免 daily/session-normalized 数据尚未完整入库。
+- 写入使用 upsert，`replace=False`，运行中的 collector 不删除历史 roll events。
+- 使用 PostgreSQL advisory transaction lock 防止多个 collector 实例同时生成。
+
+相关环境变量：
+
+```env
+FUTURES_ROLL_CALENDAR_ENABLED=YES
+FUTURES_ROLL_CALENDAR_INTERVAL_SECONDS=1800
+FUTURES_ROLL_CALENDAR_AFTER_SESSION_MINUTES=30
+FUTURES_ROLL_CALENDAR_CONFIRM_DAYS=2
+FUTURES_ROLL_CALENDAR_INDEX_SAFETY_DAYS=2
+FUTURES_ROLL_CALENDAR_COMMODITY_SAFETY_DAYS=5
+```
+
 ### 3. 连续读取层只选择 active segment
 
 连续期货读取函数按 roll event 切分时间段：

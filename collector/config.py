@@ -16,6 +16,28 @@ HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8001"))
 ACCOUNT_REFRESH_INTERVAL = int(os.getenv("ACCOUNT_REFRESH_INTERVAL", "30"))
 DEFAULT_SUBSCRIPTIONS = json.loads(os.getenv("SYMBOLS", "[]"))
 
+# Futures roll event generation.  Symbols are intentionally not configured
+# here; the collector derives them from active FUT subscriptions.
+FUTURES_ROLL_CALENDAR_ENABLED = os.getenv(
+    "FUTURES_ROLL_CALENDAR_ENABLED",
+    "YES",
+).upper() in ("1", "YES", "TRUE", "ON")
+FUTURES_ROLL_CALENDAR_INTERVAL_SECONDS = int(
+    os.getenv("FUTURES_ROLL_CALENDAR_INTERVAL_SECONDS", "1800")
+)
+FUTURES_ROLL_CALENDAR_AFTER_SESSION_MINUTES = int(
+    os.getenv("FUTURES_ROLL_CALENDAR_AFTER_SESSION_MINUTES", "30")
+)
+FUTURES_ROLL_CALENDAR_CONFIRM_DAYS = int(
+    os.getenv("FUTURES_ROLL_CALENDAR_CONFIRM_DAYS", "2")
+)
+FUTURES_ROLL_CALENDAR_INDEX_SAFETY_DAYS = int(
+    os.getenv("FUTURES_ROLL_CALENDAR_INDEX_SAFETY_DAYS", "2")
+)
+FUTURES_ROLL_CALENDAR_COMMODITY_SAFETY_DAYS = int(
+    os.getenv("FUTURES_ROLL_CALENDAR_COMMODITY_SAFETY_DAYS", "5")
+)
+
 # Bark Notification
 BARK_SERVER = os.getenv("BARK_SERVER", "https://api.day.app")
 BARK_KEY = os.getenv("BARK_KEY", "")
