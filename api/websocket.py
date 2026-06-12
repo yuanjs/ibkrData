@@ -126,3 +126,16 @@ async def ws_gateway_map(ws: WebSocket, token: str = Query(default="")):
             await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect("gateway:map:update", ws)
+
+
+async def ws_futures_roll_state(ws: WebSocket, token: str = Query(default="")):
+    """WebSocket endpoint for live futures active contract / roll state updates."""
+    if not _verify_token(token):
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+    await manager.connect("futures:roll-state:", ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect("futures:roll-state:", ws)

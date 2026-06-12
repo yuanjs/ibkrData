@@ -1,14 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Platform } from 'react-native'
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
-import { File, Paths, Directory } from 'expo-file-system'
+import { File, Paths } from 'expo-file-system'
 import * as Sharing from 'expo-sharing'
-import { api } from '../src/api/client'
+import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../src/api/client'
 import { CandleChartRN } from '../src/components/CandleChartRN'
 import { useTheme } from '../src/theme'
+import { aggregateCandles, candlesToCsv, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../src/utils/chartData'
 
 export default function History() {
   const [symbol, setSymbol] = useState('')
+  const [subscriptions, setSubscriptions] = useState<Record<string, SymbolSubscription>>({})
+  const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [startDate, setStartDate] = useState(new Date(Date.now() - 7 * 86400_000))
   const [endDate, setEndDate] = useState(new Date())
   const [interval, setIntervalVal] = useState('1min')
@@ -17,6 +20,15 @@ export default function History() {
   const [showEndPicker, setShowEndPicker] = useState(false)
   const [loading, setLoading] = useState(false)
   const { colors } = useTheme()
+  const isFutures = subscriptions[symbol]?.sec_type === 'FUT'
+
+  useEffect(() => {
+    api.get<SymbolSubscription[]>('/symbols').then(rows => {
+      const next: Record<string, SymbolSubscription> = {}
+      rows.forEach(row => { next[row.symbol] = row })
+      setSubscriptions(next)
+    }).catch(err => console.error('Failed to fetch symbols:', err))
+  }, [])
 
   const quick = (days: number) => {
     const e = new Date()
@@ -29,17 +41,24 @@ export default function History() {
     if (!symbol) return
     setLoading(true)
     try {
-      const data = await api.get<any[]>(
-        `/history/${symbol}?start=${startDate.toISOString()}&end=${endDate.toISOString()}&interval=${interval}`
-      )
-      setCandles(Array.isArray(data) ? data.map((d: any) => {
-        let t = Math.floor(new Date(d.time).getTime() / 1000)
+      setActiveContract(null)
+      let data: CandleLike[]
+      if (isFutures) {
+        const asOf = getFuturesDailyAsOf(symbol, endDate)
+        const contract = await futuresApi.activeContract(symbol, asOf)
+        setActiveContract(contract)
         if (interval === '1d') {
-          const dt = new Date(t * 1000)
-          t = Math.floor(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 12) / 1000)
+          data = await futuresApi.daily(symbol, startDate.toISOString(), asOf, 'back_adjusted')
+        } else {
+          data = await futuresApi.minute(symbol, startDate.toISOString(), endDate.toISOString(), 'active_raw', asOf)
+          data = aggregateCandles(data, interval)
         }
-        return { ...d, time: t }
-      }) : [])
+      } else {
+        data = await api.get<any[]>(
+          `/history/${symbol}?start=${startDate.toISOString()}&end=${endDate.toISOString()}&interval=${interval}`
+        )
+      }
+      setCandles(Array.isArray(data) ? normalizeCandles(data, interval) : [])
     } catch (e: any) {
       Alert.alert('查询失败', e.message)
     } finally {
@@ -48,13 +67,14 @@ export default function History() {
   }
 
   const exportCSV = async () => {
+    if (!candles.length) {
+      return
+    }
     try {
-      const base = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.1.100:8002'
-      const token = process.env.EXPO_PUBLIC_API_TOKEN || 'dev-token'
-      const url = `${base}/api/history/${symbol}/export?start=${startDate.toISOString()}&end=${endDate.toISOString()}&interval=${interval}`
-      const file = await File.downloadFileAsync(url, new Directory(Paths.document), {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const filename = `${symbol || 'history'}_${interval}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
+      const file = new File(Paths.document, filename)
+      file.create({ overwrite: true })
+      file.write(candlesToCsv(candles, symbol, interval))
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(file.uri)
       } else {
@@ -153,6 +173,17 @@ export default function History() {
       </View>
 
       {candles.length > 0 && (
+        <>
+          {isFutures && activeContract && (
+            <View style={styles.contractBar}>
+              <Text style={[styles.contractMain, { color: colors.textPrimary }]}>
+                {symbol} {activeContract.local_symbol || activeContract.contract_month || activeContract.con_id}
+              </Text>
+              <Text style={[styles.contractMeta, { color: colors.textSecondary }]}>
+                conId {activeContract.con_id}{activeContract.contract_month ? `  ${activeContract.contract_month}` : ''}
+              </Text>
+            </View>
+          )}
         <View style={styles.chartWrap}>
           <CandleChartRN
             symbol={symbol}
@@ -162,6 +193,7 @@ export default function History() {
             onIntervalChange={setIntervalVal}
           />
         </View>
+        </>
       )}
     </ScrollView>
   )
@@ -200,5 +232,8 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   secondaryBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6 },
+  contractBar: { marginTop: 10 },
+  contractMain: { fontSize: 12, fontWeight: '700', fontFamily: 'monospace' },
+  contractMeta: { fontSize: 11, marginTop: 2 },
   chartWrap: { height: 400, marginTop: 12 },
 })

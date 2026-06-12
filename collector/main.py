@@ -14,6 +14,7 @@ import logging
 import asyncpg
 import redis.asyncio as aioredis
 from aiohttp import web
+from zoneinfo import ZoneInfo
 from config import (
     ACCOUNT_REFRESH_INTERVAL,
     DB_URL,
@@ -22,6 +23,7 @@ from config import (
     IB_CLIENT_ID,
     IB_HOST,
     IB_PORT,
+    PRODUCT_ROLL_CONFIG,
     REDIS_URL,
     HAS_PAPER,
 )
@@ -84,25 +86,94 @@ class TickBuffer:
         self.writer = writer
         self.batch_size = batch_size
         self._buffer = []
+        self._futures_buffer = []
+        self._futures_minute_bars = {}
         self._lock = asyncio.Lock()
 
-    def add_tick(self, symbol, price, size, tick_time):
+    def add_tick(self, symbol, price=None, size=None, tick_time=None):
         """Synchronous add to buffer (called from IB callback)."""
+        if isinstance(symbol, dict):
+            self.add_futures_tick(symbol)
+            return
         # (time, symbol, last, volume, open, high, low, close)
         self._buffer.append(
             (tick_time, symbol, price, size, price, price, price, price)
         )
 
+    def add_futures_tick(self, tick: dict):
+        """Synchronous add of a real-contract futures tick."""
+        price = tick.get("last", tick.get("price"))
+        normalized = {
+            **tick,
+            "last": price,
+            "volume": tick.get("volume", tick.get("size")),
+            "open": tick.get("open", price),
+            "high": tick.get("high", price),
+            "low": tick.get("low", price),
+            "close": tick.get("close", price),
+        }
+        self._futures_buffer.append(normalized)
+        self._update_futures_minute_bar(normalized)
+
+    def _update_futures_minute_bar(self, tick: dict):
+        price = tick.get("last", tick.get("price"))
+        tick_time = tick.get("time")
+        con_id = tick.get("con_id")
+        if price is None or tick_time is None or con_id is None:
+            return
+        bucket = tick_time.replace(second=0, microsecond=0)
+        key = (tick["symbol"], int(con_id), bucket)
+        size = tick.get("volume", tick.get("size")) or 0
+        bar = self._futures_minute_bars.get(key)
+        if bar is None:
+            self._futures_minute_bars[key] = {
+                "time": bucket,
+                "symbol": tick["symbol"],
+                "con_id": int(con_id),
+                "local_symbol": tick.get("local_symbol"),
+                "trading_class": tick.get("trading_class"),
+                "contract_month": tick.get("contract_month"),
+                "last_trade_date": tick.get("last_trade_date"),
+                "exchange": tick.get("exchange"),
+                "currency": tick.get("currency"),
+                "multiplier": tick.get("multiplier"),
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": size,
+                "bar_count": 1,
+            }
+            return
+
+        bar["high"] = max(bar["high"], price)
+        bar["low"] = min(bar["low"], price)
+        bar["close"] = price
+        bar["volume"] = (bar.get("volume") or 0) + size
+        bar["bar_count"] = (bar.get("bar_count") or 0) + 1
+
     async def flush(self):
         """Async flush to database."""
         async with self._lock:
-            if not self._buffer:
+            if (
+                not self._buffer
+                and not self._futures_buffer
+                and not self._futures_minute_bars
+            ):
                 return
             rows = list(self._buffer)
+            futures_rows = list(self._futures_buffer)
+            futures_minute_rows = list(self._futures_minute_bars.values())
             self._buffer.clear()
+            self._futures_buffer.clear()
+            self._futures_minute_bars.clear()
 
         if rows:
             await self.writer.write_raw_ticks(rows)
+        if futures_rows:
+            await self.writer.write_futures_ticks(futures_rows)
+        if futures_minute_rows:
+            await self.writer.upsert_futures_minute_bars_from_live(futures_minute_rows)
 
 
 async def load_subscriptions(pool):
@@ -117,6 +188,260 @@ async def load_subscriptions(pool):
         logger.warning("Failed to load subscriptions from DB, using .env SYMBOLS")
     logger.info(f"Using {len(DEFAULT_SUBSCRIPTIONS)} symbols from .env SYMBOLS")
     return DEFAULT_SUBSCRIPTIONS
+
+
+async def load_active_futures_contract(pool, symbol: str) -> dict | None:
+    """Return the live active futures contract identity from DB roll state."""
+    if symbol == "N225M":
+        try:
+            raw_row = await pool.fetchrow(
+                """
+                WITH raw AS (
+                    SELECT
+                        symbol,
+                        con_id,
+                        contract_month,
+                        local_symbol,
+                        trading_class,
+                        exchange,
+                        currency,
+                        multiplier,
+                        last_trade_date,
+                        MAX(time) AS latest_time
+                    FROM (
+                        SELECT
+                            symbol,
+                            con_id,
+                            contract_month,
+                            local_symbol,
+                            trading_class,
+                            exchange,
+                            currency,
+                            multiplier,
+                            last_trade_date,
+                            time
+                        FROM futures_minute_bars
+                        WHERE symbol = $1
+
+                        UNION ALL
+
+                        SELECT
+                            symbol,
+                            con_id,
+                            contract_month,
+                            local_symbol,
+                            trading_class,
+                            exchange,
+                            currency,
+                            multiplier,
+                            last_trade_date,
+                            time
+                        FROM futures_daily_bars
+                        WHERE symbol = $1
+                    ) x
+                    GROUP BY symbol, con_id, contract_month, local_symbol,
+                             trading_class, exchange, currency, multiplier, last_trade_date
+                    ORDER BY contract_month DESC NULLS LAST, con_id DESC, latest_time DESC
+                    LIMIT 1
+                )
+                SELECT * FROM raw
+                """,
+                symbol,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to load live raw futures contract for %s: %s",
+                symbol,
+                e,
+            )
+        else:
+            if raw_row and raw_row.get("con_id"):
+                data = dict(raw_row)
+                logger.warning(
+                    "Using latest raw contract for %s live subscription: conId=%s month=%s localSymbol=%s",
+                    symbol,
+                    data.get("con_id"),
+                    data.get("contract_month"),
+                    data.get("local_symbol"),
+                )
+                return data
+
+    try:
+        row = await pool.fetchrow(
+            "SELECT * FROM active_futures_contract_asof($1, $2)",
+            symbol,
+            datetime.now(timezone.utc),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to load active futures contract for %s, falling back to IBKR resolution: %s",
+            symbol,
+            e,
+        )
+        return None
+
+    if not row:
+        logger.warning(
+            "No active futures contract found for %s, falling back to IBKR resolution",
+            symbol,
+        )
+        return None
+
+    data = dict(row)
+    if not data.get("con_id"):
+        logger.warning(
+            "Active futures contract for %s has no con_id, falling back to IBKR resolution",
+            symbol,
+        )
+        return None
+    last_trade_date = data.get("last_trade_date")
+    config = PRODUCT_ROLL_CONFIG.get(symbol)
+    current_date = datetime.now(timezone.utc).date()
+    if config:
+        try:
+            current_date = datetime.now(timezone.utc).astimezone(
+                ZoneInfo(config["timezone"])
+            ).date()
+        except Exception:
+            pass
+    if last_trade_date is not None and last_trade_date < current_date:
+        logger.warning(
+            "Active futures contract for %s is expired (%s), falling back to latest raw contract",
+            symbol,
+            last_trade_date,
+        )
+        try:
+            raw_row = await pool.fetchrow(
+                """
+                WITH raw AS (
+                    SELECT
+                        symbol,
+                        con_id,
+                        contract_month,
+                        local_symbol,
+                        trading_class,
+                        exchange,
+                        currency,
+                        multiplier,
+                        last_trade_date,
+                        MAX(time) AS latest_time
+                    FROM (
+                        SELECT
+                            symbol,
+                            con_id,
+                            contract_month,
+                            local_symbol,
+                            trading_class,
+                            exchange,
+                            currency,
+                            multiplier,
+                            last_trade_date,
+                            time
+                        FROM futures_minute_bars
+                        WHERE symbol = $1
+
+                        UNION ALL
+
+                        SELECT
+                            symbol,
+                            con_id,
+                            contract_month,
+                            local_symbol,
+                            trading_class,
+                            exchange,
+                            currency,
+                            multiplier,
+                            last_trade_date,
+                            time
+                        FROM futures_daily_bars
+                        WHERE symbol = $1
+                    ) x
+                    GROUP BY symbol, con_id, contract_month, local_symbol,
+                             trading_class, exchange, currency, multiplier, last_trade_date
+                    ORDER BY contract_month DESC NULLS LAST, con_id DESC, latest_time DESC
+                    LIMIT 1
+                )
+                SELECT * FROM raw
+                """,
+                symbol,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to load latest raw futures contract for %s: %s",
+                symbol,
+                e,
+            )
+            return None
+        if raw_row:
+            raw_data = dict(raw_row)
+            if raw_data.get("con_id"):
+                return raw_data
+        return None
+    return data
+
+
+def _same_contract(left: dict | None, right: dict | None) -> bool:
+    if not left or not right:
+        return False
+    return str(left.get("con_id")) == str(right.get("con_id"))
+
+
+async def futures_roll_state_loop(
+    client,
+    pub,
+    pool,
+    symbols: list[dict],
+    active_contracts: dict[str, dict],
+    interval: int = 60,
+):
+    """Switch live futures market-data subscriptions when local roll state changes."""
+    futures_symbols = [s for s in symbols if s.get("sec_type") == "FUT"]
+    if not futures_symbols:
+        return
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if not client.is_connected:
+                continue
+
+            for sub in futures_symbols:
+                symbol = sub["symbol"]
+                current = active_contracts.get(symbol)
+                latest = await load_active_futures_contract(pool, symbol)
+                if latest is None or _same_contract(current, latest):
+                    continue
+
+                logger.info(
+                    "Futures active contract changed for %s: %s -> %s",
+                    symbol,
+                    current.get("con_id") if current else None,
+                    latest.get("con_id"),
+                )
+                client.unsubscribe(symbol)
+                await client.subscribe(
+                    symbol,
+                    sub["sec_type"],
+                    sub["exchange"],
+                    sub["currency"],
+                    contract_identity=latest,
+                )
+                active_contracts[symbol] = latest
+                await pub.publish_futures_roll_state(
+                    symbol,
+                    {
+                        "symbol": symbol,
+                        "previous": current,
+                        "active": latest,
+                        "roll_event_id": latest.get("roll_event_id"),
+                        "effective_from": latest.get("effective_from"),
+                        "time": datetime.now(timezone.utc),
+                    },
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Futures roll state loop error: {e}")
 
 
 async def tick_loop(client, pub):
@@ -212,14 +537,33 @@ async def order_command_listener(client, pub, channel="order:command:live"):
                 close_id = data["close_id"]
                 logger.info(f"Close position command received: {symbol} (close_id={close_id})")
 
-                # 1. 取消该品种所有待成交订单
-                cancelled_ids = client.cancel_orders_for_symbol(symbol)
+                contract_identity = {
+                    key: data.get(key)
+                    for key in (
+                        "con_id",
+                        "local_symbol",
+                        "contract_month",
+                        "trading_class",
+                        "multiplier",
+                        "exchange",
+                        "currency",
+                    )
+                    if data.get(key) is not None
+                }
+
+                # 1. 取消该合约所有待成交订单；旧命令没有合约身份时按 symbol 兼容。
+                cancelled_ids = client.cancel_orders_for_symbol(
+                    symbol,
+                    con_id=contract_identity.get("con_id"),
+                    local_symbol=contract_identity.get("local_symbol"),
+                )
 
                 # 2. 下市价平仓单
                 order_id, status = await client.place_market_order(
                     symbol, data["side"], data["quantity"],
                     data["sec_type"], data["exchange"], data["currency"],
                     data.get("account_id"),
+                    contract_identity=contract_identity or None,
                 )
 
                 # Track close_id for subsequent on_order callbacks
@@ -246,10 +590,12 @@ async def order_command_listener(client, pub, channel="order:command:live"):
 
 
 async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=None):
-    """Backfill daily bars for all active subscriptions on startup."""
+    """Backfill daily bars for non-futures active subscriptions on startup."""
     try:
         symbols = await load_subscriptions(pool)
         for s in symbols:
+            if s.get("sec_type") == "FUT":
+                continue
             symbol = s["symbol"]
             logger.info(f"Backfilling daily bars for {symbol} ({duration})...")
             bars = await client.get_historical_daily_bars(symbol, duration=duration)
@@ -269,7 +615,7 @@ async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_trac
 
 
 async def daily_bar_refresh_loop(client, writer, pool, daily_tracker):
-    """Periodically refresh daily bars for all active subscriptions."""
+    """Periodically refresh daily bars for non-futures active subscriptions."""
     # Run first backfill immediately
     await backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=daily_tracker)
 
@@ -409,16 +755,29 @@ async def main():
     # Load the most recent daily bars from DB so tracker preserves OHLC across restarts
     symbols = await load_subscriptions(pool)
     await daily_tracker.load_from_db(pool, symbols)
+    futures_symbol_set = {s["symbol"] for s in symbols if s.get("sec_type") == "FUT"}
 
     # Register tick-by-tick callbacks:
     # 1) Feed each tick into the buffer (for full DB persistence)
     # 2) Track today's daily OHLCV from real-time ticks
     # 3) Publish each tick in real-time via Redis (for frontend live display)
-    def on_trade_tick(symbol, price, size, tick_time):
+    def on_trade_tick(*args):
+        if len(args) == 1 and isinstance(args[0], dict):
+            payload = args[0]
+            symbol = payload["symbol"]
+            price = payload.get("last", payload.get("price"))
+            size = payload.get("volume", payload.get("size", 0))
+            tick_time = payload["time"]
+            tick_buffer.add_futures_tick(payload)
+        else:
+            symbol, price, size, tick_time = args
+            # Buffer the raw tick for batch DB write
+            tick_buffer.add_tick(symbol, price, size, tick_time)
+
         # Buffer the raw tick for batch DB write
-        tick_buffer.add_tick(symbol, price, size, tick_time)
-        # Track today's daily OHLCV from real-time ticks
-        daily_tracker.on_tick(symbol, price, size, tick_time)
+        # Track today's daily OHLCV from real-time ticks for non-futures only.
+        if symbol not in futures_symbol_set:
+            daily_tracker.on_tick(symbol, price, size, tick_time)
         # Async publish for real-time frontend (fire-and-forget)
         t = asyncio.ensure_future(pub.publish_tick(symbol, price, size, tick_time))
         t.add_done_callback(_on_task_done)
@@ -427,8 +786,20 @@ async def main():
 
     await client.connect_with_retry()
 
+    active_futures_contracts: dict[str, dict] = {}
     for s in symbols:
-        await client.subscribe(s["symbol"], s["sec_type"], s["exchange"], s["currency"])
+        contract_identity = None
+        if s["sec_type"] == "FUT":
+            contract_identity = await load_active_futures_contract(pool, s["symbol"])
+            if contract_identity:
+                active_futures_contracts[s["symbol"]] = contract_identity
+        await client.subscribe(
+            s["symbol"],
+            s["sec_type"],
+            s["exchange"],
+            s["currency"],
+            contract_identity=contract_identity,
+        )
 
     # Share trading days from IBKRClient with the tracker (populated during subscribe)
     daily_tracker.trading_days = client._trading_days
@@ -497,6 +868,16 @@ async def main():
         ),
         asyncio.create_task(
             trading_days_refresh_loop(client, daily_tracker), name="trading_days_refresh"
+        ),
+        asyncio.create_task(
+            futures_roll_state_loop(
+                client,
+                pub,
+                pool,
+                symbols,
+                active_futures_contracts,
+            ),
+            name="futures_roll_state",
         ),
         asyncio.create_task(
             order_command_listener(client, pub, channel="order:command:live"),

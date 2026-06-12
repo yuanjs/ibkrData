@@ -2,6 +2,7 @@
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.modules.pop("config", None)
 
 from datetime import datetime, date, timezone
 from zoneinfo import ZoneInfo

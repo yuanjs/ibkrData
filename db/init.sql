@@ -68,6 +68,13 @@ CREATE TABLE positions (
     time            TIMESTAMPTZ NOT NULL,
     account_id      TEXT NOT NULL,
     symbol          TEXT NOT NULL,
+    con_id          BIGINT,
+    local_symbol    TEXT,
+    contract_month  TEXT,
+    trading_class   TEXT,
+    exchange        TEXT,
+    currency        TEXT,
+    multiplier      TEXT,
     sec_type        TEXT,
     quantity        NUMERIC(16,4),
     avg_cost        NUMERIC(12,4),
@@ -77,12 +84,21 @@ CREATE TABLE positions (
 );
 SELECT create_hypertable('positions', 'time');
 CREATE INDEX ON positions (account_id, symbol, time DESC);
+CREATE INDEX IF NOT EXISTS idx_positions_contract_identity
+    ON positions (account_id, symbol, con_id, local_symbol, time DESC);
 
 -- 订单表（普通表，非 hypertable，以支持 UNIQUE 约束实现 UPSERT）
 CREATE TABLE orders (
     order_id        BIGINT PRIMARY KEY,
     account_id      TEXT,
     symbol          TEXT,
+    con_id          BIGINT,
+    local_symbol    TEXT,
+    contract_month  TEXT,
+    trading_class   TEXT,
+    exchange        TEXT,
+    currency        TEXT,
+    multiplier      TEXT,
     action          TEXT,
     order_type      TEXT,
     quantity        NUMERIC(16,4),
@@ -95,6 +111,8 @@ CREATE TABLE orders (
 );
 CREATE INDEX ON orders (status);
 CREATE INDEX ON orders (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_contract_identity
+    ON orders (account_id, symbol, con_id, local_symbol, updated_at DESC);
 
 -- 成交记录表
 CREATE TABLE executions (
@@ -103,6 +121,13 @@ CREATE TABLE executions (
     order_id    BIGINT,
     account_id  TEXT,
     symbol      TEXT,
+    con_id      BIGINT,
+    local_symbol TEXT,
+    contract_month TEXT,
+    trading_class TEXT,
+    exchange    TEXT,
+    currency    TEXT,
+    multiplier  TEXT,
     side        TEXT,
     quantity    NUMERIC(16,4),
     price       NUMERIC(12,4),
@@ -110,6 +135,8 @@ CREATE TABLE executions (
 );
 SELECT create_hypertable('executions', 'time');
 CREATE INDEX ON executions (account_id, symbol, time DESC);
+CREATE INDEX IF NOT EXISTS idx_executions_contract_identity
+    ON executions (account_id, symbol, con_id, local_symbol, time DESC);
 
 -- 设置表
 CREATE TABLE settings (

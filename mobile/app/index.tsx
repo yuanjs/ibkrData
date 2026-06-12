@@ -1,15 +1,18 @@
 import { useState, useCallback, useEffect } from 'react'
 import { View, Text, StyleSheet } from 'react-native'
 import { CandleChartRN } from '../src/components/CandleChartRN'
-import { api } from '../src/api/client'
+import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../src/api/client'
 import { useMarketStore } from '../src/stores/marketStore'
 import { useTheme } from '../src/theme'
+import { aggregateCandles, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../src/utils/chartData'
 
 export default function Monitor() {
   const activeSymbol = useMarketStore(s => s.activeSymbol)
   const setActiveSymbol = useMarketStore(s => s.setActiveSymbol)
   const quote = useMarketStore(s => activeSymbol ? s.quotes[activeSymbol] : null)
   const lastTick = useMarketStore(s => (s.lastTick?.symbol === activeSymbol) ? s.lastTick : null)
+  const isActiveFutures = useMarketStore(s => s.isFuturesSymbol(activeSymbol))
+  const activeRollState = useMarketStore(s => activeSymbol ? s.futuresRollStates[activeSymbol] : undefined)
 
   const chartLiveTick = lastTick || (quote?.last ? {
     symbol: activeSymbol!,
@@ -20,19 +23,20 @@ export default function Monitor() {
 
   const [chartInterval, setChartInterval] = useState('1d')
   const [candles, setCandles] = useState<any[]>([])
+  const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const initQuotes = useMarketStore(s => s.initQuotes)
 
   useEffect(() => {
-    api.get<any[]>('/symbols').then(data => {
+    api.get<SymbolSubscription[]>('/symbols').then(data => {
       if (Array.isArray(data)) {
-        initQuotes(data.map(s => s.symbol))
+        initQuotes(data)
       }
     }).catch(err => console.error('Failed to fetch symbols:', err))
   }, [initQuotes])
 
-  const fetchHistory = useCallback(async (sym: string, inv: string) => {
+  const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
     try {
       setError(null)
       const end = new Date()
@@ -46,17 +50,20 @@ export default function Monitor() {
       const start = new Date(end.getTime() - hours * 3600 * 1000)
       const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
 
-      const res = await api.get<{ time: string; open: number; high: number; low: number; close: number }[]>(
-        `/history/${sym}?start=${start.toISOString()}&end=${queryEnd.toISOString()}&interval=${inv}`
-      )
-      setCandles(res.map((d: any) => {
-        let t = Math.floor(new Date(d.time).getTime() / 1000)
+      let res: CandleLike[]
+      if (isFutures) {
         if (inv === '1d') {
-          const dt = new Date(t * 1000)
-          t = Math.floor(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 12) / 1000)
+          res = await futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted')
+        } else {
+          res = await futuresApi.minute(sym, start.toISOString(), queryEnd.toISOString(), 'active_raw', end.toISOString())
+          res = aggregateCandles(res, inv)
         }
-        return { ...d, time: t }
-      }))
+      } else {
+        res = await api.get<{ time: string; open: number; high: number; low: number; close: number }[]>(
+          `/history/${sym}?start=${start.toISOString()}&end=${queryEnd.toISOString()}&interval=${inv}`
+        )
+      }
+      setCandles(normalizeCandles(res, inv))
     } catch (e: any) {
       setError(e.message)
       setCandles([])
@@ -65,18 +72,31 @@ export default function Monitor() {
 
   useEffect(() => {
     if (activeSymbol) {
-      fetchHistory(activeSymbol, chartInterval)
+      fetchHistory(activeSymbol, chartInterval, isActiveFutures)
     }
-  }, [activeSymbol, fetchHistory, chartInterval])
+  }, [activeSymbol, fetchHistory, chartInterval, isActiveFutures, activeRollState?.active?.con_id])
+
+  useEffect(() => {
+    if (!activeSymbol || !isActiveFutures) {
+      setActiveContract(null)
+      return
+    }
+    let cancelled = false
+    futuresApi.activeContract(activeSymbol)
+      .then(contract => { if (!cancelled) setActiveContract(contract) })
+      .catch(err => console.error('Failed to fetch active futures contract:', err))
+    return () => { cancelled = true }
+  }, [activeSymbol, isActiveFutures, activeRollState?.active?.con_id])
 
   const handleIntervalChange = useCallback((newInterval: string) => {
     setChartInterval(newInterval)
     if (activeSymbol) {
-      fetchHistory(activeSymbol, newInterval)
+      fetchHistory(activeSymbol, newInterval, isActiveFutures)
     }
-  }, [activeSymbol, fetchHistory])
+  }, [activeSymbol, fetchHistory, isActiveFutures])
 
   const { colors } = useTheme()
+  const contract = activeRollState?.active || activeContract
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -88,6 +108,16 @@ export default function Monitor() {
 
       {activeSymbol ? (
         <View style={styles.chartContainer}>
+          {isActiveFutures && contract && (
+            <View style={styles.contractBar}>
+              <Text style={[styles.contractMain, { color: colors.textPrimary }]}>
+                {activeSymbol} {contract.local_symbol || contract.contract_month || contract.con_id}
+              </Text>
+              <Text style={[styles.contractMeta, { color: colors.textSecondary }]}>
+                conId {contract.con_id}{contract.contract_month ? `  ${contract.contract_month}` : ''}
+              </Text>
+            </View>
+          )}
           <View style={styles.chartWrap}>
             <CandleChartRN
               symbol={activeSymbol!}
@@ -114,6 +144,9 @@ const styles = StyleSheet.create({
   errorBar: { padding: 12, marginHorizontal: 8, marginTop: 8, borderRadius: 8 },
   errorText: { color: '#d32f2f', fontSize: 13 },
   chartContainer: { flex: 1 },
+  contractBar: { paddingHorizontal: 10, paddingTop: 8, paddingBottom: 2 },
+  contractMain: { fontSize: 12, fontWeight: '700', fontFamily: 'monospace' },
+  contractMeta: { fontSize: 11, marginTop: 2 },
   chartWrap: { flex: 1 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 })

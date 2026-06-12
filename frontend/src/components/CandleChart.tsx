@@ -101,8 +101,12 @@ function getEffectiveBucketTime(tickTimeSec: number, sym?: string): number {
   // Determine effective date: if after roll time, belongs to next trading day
   let [y, m, day] = [get('year'), get('month'), get('day')]
   if (hour > config.rollHour || (hour === config.rollHour && minute >= config.rollMinute)) {
-    // Add one day
-    const next = new Date(Date.UTC(y, m - 1, day + 1))
+    let next = new Date(Date.UTC(y, m - 1, day + 1, 12))
+    while (true) {
+      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: config.timezone, weekday: 'short' }).format(next)
+      if (weekday !== 'Sat' && weekday !== 'Sun') break
+      next = new Date(next.getTime() + 24 * 3600_000)
+    }
     y = next.getUTCFullYear()
     m = next.getUTCMonth() + 1
     day = next.getUTCDate()

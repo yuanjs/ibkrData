@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect } from 'react'
 import { QuoteTable } from '../components/QuoteTable'
 import { CandleChart } from '../components/CandleChart'
-import { api } from '../api/client'
+import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
+import { aggregateCandles, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../utils/chartData'
 
 export function Monitor() {
   const activeSymbol = useMarketStore(s => s.activeSymbol)
@@ -10,6 +11,8 @@ export function Monitor() {
 
   const quote = useMarketStore(s => activeSymbol ? s.quotes[activeSymbol] : null)
   const lastTick = useMarketStore(s => (s.lastTick?.symbol === activeSymbol) ? s.lastTick : null)
+  const isActiveFutures = useMarketStore(s => s.isFuturesSymbol(activeSymbol))
+  const activeRollState = useMarketStore(s => activeSymbol ? s.futuresRollStates[activeSymbol] : undefined)
 
   // Use lastTick if available, fallback to quote.last for chart updates
   const chartLiveTick = lastTick || (quote?.last ? {
@@ -22,19 +25,20 @@ export function Monitor() {
   // NOTE: named chartInterval/setChartInterval to avoid shadowing window.setInterval
   const [chartInterval, setChartInterval] = useState('1d')
   const [candles, setCandles] = useState<any[]>([])
+  const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const initQuotes = useMarketStore(s => s.initQuotes)
 
   useEffect(() => {
-    api.get<any[]>('/symbols').then(data => {
+    api.get<SymbolSubscription[]>('/symbols').then(data => {
       if (Array.isArray(data)) {
-        initQuotes(data.map(s => s.symbol))
+        initQuotes(data)
       }
     }).catch(err => console.error('Failed to fetch symbols:', err))
   }, [initQuotes])
 
-  const fetchHistory = useCallback(async (sym: string, inv: string) => {
+  const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
     try {
       setError(null)
       const end = new Date()
@@ -53,19 +57,22 @@ export function Monitor() {
       // of tomorrow, with UTC noon as its time field).
       const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
 
-      const res = await api.get<{ time: string, open: number, high: number, low: number, close: number }[]>(
-        `/history/${sym}?start=${start.toISOString()}&end=${queryEnd.toISOString()}&interval=${inv}`
-      )
-      // Ensure precise timestamp alignment for lightweight-charts
-      setCandles(res.map((d: any) => {
-        let t = Math.floor(new Date(d.time).getTime() / 1000)
+      let res: CandleLike[]
+      if (isFutures) {
         if (inv === '1d') {
-          // Force 12:00 UTC for daily bars to match live tick bucketing
-          const dt = new Date(t * 1000)
-          t = Math.floor(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 12) / 1000)
+          res = await futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted')
+        } else {
+          res = await futuresApi.minute(sym, start.toISOString(), queryEnd.toISOString(), 'active_raw', end.toISOString())
         }
-        return { ...d, time: t }
-      }))
+      } else {
+        res = await api.get<{ time: string, open: number, high: number, low: number, close: number }[]>(
+          `/history/${sym}?start=${start.toISOString()}&end=${queryEnd.toISOString()}&interval=${inv}`
+        )
+      }
+      setCandles(normalizeCandles(
+        isFutures && inv !== '1d' ? aggregateCandles(res, inv) : res,
+        inv,
+      ))
     } catch (e: any) {
       setError(e.message)
       setCandles([])
@@ -74,9 +81,31 @@ export function Monitor() {
 
   useEffect(() => {
     if (activeSymbol) {
-      fetchHistory(activeSymbol, chartInterval)
+      fetchHistory(activeSymbol, chartInterval, isActiveFutures)
     }
-  }, [activeSymbol, fetchHistory, chartInterval])
+  }, [activeSymbol, fetchHistory, chartInterval, isActiveFutures, activeRollState?.active?.con_id])
+
+  useEffect(() => {
+    if (!activeSymbol || !isActiveFutures) {
+      setActiveContract(null)
+      return
+    }
+    let cancelled = false
+    futuresApi.activeContract(activeSymbol)
+      .then(contract => {
+        if (!cancelled) setActiveContract(contract)
+      })
+      .catch(err => {
+        if (!cancelled) console.error('Failed to fetch active futures contract:', err)
+      })
+    return () => { cancelled = true }
+  }, [activeSymbol, isActiveFutures, activeRollState?.active?.con_id])
+
+  useEffect(() => {
+    if (activeRollState?.active) {
+      setActiveContract(activeRollState.active)
+    }
+  }, [activeRollState])
 
   const handleSelectSymbol = (sym: string) => {
     setActiveSymbol(sym)
@@ -86,9 +115,11 @@ export function Monitor() {
   const handleIntervalChange = (newInterval: string) => {
     setChartInterval(newInterval)
     if (activeSymbol) {
-      fetchHistory(activeSymbol, newInterval)
+      fetchHistory(activeSymbol, newInterval, isActiveFutures)
     }
   }
+
+  const contract = activeRollState?.active || activeContract
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -108,6 +139,17 @@ export function Monitor() {
             backgroundColor: 'var(--bg-elevated)',
             boxShadow: '0 0 0 1px var(--ring-subtle)',
           }}>
+            {activeSymbol && isActiveFutures && contract && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 pb-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                <span className="font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {activeSymbol} {contract.local_symbol || contract.contract_month || contract.con_id}
+                </span>
+                <span>conId {contract.con_id}</span>
+                {contract.contract_month && <span>{contract.contract_month}</span>}
+                {contract.exchange && <span>{contract.exchange}</span>}
+                {contract.effective_from && <span>from {new Date(contract.effective_from).toLocaleString()}</span>}
+              </div>
+            )}
             {activeSymbol ? (
               <CandleChart
                 symbol={activeSymbol!}

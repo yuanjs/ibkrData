@@ -108,8 +108,42 @@ first_contract AS (
     GROUP BY
         b.symbol, b.con_id, b.contract_month, b.local_symbol,
         b.trading_class, b.exchange, b.currency, b.multiplier
-    ORDER BY b.contract_month, b.con_id
+    ORDER BY b.contract_month DESC, b.con_id DESC
     LIMIT 1
+),
+latest_known_roll AS (
+    SELECT *
+    FROM known_rolls
+    ORDER BY effective_roll_time DESC, known_at DESC, id DESC
+    LIMIT 1
+),
+roll_tail_contract AS (
+    SELECT
+        k.symbol,
+        k.to_con_id AS con_id,
+        md.last_trade_date
+    FROM latest_known_roll k
+    JOIN LATERAL (
+        SELECT
+            d.last_trade_date
+        FROM futures_daily_bars_session_normalized d
+        WHERE d.symbol = p_symbol
+          AND d.con_id = k.to_con_id
+        ORDER BY d.time DESC
+        LIMIT 1
+    ) md ON TRUE
+),
+tail_fallback AS (
+    SELECT
+        f.symbol,
+        f.con_id,
+        (rtc.last_trade_date + 1) AS segment_start
+    FROM first_contract f
+    JOIN roll_tail_contract rtc
+      ON rtc.symbol = f.symbol
+    WHERE f.con_id <> rtc.con_id
+      AND rtc.last_trade_date IS NOT NULL
+      AND rtc.last_trade_date < p_as_of_date
 ),
 segments AS (
     SELECT
@@ -153,6 +187,20 @@ segments AS (
         NULL::date AS price_session_date
     FROM first_contract f
     WHERE NOT EXISTS (SELECT 1 FROM known_rolls)
+
+    UNION ALL
+
+    SELECT
+        t.symbol,
+        t.con_id,
+        t.segment_start,
+        NULL::date AS segment_end,
+        NULL::bigint AS roll_event_id,
+        NULL::timestamptz AS roll_time,
+        NULL::timestamptz AS known_at,
+        NULL::date AS decision_session_date,
+        NULL::date AS price_session_date
+    FROM tail_fallback t
 ),
 raw AS (
     SELECT
@@ -325,7 +373,7 @@ first_contract AS (
     GROUP BY
         b.symbol, b.con_id, b.contract_month, b.local_symbol,
         b.trading_class, b.exchange, b.currency, b.multiplier
-    ORDER BY b.contract_month, b.con_id
+    ORDER BY b.contract_month DESC, b.con_id DESC
     LIMIT 1
 ),
 segments AS (
@@ -462,7 +510,7 @@ first_contract AS (
     GROUP BY
         b.symbol, b.con_id, b.contract_month, b.local_symbol,
         b.trading_class, b.exchange, b.currency, b.multiplier
-    ORDER BY b.contract_month, b.con_id
+    ORDER BY b.contract_month DESC, b.con_id DESC
     LIMIT 1
 ),
 segments AS (

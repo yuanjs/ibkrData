@@ -19,6 +19,7 @@ function fmtVolume(val: number | null | undefined): string {
 
 export function QuoteTable({ onSelect, activeSymbol }: Props) {
   const quotes = useMarketStore(s => s.quotes)
+  const subscriptions = useMarketStore(s => s.subscriptions)
   const rows = Object.values(quotes)
 
   return (
@@ -50,6 +51,14 @@ export function QuoteTable({ onSelect, activeSymbol }: Props) {
               {getSymbolDescription(q.symbol) && (
                 <span className="ml-1.5 font-normal" style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
                   {getSymbolDescription(q.symbol)}
+                </span>
+              )}
+              {subscriptions[q.symbol]?.sec_type === 'FUT' && (
+                <span className="ml-1.5 px-1 py-0.5 rounded text-[10px] font-normal" style={{
+                  color: 'var(--text-secondary)',
+                  backgroundColor: 'var(--bg-raised)',
+                }}>
+                  FUT
                 </span>
               )}
             </td>

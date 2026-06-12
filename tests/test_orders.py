@@ -48,4 +48,8 @@ async def test_close_position_endpoint(api_base_url, auth_headers):
             assert "平仓" in data["message"]
         else:
             data = resp.json()
-            assert "无持仓" in data.get("detail", "")
+            detail = data.get("detail", "")
+            assert any(
+                text in detail
+                for text in ("无持仓", "网关未就绪", "多个未平期货合约")
+            )

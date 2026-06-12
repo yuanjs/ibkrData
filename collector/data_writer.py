@@ -33,9 +33,63 @@ def _clean_int(val):
         return None
 
 
+def _contract_month_from_ib_contract(contract):
+    raw = getattr(contract, "lastTradeDateOrContractMonth", None)
+    return raw[:6] if raw and len(raw) >= 6 else raw
+
+
 class DataWriter:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
+
+    def _futures_tick_record(self, row):
+        if not isinstance(row, dict):
+            return row
+        price = _clean_num(row.get("last", row.get("price")))
+        size = _clean_int(row.get("volume", row.get("size")))
+        return (
+            row["time"],
+            row["symbol"],
+            int(row["con_id"]),
+            row.get("local_symbol"),
+            row.get("trading_class"),
+            row.get("contract_month"),
+            row.get("last_trade_date"),
+            row.get("exchange"),
+            row.get("currency"),
+            row.get("multiplier"),
+            _clean_num(row.get("bid")),
+            _clean_num(row.get("ask")),
+            price,
+            size,
+            _clean_num(row.get("open", price)),
+            _clean_num(row.get("high", price)),
+            _clean_num(row.get("low", price)),
+            _clean_num(row.get("close", price)),
+            row.get("source", "IBKR"),
+        )
+
+    def _futures_minute_bar_record(self, row):
+        if not isinstance(row, dict):
+            return row
+        return (
+            row["time"],
+            row["symbol"],
+            int(row["con_id"]),
+            row.get("local_symbol"),
+            row.get("trading_class"),
+            row.get("contract_month"),
+            row.get("last_trade_date"),
+            row.get("exchange"),
+            row.get("currency"),
+            row.get("multiplier"),
+            _clean_num(row.get("open")),
+            _clean_num(row.get("high")),
+            _clean_num(row.get("low")),
+            _clean_num(row.get("close")),
+            _clean_int(row.get("volume")),
+            _clean_int(row.get("bar_count")),
+        )
 
     async def write_raw_ticks(self, rows: list[tuple]):
         """Batch insert raw trade ticks into the ticks table."""
@@ -50,6 +104,59 @@ class DataWriter:
                 )
         except Exception as e:
             logger.error(f"write_raw_ticks error: {e}")
+
+    async def write_futures_ticks(self, rows: list[dict | tuple]):
+        """Batch insert raw futures ticks keyed by real contract identity."""
+        if not rows:
+            return
+        try:
+            records = [self._futures_tick_record(r) for r in rows]
+            async with self.pool.acquire() as conn:
+                await conn.executemany(
+                    "INSERT INTO futures_ticks("
+                    "time,symbol,con_id,local_symbol,trading_class,contract_month,"
+                    "last_trade_date,exchange,currency,multiplier,bid,ask,last,"
+                    "volume,open,high,low,close,source"
+                    ") VALUES("
+                    "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19"
+                    ")",
+                    records,
+                )
+        except Exception as e:
+            logger.error(f"write_futures_ticks error: {e}")
+
+    async def upsert_futures_minute_bars_from_live(self, rows: list[dict | tuple]):
+        """Upsert real-time futures minute bars into the raw futures bar table."""
+        if not rows:
+            return
+        try:
+            records = [self._futures_minute_bar_record(r) for r in rows]
+            async with self.pool.acquire() as conn:
+                await conn.executemany(
+                    "INSERT INTO futures_minute_bars("
+                    "time,symbol,con_id,local_symbol,trading_class,contract_month,"
+                    "last_trade_date,exchange,currency,multiplier,"
+                    "open,high,low,close,volume,bar_count"
+                    ") VALUES("
+                    "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16"
+                    ") ON CONFLICT (symbol, con_id, time) DO UPDATE SET "
+                    "local_symbol=EXCLUDED.local_symbol,"
+                    "trading_class=EXCLUDED.trading_class,"
+                    "contract_month=EXCLUDED.contract_month,"
+                    "last_trade_date=EXCLUDED.last_trade_date,"
+                    "exchange=EXCLUDED.exchange,"
+                    "currency=EXCLUDED.currency,"
+                    "multiplier=EXCLUDED.multiplier,"
+                    "open=EXCLUDED.open,"
+                    "high=EXCLUDED.high,"
+                    "low=EXCLUDED.low,"
+                    "close=EXCLUDED.close,"
+                    "volume=EXCLUDED.volume,"
+                    "bar_count=EXCLUDED.bar_count",
+                    records,
+                )
+        except Exception as e:
+            logger.error(f"upsert_futures_minute_bars_from_live error: {e}")
 
     async def write_account(self, accounts: list[dict]):
         now = datetime.now(timezone.utc)
@@ -87,14 +194,22 @@ class DataWriter:
                 # 写入当前仓位
                 if positions:
                     await conn.executemany(
-                        "INSERT INTO positions(time,account_id,symbol,sec_type,quantity,avg_cost,"
-                        "market_value,unrealized_pnl,realized_pnl) "
-                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                        "INSERT INTO positions(time,account_id,symbol,con_id,local_symbol,"
+                        "contract_month,trading_class,exchange,currency,multiplier,sec_type,"
+                        "quantity,avg_cost,market_value,unrealized_pnl,realized_pnl) "
+                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
                         [
                             (
                                 now,
                                 p["account_id"],
                                 p["symbol"],
+                                _clean_int(p.get("con_id")),
+                                p.get("local_symbol"),
+                                p.get("contract_month"),
+                                p.get("trading_class"),
+                                p.get("exchange"),
+                                p.get("currency"),
+                                p.get("multiplier"),
                                 p["sec_type"],
                                 _clean_num(p["quantity"]),
                                 _clean_num(p["avg_cost"]),
@@ -110,21 +225,48 @@ class DataWriter:
                 # 用于处理 ib.positions() 不返回零仓位的情形
                 if account_ids:
                     current_symbols = {
-                        (p["account_id"], p["symbol"]) for p in positions
+                        (
+                            p["account_id"],
+                            p["symbol"],
+                            _clean_int(p.get("con_id")),
+                            p.get("local_symbol"),
+                        )
+                        for p in positions
                     }
                     for aid in account_ids:
                         held = await conn.fetch(
-                            "SELECT DISTINCT ON (symbol) symbol FROM positions "
+                            "SELECT DISTINCT ON (symbol, con_id, local_symbol) "
+                            "symbol, con_id, local_symbol, contract_month, trading_class, "
+                            "exchange, currency, multiplier, sec_type "
+                            "FROM positions "
                             "WHERE account_id = $1 AND quantity != 0 "
-                            "ORDER BY symbol, time DESC",
+                            "ORDER BY symbol, con_id, local_symbol, time DESC",
                             aid,
                         )
                         for r in held:
-                            if (aid, r["symbol"]) not in current_symbols:
+                            key = (
+                                aid,
+                                r["symbol"],
+                                _clean_int(r["con_id"]),
+                                r["local_symbol"],
+                            )
+                            if key not in current_symbols:
                                 await conn.execute(
-                                    "INSERT INTO positions(time, account_id, symbol, quantity) "
-                                    "VALUES($1, $2, $3, 0)",
-                                    now, aid, r["symbol"],
+                                    "INSERT INTO positions(time, account_id, symbol, con_id, "
+                                    "local_symbol, contract_month, trading_class, exchange, "
+                                    "currency, multiplier, sec_type, quantity) "
+                                    "VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0)",
+                                    now,
+                                    aid,
+                                    r["symbol"],
+                                    r["con_id"],
+                                    r["local_symbol"],
+                                    r["contract_month"],
+                                    r["trading_class"],
+                                    r["exchange"],
+                                    r["currency"],
+                                    r["multiplier"],
+                                    r["sec_type"],
                                 )
         except Exception as e:
             logger.error(f"write_positions error: {e}")
@@ -137,15 +279,30 @@ class DataWriter:
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO orders(order_id,account_id,symbol,action,order_type,"
+                    "INSERT INTO orders(order_id,account_id,symbol,con_id,local_symbol,"
+                    "contract_month,trading_class,exchange,currency,multiplier,action,order_type,"
                     "quantity,limit_price,status,filled_qty,avg_fill_price,created_at,updated_at) "
-                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) "
+                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) "
                     "ON CONFLICT(order_id) DO UPDATE SET "
                     "status=EXCLUDED.status, filled_qty=EXCLUDED.filled_qty, "
-                    "avg_fill_price=EXCLUDED.avg_fill_price, updated_at=EXCLUDED.updated_at",
+                    "avg_fill_price=EXCLUDED.avg_fill_price, updated_at=EXCLUDED.updated_at, "
+                    "con_id=COALESCE(EXCLUDED.con_id, orders.con_id), "
+                    "local_symbol=COALESCE(EXCLUDED.local_symbol, orders.local_symbol), "
+                    "contract_month=COALESCE(EXCLUDED.contract_month, orders.contract_month), "
+                    "trading_class=COALESCE(EXCLUDED.trading_class, orders.trading_class), "
+                    "exchange=COALESCE(EXCLUDED.exchange, orders.exchange), "
+                    "currency=COALESCE(EXCLUDED.currency, orders.currency), "
+                    "multiplier=COALESCE(EXCLUDED.multiplier, orders.multiplier)",
                     o.orderId,
                     o.account,
                     trade.contract.symbol,
+                    _clean_int(getattr(trade.contract, "conId", None)),
+                    getattr(trade.contract, "localSymbol", None) or None,
+                    _contract_month_from_ib_contract(trade.contract),
+                    getattr(trade.contract, "tradingClass", None) or None,
+                    getattr(trade.contract, "exchange", None) or None,
+                    getattr(trade.contract, "currency", None) or None,
+                    getattr(trade.contract, "multiplier", None) or None,
                     o.action,
                     o.orderType,
                     _clean_num(o.totalQuantity),
@@ -165,14 +322,23 @@ class DataWriter:
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO executions(time,exec_id,order_id,account_id,symbol,side,"
-                    "quantity,price,commission) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) "
+                    "INSERT INTO executions(time,exec_id,order_id,account_id,symbol,con_id,"
+                    "local_symbol,contract_month,trading_class,exchange,currency,multiplier,"
+                    "side,quantity,price,commission) "
+                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) "
                     "ON CONFLICT(exec_id) DO NOTHING",
                     now,
                     e.execId,
                     e.orderId,
                     e.acctNumber,
                     trade.contract.symbol,
+                    _clean_int(getattr(trade.contract, "conId", None)),
+                    getattr(trade.contract, "localSymbol", None) or None,
+                    _contract_month_from_ib_contract(trade.contract),
+                    getattr(trade.contract, "tradingClass", None) or None,
+                    getattr(trade.contract, "exchange", None) or None,
+                    getattr(trade.contract, "currency", None) or None,
+                    getattr(trade.contract, "multiplier", None) or None,
                     e.side,
                     float(e.shares),
                     float(e.price),
@@ -192,14 +358,23 @@ class DataWriter:
                 for fill in fills:
                     e = fill.execution
                     await conn.execute(
-                        "INSERT INTO executions(time,exec_id,order_id,account_id,symbol,side,"
-                        "quantity,price,commission) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) "
+                        "INSERT INTO executions(time,exec_id,order_id,account_id,symbol,con_id,"
+                        "local_symbol,contract_month,trading_class,exchange,currency,multiplier,"
+                        "side,quantity,price,commission) "
+                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) "
                         "ON CONFLICT(exec_id) DO NOTHING",
                         e.time if hasattr(e, 'time') else datetime.now(timezone.utc),
                         e.execId,
                         e.orderId,
                         e.acctNumber,
                         fill.contract.symbol,
+                        _clean_int(getattr(fill.contract, "conId", None)),
+                        getattr(fill.contract, "localSymbol", None) or None,
+                        _contract_month_from_ib_contract(fill.contract),
+                        getattr(fill.contract, "tradingClass", None) or None,
+                        getattr(fill.contract, "exchange", None) or None,
+                        getattr(fill.contract, "currency", None) or None,
+                        getattr(fill.contract, "multiplier", None) or None,
                         e.side,
                         float(e.shares),
                         float(e.price),

@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from db import get_pool
 from auth import require_auth
@@ -45,6 +45,8 @@ async def _resolve_gateway(account_id: str) -> str:
 class ClosePositionRequest(BaseModel):
     symbol: str
     gateway: str = "live"
+    con_id: Optional[int] = None
+    local_symbol: Optional[str] = None
 
 
 @router.get("/orders")
@@ -138,37 +140,93 @@ async def close_position(req: ClosePositionRequest):
     # 按 gateway 过滤对应 account_ids，确保只查该 gateway 下的持仓
     ids = await _gateway_account_ids(req.gateway)
     if not ids:
-        from fastapi import HTTPException
         raise HTTPException(400, f"{req.gateway} 网关未就绪，无法查询持仓")
 
-    row = await pool.fetchrow(
-        "SELECT DISTINCT ON (symbol) * FROM positions "
-        "WHERE symbol = $1 AND account_id = ANY($2) "
-        "ORDER BY symbol, time DESC",
-        req.symbol, ids
+    rows = await pool.fetch(
+        """
+        SELECT *
+        FROM (
+            SELECT DISTINCT ON (account_id, symbol, con_id, local_symbol) *
+            FROM positions
+            WHERE symbol = $1
+              AND account_id = ANY($2)
+              AND ($3::bigint IS NULL OR con_id = $3)
+              AND ($4::text IS NULL OR local_symbol = $4)
+            ORDER BY account_id, symbol, con_id, local_symbol, time DESC
+        ) latest
+        WHERE quantity != 0
+        ORDER BY time DESC
+        """,
+        req.symbol,
+        ids,
+        req.con_id,
+        req.local_symbol,
     )
-    if not row or row["quantity"] == 0:
-        from fastapi import HTTPException
+    if not rows:
         raise HTTPException(400, f"{req.symbol} 无持仓")
+    if len(rows) > 1 and req.con_id is None and req.local_symbol is None:
+        raise HTTPException(
+            400,
+            f"{req.symbol} 存在多个未平期货合约，请指定 con_id 或 local_symbol",
+        )
+    position = dict(rows[0])
 
     # 自动计算平仓方向
-    side = "SELL" if row["quantity"] > 0 else "BUY"
-    qty = int(abs(row["quantity"]))
+    side = "SELL" if position["quantity"] > 0 else "BUY"
+    qty = int(abs(position["quantity"]))
 
     # 从 subscriptions 表获取品种参数
     sub = await pool.fetchrow(
         "SELECT sec_type, exchange, currency FROM subscriptions WHERE symbol = $1",
         req.symbol
     )
-    sec_type = sub["sec_type"] if sub else row.get("sec_type", "STK")
+    sec_type = sub["sec_type"] if sub else position.get("sec_type", "STK")
     exchange = sub["exchange"] if sub else "SMART"
     currency = sub["currency"] if sub else "USD"
+    warning = None
+
+    contract_payload = {}
+    if sec_type == "FUT":
+        if position.get("con_id") or position.get("local_symbol"):
+            contract_payload = {
+                "con_id": position.get("con_id"),
+                "local_symbol": position.get("local_symbol"),
+                "contract_month": position.get("contract_month"),
+                "trading_class": position.get("trading_class"),
+                "multiplier": position.get("multiplier"),
+            }
+            exchange = position.get("exchange") or exchange
+            currency = position.get("currency") or currency
+        else:
+            active_contract = await pool.fetchrow(
+                "SELECT * FROM active_futures_contract_asof($1, $2)",
+                req.symbol,
+                datetime.now(timezone.utc),
+            )
+            if active_contract:
+                contract_payload = {
+                    "con_id": active_contract["con_id"],
+                    "local_symbol": active_contract["local_symbol"],
+                    "contract_month": active_contract["contract_month"],
+                    "trading_class": active_contract["trading_class"],
+                    "multiplier": active_contract["multiplier"],
+                }
+                exchange = active_contract["exchange"] or exchange
+                currency = active_contract["currency"] or currency
+                warning = (
+                    f"{req.symbol} 持仓缺少合约身份，已 fallback 到 active futures contract"
+                )
+            else:
+                warning = (
+                    f"{req.symbol} 未找到 active futures contract，"
+                    "平仓命令将按 symbol/exchange/currency 兼容路径发送"
+                )
 
     # 使用请求中明确的 gateway 路由，不依赖 account_id 推测
     channel = f"order:command:{req.gateway}"
 
     r = aioredis.from_url(REDIS_URL)
-    await r.publish(channel, json.dumps({
+    command = {
         "close_id": close_id,
         "symbol": req.symbol,
         "side": side,
@@ -176,14 +234,19 @@ async def close_position(req: ClosePositionRequest):
         "sec_type": sec_type,
         "exchange": exchange,
         "currency": currency,
-        "account_id": row["account_id"],
-    }))
+        "account_id": position["account_id"],
+        **contract_payload,
+    }
+    await r.publish(channel, json.dumps(command))
     await r.aclose()
 
-    return {
+    response = {
         "close_id": close_id,
         "symbol": req.symbol,
         "side": side,
         "quantity": qty,
         "message": "平仓指令已发送",
     }
+    if warning:
+        response["warning"] = warning
+    return response

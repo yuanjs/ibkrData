@@ -1,5 +1,7 @@
 import json
 import math
+from datetime import date, datetime
+from decimal import Decimal
 import redis.asyncio as aioredis
 
 
@@ -7,6 +9,10 @@ def _sanitize(obj):
     """Replace NaN/Infinity/-1 (IBKR 'no data' sentinel) with None for valid JSON."""
     if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj) or obj == -1.0):
         return None
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return float(obj)
     if isinstance(obj, dict):
         return {k: _sanitize(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -38,3 +44,9 @@ class Publisher:
 
     async def publish_order(self, data: dict):
         await self.redis.publish("order:update", json.dumps(_sanitize(data)))
+
+    async def publish_futures_roll_state(self, symbol: str, data: dict):
+        await self.redis.publish(
+            f"futures:roll-state:{symbol}",
+            json.dumps(_sanitize(data)),
+        )

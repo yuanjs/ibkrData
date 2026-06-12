@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { FuturesRollState, SymbolSubscription } from '../api/client'
 
 export interface Quote {
   symbol: string
@@ -18,21 +19,28 @@ export interface Tick {
 
 interface MarketStore {
   quotes: Record<string, Quote>
+  subscriptions: Record<string, SymbolSubscription>
+  futuresRollStates: Record<string, FuturesRollState>
   lastTick: Tick | null
   connected: boolean
   activeSymbol: string | null
+  isFuturesSymbol: (sym: string | null | undefined) => boolean
   setActiveSymbol: (sym: string | null) => void
   setConnected: (v: boolean) => void
   updateQuote: (q: Quote) => void
   updateTick: (t: Tick) => void
-  initQuotes: (symbols: string[]) => void
+  updateFuturesRollState: (state: FuturesRollState) => void
+  initQuotes: (symbols: string[] | SymbolSubscription[]) => void
 }
 
-export const useMarketStore = create<MarketStore>(set => ({
+export const useMarketStore = create<MarketStore>((set, get) => ({
   quotes: {},
+  subscriptions: {},
+  futuresRollStates: {},
   lastTick: null,
   connected: false,
   activeSymbol: 'AUD.USD',
+  isFuturesSymbol: (sym) => !!sym && get().subscriptions[sym]?.sec_type === 'FUT',
   setActiveSymbol: (activeSymbol) => set({ activeSymbol }),
   setConnected: (connected) => set({ connected }),
   updateQuote: (q) => set(s => ({
@@ -42,9 +50,15 @@ export const useMarketStore = create<MarketStore>(set => ({
     }
   })),
   updateTick: (t) => set({ lastTick: t }),
+  updateFuturesRollState: (state) => set(s => ({
+    futuresRollStates: { ...s.futuresRollStates, [state.symbol]: state },
+  })),
   initQuotes: (symbols) => set(s => {
     const newQuotes = { ...s.quotes }
-    symbols.forEach(sym => {
+    const subscriptions = { ...s.subscriptions }
+    symbols.forEach(item => {
+      const sym = typeof item === 'string' ? item : item.symbol
+      if (typeof item !== 'string') subscriptions[sym] = item
       if (!newQuotes[sym]) {
         newQuotes[sym] = {
           symbol: sym,
@@ -56,6 +70,6 @@ export const useMarketStore = create<MarketStore>(set => ({
         }
       }
     })
-    return { quotes: newQuotes }
+    return { quotes: newQuotes, subscriptions }
   }),
 }))

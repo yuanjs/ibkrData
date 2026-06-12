@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS, PRODUCT_ROLL_CONFIG
@@ -13,6 +13,25 @@ from notifier import BarkNotifier
 
 
 logger = logging.getLogger(__name__)
+
+
+def _contract_month(contract: Contract, fallback: str | None = None) -> str | None:
+    raw = contract.lastTradeDateOrContractMonth or fallback
+    return raw[:6] if raw and len(raw) >= 6 else raw
+
+
+def _last_trade_date(contract: Contract):
+    raw = contract.lastTradeDateOrContractMonth or ""
+    if len(raw) < 8:
+        return None
+    try:
+        return date.fromisoformat(f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}")
+    except ValueError:
+        return None
+
+
+def _clean_contract_value(value):
+    return value if value not in ("", 0) else None
 
 
 class IBKRClient:
@@ -136,7 +155,12 @@ class IBKRClient:
                 logger.error(f"Failed to re-subscribe to {params.get('symbol')}: {e}")
 
     async def subscribe(
-        self, symbol: str, sec_type="STK", exchange="SMART", currency="USD"
+        self,
+        symbol: str,
+        sec_type="STK",
+        exchange="SMART",
+        currency="USD",
+        contract_identity: dict | None = None,
     ):
         # Record subscription parameters for re-subscription on disconnect
         self._subscriptions[symbol] = {
@@ -144,6 +168,7 @@ class IBKRClient:
             "sec_type": sec_type,
             "exchange": exchange,
             "currency": currency,
+            "contract_identity": contract_identity,
         }
 
         if symbol in self._tickers:
@@ -162,8 +187,31 @@ class IBKRClient:
             currency=currency,
         )
 
+        if sec_type == "FUT" and contract_identity:
+            logger.info(
+                "Subscribing %s with live active FUT contract conId=%s localSymbol=%s month=%s",
+                symbol,
+                contract_identity.get("con_id"),
+                contract_identity.get("local_symbol"),
+                contract_identity.get("contract_month"),
+            )
+            contract = Contract(
+                secType="FUT",
+                symbol=contract_identity.get("symbol") or symbol,
+                conId=int(contract_identity["con_id"])
+                if contract_identity.get("con_id") is not None
+                else 0,
+                localSymbol=contract_identity.get("local_symbol") or "",
+                tradingClass=contract_identity.get("trading_class") or "",
+                lastTradeDateOrContractMonth=contract_identity.get("contract_month")
+                or "",
+                exchange=contract_identity.get("exchange") or exchange,
+                currency=contract_identity.get("currency") or currency,
+                multiplier=str(contract_identity.get("multiplier") or ""),
+            )
+
         # For futures without a specific expiry, use CONTFUT to find the rolling active contract
-        if sec_type == "FUT" and not contract.lastTradeDateOrContractMonth:
+        if sec_type == "FUT" and not contract_identity and not contract.lastTradeDateOrContractMonth:
             logger.info(f"Resolving active rolling future for {symbol} via CONTFUT...")
 
             # Step 1: Use CONTFUT to identify which contract IBKR considers active
@@ -225,6 +273,29 @@ class IBKRClient:
         ticker = self.ib.reqMktData(contract, "", False, False)
         self._tickers[symbol] = ticker
 
+        futures_identity = None
+        if sec_type == "FUT":
+            con_id = contract.conId or (
+                contract_identity.get("con_id") if contract_identity else None
+            )
+            futures_identity = {
+                "symbol": symbol,
+                "sec_type": "FUT",
+                "con_id": int(con_id) if con_id else None,
+                "local_symbol": _clean_contract_value(contract.localSymbol),
+                "contract_month": _contract_month(
+                    contract,
+                    contract_identity.get("contract_month")
+                    if contract_identity
+                    else None,
+                ),
+                "trading_class": _clean_contract_value(contract.tradingClass),
+                "last_trade_date": _last_trade_date(contract),
+                "exchange": _clean_contract_value(contract.exchange) or exchange,
+                "currency": _clean_contract_value(contract.currency) or currency,
+                "multiplier": _clean_contract_value(contract.multiplier),
+            }
+
         def _on_mkt_data_update(ticker, symbol=symbol, sec_type=sec_type):
             if self._data_suspended:
                 logger.info(
@@ -248,6 +319,21 @@ class IBKRClient:
             else:
                 price = ticker.last if hasattr(ticker, "last") else None
                 size = ticker.lastSize if hasattr(ticker, "lastSize") else 0.0
+                if (
+                    sec_type == "FUT"
+                    and (
+                        price is None
+                        or (isinstance(price, float) and math.isnan(price))
+                        or price <= 0
+                    )
+                ):
+                    has_bid_ask = (
+                        ticker.bid is not None and not math.isnan(ticker.bid) and ticker.bid > 0 and
+                        ticker.ask is not None and not math.isnan(ticker.ask) and ticker.ask > 0
+                    )
+                    if has_bid_ask:
+                        price = (ticker.bid + ticker.ask) * 0.5
+                        size = 0.0
 
             if (
                 price is not None
@@ -258,18 +344,45 @@ class IBKRClient:
                 # 非 CASH 用价格比较过滤 bid/ask 变化导致的虚假 tick
                 if sec_type != "CASH" and not self._is_new_trade(symbol, float(price)):
                     return
+                # 优先级:
+                #   1) lastTimestamp (tickType 45) — 交易所秒级时间戳（CASH/FX）
+                #   2) rtTime (tickType 48/77) — RTVolume 毫秒级时间戳（期货）
+                #   3) time (系统时间) — 最后的保底
+                tick_time = (
+                    ticker.lastTimestamp
+                    or ticker.rtTime
+                    or ticker.time
+                )
+                if futures_identity:
+                    payload = {
+                        **futures_identity,
+                        "time": tick_time,
+                        "price": float(price),
+                        "last": float(price),
+                        "size": float(size or 0),
+                        "volume": float(size or 0),
+                    }
+                    if hasattr(ticker, "bid"):
+                        payload["bid"] = ticker.bid
+                    if hasattr(ticker, "ask"):
+                        payload["ask"] = ticker.ask
+                    if hasattr(ticker, "open"):
+                        payload["open"] = ticker.open
+                    if hasattr(ticker, "high"):
+                        payload["high"] = ticker.high
+                    if hasattr(ticker, "low"):
+                        payload["low"] = ticker.low
+                    if hasattr(ticker, "close"):
+                        payload["close"] = ticker.close
+                else:
+                    payload = None
+
                 for cb in self._tick_callbacks:
                     try:
-                        # 优先级:
-                        #   1) lastTimestamp (tickType 45) — 交易所秒级时间戳（CASH/FX）
-                        #   2) rtTime (tickType 48/77) — RTVolume 毫秒级时间戳（期货）
-                        #   3) time (系统时间) — 最后的保底
-                        tick_time = (
-                            ticker.lastTimestamp
-                            or ticker.rtTime
-                            or ticker.time
-                        )
-                        cb(symbol, float(price), float(size or 0), tick_time)
+                        if payload is not None:
+                            cb(payload)
+                        else:
+                            cb(symbol, float(price), float(size or 0), tick_time)
                     except Exception as e:
                         logger.error(f"Tick callback error: {e}")
 
@@ -442,6 +555,13 @@ class IBKRClient:
             {
                 "account_id": p.account,
                 "symbol": p.contract.symbol,
+                "con_id": p.contract.conId or None,
+                "local_symbol": _clean_contract_value(p.contract.localSymbol),
+                "contract_month": _contract_month(p.contract),
+                "trading_class": _clean_contract_value(p.contract.tradingClass),
+                "exchange": _clean_contract_value(p.contract.exchange),
+                "currency": _clean_contract_value(p.contract.currency),
+                "multiplier": _clean_contract_value(p.contract.multiplier),
                 "sec_type": p.contract.secType,
                 "quantity": float(p.position),
                 "avg_cost": float(p.avgCost),
@@ -454,9 +574,6 @@ class IBKRClient:
                 "realized_pnl": float(p.realizedPNL)
                 if hasattr(p, "realizedPNL")
                 else None,
-                "multiplier": float(p.contract.multiplier)
-                if p.contract.multiplier and p.contract.multiplier.strip()
-                else None,
             }
             for p in self.ib.positions()
         ]
@@ -466,28 +583,61 @@ class IBKRClient:
         self.ib.orderStatusEvent += on_order
         self.ib.execDetailsEvent += on_exec
 
-    def cancel_orders_for_symbol(self, symbol: str) -> list[int]:
-        """取消某个品种所有未完成订单，返回取消的 order_id 列表。"""
+    def cancel_orders_for_symbol(
+        self,
+        symbol: str,
+        con_id: int | None = None,
+        local_symbol: str | None = None,
+    ) -> list[int]:
+        """取消某个品种未完成订单；有合约身份时只取消对应真实合约。"""
         cancelled = []
         for trade in self.ib.openOrders():
-            if trade.contract.symbol == symbol and \
-               trade.orderStatus.status not in ('Filled', 'Cancelled', 'Inactive'):
+            if trade.contract.symbol != symbol:
+                continue
+            if con_id is not None and getattr(trade.contract, "conId", None) != con_id:
+                continue
+            if (
+                local_symbol
+                and getattr(trade.contract, "localSymbol", None) != local_symbol
+            ):
+                continue
+            if trade.orderStatus.status not in ('Filled', 'Cancelled', 'Inactive'):
                 self.ib.cancelOrder(trade.order.orderId)
                 cancelled.append(trade.order.orderId)
         return cancelled
 
     async def place_market_order(self, symbol: str, side: str, quantity: float,
                                  sec_type: str, exchange: str, currency: str,
-                                 account_id: str | None = None) -> tuple[int, str]:
-        """下市价单，返回 (orderId, status)。期货自动解析到当前主力合约。"""
+                                 account_id: str | None = None,
+                                 contract_identity: dict | None = None) -> tuple[int, str]:
+        """下市价单，返回 (orderId, status)。期货优先使用明确 con_id。"""
         contract = Contract()
         contract.symbol = symbol
         contract.secType = sec_type
         contract.exchange = exchange
         contract.currency = currency
 
-        # 期货：用 CONTFUT 解析到当前主力合约（参考 kdjclient 的做法）
-        if sec_type == 'FUT':
+        if sec_type == 'FUT' and contract_identity and contract_identity.get("con_id"):
+            contract.conId = int(contract_identity["con_id"])
+            contract.localSymbol = contract_identity.get("local_symbol") or ""
+            contract.lastTradeDateOrContractMonth = (
+                contract_identity.get("contract_month") or ""
+            )
+            contract.tradingClass = contract_identity.get("trading_class") or ""
+            contract.multiplier = str(contract_identity.get("multiplier") or "")
+            contract.exchange = contract_identity.get("exchange") or exchange
+            contract.currency = contract_identity.get("currency") or currency
+            qualified = await self.ib.qualifyContractsAsync(contract)
+            if qualified:
+                contract = qualified[0]
+            logger.info(
+                "Using explicit FUT contract for order: %s conId=%s localSymbol=%s",
+                symbol,
+                contract.conId,
+                contract.localSymbol,
+            )
+        # 期货兼容路径：没有明确 con_id 时才用 CONTFUT 解析。
+        elif sec_type == 'FUT':
             contfut = ContFuture(symbol, exchange, currency)
             try:
                 details = await self.ib.reqContractDetailsAsync(contfut)
