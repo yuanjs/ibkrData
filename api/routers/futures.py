@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 
 from auth import require_auth
 from dateutil import parser
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import get_pool
+from backfiller.roll_sync import ensure_futures_roll_calendar
 
 router = APIRouter(prefix="/api/futures", dependencies=[Depends(require_auth)])
 
@@ -33,6 +34,7 @@ async def get_active_contract(symbol: str, as_of: str | None = None):
     dt_as_of = _parse_optional_datetime(as_of, "as_of")
 
     pool = await get_pool()
+    await ensure_futures_roll_calendar(pool, symbol, as_of=dt_as_of)
     row = await pool.fetchrow(
         "SELECT * FROM active_futures_contract_asof($1, $2)",
         symbol,
@@ -49,6 +51,7 @@ async def get_futures_daily(
     start: str,
     as_of: str | None = None,
     adjustment: str = "back_adjusted",
+    limit: int | None = Query(default=None, ge=1, le=5000),
 ):
     if adjustment not in _DAILY_ADJUSTMENTS:
         raise HTTPException(status_code=400, detail=f"Invalid adjustment: {adjustment}")
@@ -59,13 +62,33 @@ async def get_futures_daily(
         raise HTTPException(status_code=400, detail="start must be before as_of")
 
     pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM continuous_futures_daily_asof($1, $2, $3, $4)",
-        symbol,
-        dt_start.date(),
-        dt_as_of.date(),
-        adjustment,
-    )
+    await ensure_futures_roll_calendar(pool, symbol, as_of=dt_as_of)
+    if limit is None:
+        rows = await pool.fetch(
+            "SELECT * FROM continuous_futures_daily_asof($1, $2, $3, $4)",
+            symbol,
+            dt_start.date(),
+            dt_as_of.date(),
+            adjustment,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT *
+            FROM (
+                SELECT *
+                FROM continuous_futures_daily_asof($1, $2, $3, $4)
+                ORDER BY session_date DESC
+                LIMIT $5
+            ) limited_daily
+            ORDER BY session_date
+            """,
+            symbol,
+            dt_start.date(),
+            dt_as_of.date(),
+            adjustment,
+            limit,
+        )
     return [dict(r) for r in rows]
 
 
@@ -87,6 +110,7 @@ async def get_futures_minute(
         raise HTTPException(status_code=400, detail="start must be before end")
 
     pool = await get_pool()
+    await ensure_futures_roll_calendar(pool, symbol, as_of=dt_as_of)
     if mode == "active_raw":
         rows = await pool.fetch(
             "SELECT * FROM continuous_futures_minute_asof_raw($1, $2, $3)",
@@ -134,6 +158,7 @@ async def get_roll_events(symbol: str, start: str | None = None, end: str | None
 async def get_roll_state(symbol: str):
     now = datetime.now(timezone.utc)
     pool = await get_pool()
+    await ensure_futures_roll_calendar(pool, symbol, as_of=now)
 
     active = await pool.fetchrow(
         "SELECT * FROM active_futures_contract_asof($1, $2)",

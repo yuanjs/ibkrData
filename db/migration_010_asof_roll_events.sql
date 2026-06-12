@@ -93,7 +93,47 @@ WITH known_rolls AS (
       AND e.known_at::date <= p_as_of_date
       AND e.effective_roll_time::date <= p_as_of_date
 ),
-first_contract AS (
+first_roll_contract AS (
+    SELECT
+        e.symbol,
+        e.from_con_id AS con_id
+    FROM futures_roll_events_asof e
+    WHERE e.symbol = p_symbol
+    ORDER BY e.effective_roll_time ASC, e.known_at ASC, e.id ASC
+    LIMIT 1
+),
+first_roll_contract_metadata AS (
+    SELECT
+        md.symbol,
+        md.con_id,
+        md.contract_month,
+        md.local_symbol,
+        md.trading_class,
+        md.exchange,
+        md.currency,
+        md.multiplier,
+        md.session_date AS latest_session_date,
+        1 AS priority
+    FROM first_roll_contract f
+    JOIN LATERAL (
+        SELECT
+            b.symbol,
+            b.con_id,
+            b.contract_month,
+            b.local_symbol,
+            b.trading_class,
+            b.exchange,
+            b.currency,
+            b.multiplier,
+            b.session_date
+        FROM futures_daily_bars_session_normalized b
+        WHERE b.symbol = p_symbol
+          AND b.con_id = f.con_id
+        ORDER BY b.session_date DESC
+        LIMIT 1
+    ) md ON TRUE
+),
+raw_asof_contract AS (
     SELECT
         b.symbol,
         b.con_id,
@@ -102,13 +142,36 @@ first_contract AS (
         b.trading_class,
         b.exchange,
         b.currency,
-        b.multiplier
+        b.multiplier,
+        b.session_date AS latest_session_date,
+        2 AS priority
     FROM futures_daily_bars_session_normalized b
     WHERE b.symbol = p_symbol
-    GROUP BY
-        b.symbol, b.con_id, b.contract_month, b.local_symbol,
-        b.trading_class, b.exchange, b.currency, b.multiplier
-    ORDER BY b.contract_month DESC, b.con_id DESC
+      AND b.session_date <= p_as_of_date
+    ORDER BY
+        b.session_date DESC,
+        COALESCE(b.volume, 0) DESC,
+        b.contract_month ASC NULLS LAST,
+        b.con_id ASC
+    LIMIT 1
+),
+first_contract AS (
+    SELECT
+        c.symbol,
+        c.con_id,
+        c.contract_month,
+        c.local_symbol,
+        c.trading_class,
+        c.exchange,
+        c.currency,
+        c.multiplier,
+        c.latest_session_date
+    FROM (
+        SELECT * FROM first_roll_contract_metadata
+        UNION ALL
+        SELECT * FROM raw_asof_contract
+    ) c
+    ORDER BY c.priority, c.latest_session_date DESC
     LIMIT 1
 ),
 latest_known_roll AS (
@@ -367,13 +430,15 @@ first_contract AS (
         b.trading_class,
         b.exchange,
         b.currency,
-        b.multiplier
+        b.multiplier,
+        max(b.time) AS latest_time
     FROM futures_minute_bars b
     WHERE b.symbol = p_symbol
+      AND b.time < p_end_time
     GROUP BY
         b.symbol, b.con_id, b.contract_month, b.local_symbol,
         b.trading_class, b.exchange, b.currency, b.multiplier
-    ORDER BY b.contract_month DESC, b.con_id DESC
+    ORDER BY latest_time DESC, b.contract_month DESC, b.con_id DESC
     LIMIT 1
 ),
 segments AS (
@@ -504,13 +569,15 @@ first_contract AS (
         b.trading_class,
         b.exchange,
         b.currency,
-        b.multiplier
+        b.multiplier,
+        max(b.time) AS latest_time
     FROM futures_minute_bars b
     WHERE b.symbol = p_symbol
+      AND b.time <= p_as_of_time
     GROUP BY
         b.symbol, b.con_id, b.contract_month, b.local_symbol,
         b.trading_class, b.exchange, b.currency, b.multiplier
-    ORDER BY b.contract_month DESC, b.con_id DESC
+    ORDER BY latest_time DESC, b.contract_month DESC, b.con_id DESC
     LIMIT 1
 ),
 segments AS (

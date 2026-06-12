@@ -371,6 +371,42 @@ async def test_pull_fut_uses_overlap_before_previous_expiry(
 
 
 @pytest.mark.asyncio
+async def test_pull_fut_first_contract_starts_from_config_start(
+    mock_writer, tmp_path,
+):
+    """首个季度合约不能截断到 expiry-100，必须覆盖配置 start。"""
+    product = ProductConfig(
+        symbol="SPI", sec_type="FUT", exchange="SNFE", currency="AUD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-01-01",
+        end="2024-03-02",
+        request_interval_seconds=0,
+    )
+
+    contract = MagicMock()
+    contract.conId = 603477460
+    contract.lastTradeDateOrContractMonth = "20240620"
+    contract.includeExpired = False
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(return_value=[contract])
+
+        await scheduler._pull_product(product)
+
+    request = ib_instance.reqHistoricalDataAsync.await_args
+    assert request.kwargs["endDateTime"] == "20240302-23:59:59"
+    assert request.kwargs["durationStr"] == "1 D"
+
+
+@pytest.mark.asyncio
 async def test_pull_fut_resumes_from_contract_checkpoint(
     mock_writer, tmp_path,
 ):
@@ -608,6 +644,52 @@ async def test_pull_fut_daily_writes_contract_level_daily_bars(
     request = ib_instance.reqHistoricalDataAsync.await_args
     assert request.kwargs["endDateTime"] == "20240621-23:59:59"
     assert request.kwargs["durationStr"] == "113 D"
+    assert request.kwargs["barSizeSetting"] == "1 day"
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_daily_first_contract_uses_full_daily_padding_window(
+    mock_writer, tmp_path,
+):
+    """首个季度合约的日K回填必须覆盖 start 前的 31 天预热窗口。"""
+    product = ProductConfig(
+        symbol="SPI", sec_type="FUT", exchange="SNFE", currency="AUD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-01-01",
+        end="2024-03-15",
+        request_interval_seconds=0,
+    )
+
+    contract = MagicMock()
+    contract.conId = 603477460
+    contract.lastTradeDateOrContractMonth = "20240620"
+    contract.includeExpired = False
+
+    mock_bar = MagicMock()
+    mock_bar.date = "20231201"
+    mock_bar.open = 1
+    mock_bar.high = 2
+    mock_bar.low = 0.5
+    mock_bar.close = 1.5
+    mock_bar.volume = 10
+    mock_bar.barCount = 3
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[mock_bar])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(return_value=[contract])
+
+        await scheduler.run_daily()
+
+    request = ib_instance.reqHistoricalDataAsync.await_args
+    assert request.kwargs["endDateTime"] == "20240315-23:59:59"
+    assert request.kwargs["durationStr"] == "106 D"
     assert request.kwargs["barSizeSetting"] == "1 day"
 
 

@@ -6,7 +6,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "api"))
 
 from routers import futures  # noqa: E402
 
@@ -96,6 +98,17 @@ async def test_futures_routes_are_callable(monkeypatch, futures_app):
         return await fake_get_pool(pool)
 
     monkeypatch.setattr(futures, "get_pool", get_pool_override)
+    roll_sync_calls = []
+
+    async def ensure_roll_calendar_override(pool_arg, symbol, *, as_of=None):
+        roll_sync_calls.append((pool_arg, symbol, as_of))
+        return True
+
+    monkeypatch.setattr(
+        futures,
+        "ensure_futures_roll_calendar",
+        ensure_roll_calendar_override,
+    )
 
     transport = httpx.ASGITransport(app=futures_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -110,6 +123,30 @@ async def test_futures_routes_are_callable(monkeypatch, futures_app):
         )
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
+        daily_query, daily_args = pool.fetch_calls[-1]
+        assert "ORDER BY session_date DESC" not in daily_query
+        assert daily_args == ("SPI", now.date().replace(day=1), now.date(), "back_adjusted")
+
+        resp = await client.get(
+            "/api/futures/SPI/daily",
+            params={
+                "start": "2026-05-01",
+                "as_of": now.isoformat(),
+                "adjustment": "back_adjusted",
+                "limit": "30",
+            },
+        )
+        assert resp.status_code == 200
+        limited_daily_query, limited_daily_args = pool.fetch_calls[-1]
+        assert "ORDER BY session_date DESC" in limited_daily_query
+        assert "LIMIT $5" in limited_daily_query
+        assert limited_daily_args == (
+            "SPI",
+            now.date().replace(month=5, day=1),
+            now.date(),
+            "back_adjusted",
+            30,
+        )
 
         resp = await client.get(
             "/api/futures/SPI/minute",
@@ -137,6 +174,13 @@ async def test_futures_routes_are_callable(monkeypatch, futures_app):
         resp = await client.get("/api/futures/SPI/roll-state")
         assert resp.status_code == 200
         assert resp.json()["active"]["con_id"] == 123
+        assert [symbol for _pool, symbol, _as_of in roll_sync_calls] == [
+            "SPI",
+            "SPI",
+            "SPI",
+            "SPI",
+            "SPI",
+        ]
 
 
 @pytest.mark.asyncio
@@ -158,6 +202,16 @@ async def test_futures_parameter_errors(futures_app):
             },
         )
         assert resp.status_code == 400
+
+        resp = await client.get(
+            "/api/futures/SPI/daily",
+            params={
+                "start": "2026-06-01",
+                "as_of": "2026-06-12T00:00:00Z",
+                "limit": "0",
+            },
+        )
+        assert resp.status_code == 422
 
         resp = await client.get(
             "/api/futures/SPI/minute",

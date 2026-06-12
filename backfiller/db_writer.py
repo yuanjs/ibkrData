@@ -160,6 +160,40 @@ def _previous_weekday(d: date) -> date:
     return d
 
 
+def _count_weekdays(start_date: date, end_date: date) -> int:
+    """Return the number of weekdays in an inclusive date range."""
+    if start_date > end_date:
+        return 0
+    count = 0
+    current = start_date
+    while current <= end_date:
+        if current.weekday() < 5:
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
+def _covers_expected_dates(
+    *,
+    start_date: date,
+    end_date: date,
+    min_date: date | None,
+    max_date: date | None,
+    observed_count: int,
+    expected_open_days: int,
+) -> bool:
+    """True when the observed daily rows fully cover the requested range."""
+    if min_date is None or max_date is None or observed_count <= 0:
+        return False
+
+    expected_count = expected_open_days or _count_weekdays(start_date, end_date)
+    return (
+        min_date <= start_date
+        and max_date >= end_date
+        and observed_count >= expected_count
+    )
+
+
 class MinuteBarWriter:
     """Persist minute-bar OHLCV data to TimescaleDB.
 
@@ -448,7 +482,16 @@ class MinuteBarWriter:
                     """
                     SELECT MIN(time)::date AS min_date,
                            MAX(time)::date AS max_date,
-                           COUNT(*) AS cnt
+                           COUNT(DISTINCT time::date) AS cnt,
+                           COALESCE((
+                               SELECT COUNT(*)
+                               FROM futures_daily_symbol_calendars sc
+                               JOIN exchange_trading_days etd
+                                 ON etd.exchange_code = sc.exchange_code
+                              WHERE sc.symbol = $1
+                                AND etd.is_open
+                                AND etd.trading_date BETWEEN $3 AND $4
+                           ), 0) AS expected_open_days
                     FROM futures_daily_bars
                     WHERE symbol = $1
                       AND con_id = $2
@@ -464,7 +507,14 @@ class MinuteBarWriter:
 
         if row is None or row["cnt"] == 0:
             return False
-        return row["min_date"] <= start_date and row["max_date"] >= end_date
+        return _covers_expected_dates(
+            start_date=start_date,
+            end_date=end_date,
+            min_date=row["min_date"],
+            max_date=row["max_date"],
+            observed_count=int(row["cnt"] or 0),
+            expected_open_days=int(row["expected_open_days"] or 0),
+        )
 
     async def upsert_futures_daily_bars(
         self, symbol: str, contract: Contract, bars: list

@@ -418,7 +418,10 @@ class PullScheduler:
             # Active period with overlap: start the next contract before the
             # previous one expires so roll logic can compare both contracts.
             if prev_expiry is None:
-                period_start = max(cfg_start, exp_date - timedelta(days=100))
+                # The first visible quarterly contract must cover the configured
+                # backfill start; limiting it to expiry-100 truncates the
+                # earliest history and leaves the front of the dataset empty.
+                period_start = cfg_start
             else:
                 period_start = max(
                     cfg_start,
@@ -755,7 +758,7 @@ class PullScheduler:
                 continue
 
             if prev_expiry is None:
-                minute_period_start = max(minute_start, exp_date - timedelta(days=100))
+                minute_period_start = minute_start
             else:
                 minute_period_start = max(
                     minute_start,
