@@ -12,13 +12,19 @@ stream.
 
 import logging
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 import asyncpg
 from ib_insync import Contract
 
 from backfiller.roll_calendar import session_start_time_utc
+
+
+FUTURES_DAY_SESSION_WINDOWS = {
+    "SPI": ("Australia/Sydney", time(10, 0), time(16, 10)),
+    "N225M": ("Asia/Tokyo", time(9, 0), time(15, 24)),
+}
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +626,11 @@ class MinuteBarWriter:
         Timestamp-only gap checks miss products whose sessions cross UTC dates.
         This uses normalized daily futures bars as the expected-session source
         and counts minute bars in the matching exchange session window.
+
+        For products where backtests depend on the local day session, it also
+        checks the strategy-critical day window.  This catches the common
+        failure mode where the overnight bars exist but the local day session
+        is missing.
         """
         filters = ["symbol = $1"]
         params: list[object] = [symbol]
@@ -671,7 +682,41 @@ class MinuteBarWriter:
                     session_end,
                 )
                 minute_count = int(minute_row["minute_count"] or 0)
-                if minute_count >= min_minutes:
+                day_session_count = None
+                day_session_start = None
+                day_session_end = None
+                day_window = FUTURES_DAY_SESSION_WINDOWS.get(symbol)
+                if day_window is not None:
+                    tz_name, start_time, end_time = day_window
+                    day_row = await conn.fetchrow(
+                        """
+                        SELECT COUNT(*) AS minute_count,
+                               MIN(time) AS min_time,
+                               MAX(time) AS max_time
+                        FROM futures_minute_bars
+                        WHERE symbol = $1
+                          AND con_id = $2
+                          AND (time AT TIME ZONE $3)::date = $4
+                          AND (time AT TIME ZONE $3)::time >= $5
+                          AND (time AT TIME ZONE $3)::time <= $6
+                        """,
+                        symbol,
+                        row["con_id"],
+                        tz_name,
+                        session_date,
+                        start_time,
+                        end_time,
+                    )
+                    day_session_count = int(day_row["minute_count"] or 0)
+                    day_session_start = day_row["min_time"]
+                    day_session_end = day_row["max_time"]
+
+                is_session_complete = minute_count >= min_minutes
+                is_day_session_complete = (
+                    day_session_count is None
+                    or day_session_count >= min_minutes
+                )
+                if is_session_complete and is_day_session_complete:
                     continue
                 gaps.append(
                     {
@@ -685,6 +730,9 @@ class MinuteBarWriter:
                         "minute_count": minute_count,
                         "minute_min_time": minute_row["min_time"],
                         "minute_max_time": minute_row["max_time"],
+                        "day_session_count": day_session_count,
+                        "day_session_min_time": day_session_start,
+                        "day_session_max_time": day_session_end,
                         "daily_volume": row["volume"],
                         "daily_bar_count": row["bar_count"],
                         "minute_volume": minute_row["minute_volume"],

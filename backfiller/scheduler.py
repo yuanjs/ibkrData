@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 Window = tuple[str, str]
 
 WINDOW_DAYS = 2
+FUTURES_WINDOW_DAYS = 1
 DAILY_WINDOW_DAYS = 365
 DAILY_START_PADDING_DAYS = 31
 RECONNECT_BASE_DELAY = 2
@@ -432,7 +433,11 @@ class PullScheduler:
                 prev_expiry = exp_date
                 continue
 
-            windows = split_windows(period_start, period_end)
+            windows = split_date_windows(
+                period_start,
+                period_end,
+                FUTURES_WINDOW_DAYS,
+            )
             task_key = self._fut_task_key(c)
             if windows and not self._store.has_task(product.symbol, task_key):
                 windows = await self._filter_existing_futures_windows(
@@ -472,14 +477,28 @@ class PullScheduler:
                         end_dt = w[1].replace("-", "") + "-23:59:59"
                         bars = await self._ib.reqHistoricalDataAsync(
                             contract, endDateTime=end_dt,
-                            durationStr=f"{WINDOW_DAYS} D",
+                            durationStr=f"{FUTURES_WINDOW_DAYS} D",
                             barSizeSetting="1 min",
                             whatToShow=resolve_what_to_show(product.sec_type),
                             useRTH=False, formatDate=1,
                         )
+                        if not bars:
+                            logger.warning(
+                                "%s conId=%s window %s returned no bars",
+                                product.symbol,
+                                contract.conId,
+                                w,
+                            )
+                            break
                         await self._writer.upsert_futures_bars(
                             product.symbol, contract, bars,
                         )
+                        if not await self._futures_window_is_complete(
+                            product.symbol,
+                            contract,
+                            w,
+                        ):
+                            break
                         self._store.mark_task_completed(
                             product.symbol, task_key, w,
                         )
@@ -511,6 +530,45 @@ class PullScheduler:
 
         logger.info("%s: FUT backfill complete (%d contract periods)",
                      product.symbol, len(all_tasks))
+
+    async def _futures_window_is_complete(
+        self,
+        symbol: str,
+        contract: Contract,
+        window: Window,
+    ) -> bool:
+        """Validate a just-pulled futures window before checkpointing it."""
+        gaps = await self._writer.detect_futures_session_gaps(
+            symbol,
+            start_date=date.fromisoformat(window[0]),
+            end_date=date.fromisoformat(window[1]),
+            con_id=int(contract.conId),
+        )
+        if not gaps:
+            return True
+
+        for gap in gaps[:3]:
+            logger.warning(
+                "%s conId=%s window %s still incomplete: "
+                "session=%s minutes=%s day_minutes=%s loaded=%s..%s",
+                symbol,
+                contract.conId,
+                window,
+                gap["session_date"],
+                gap["minute_count"],
+                gap.get("day_session_count"),
+                gap["minute_min_time"],
+                gap["minute_max_time"],
+            )
+        if len(gaps) > 3:
+            logger.warning(
+                "%s conId=%s window %s has %d incomplete sessions",
+                symbol,
+                contract.conId,
+                window,
+                len(gaps),
+            )
+        return False
 
     async def repair_futures_session_gaps(
         self,
@@ -574,13 +632,28 @@ class PullScheduler:
             bars = await self._ib.reqHistoricalDataAsync(
                 contract,
                 endDateTime=end_dt,
-                durationStr=f"{WINDOW_DAYS} D",
+                durationStr=f"{FUTURES_WINDOW_DAYS} D",
                 barSizeSetting="1 min",
                 whatToShow=resolve_what_to_show(product.sec_type),
                 useRTH=False,
                 formatDate=1,
             )
             await self._writer.upsert_futures_bars(product.symbol, contract, bars)
+            repaired_gaps = await self._writer.detect_futures_session_gaps(
+                product.symbol,
+                start_date=gap["session_date"],
+                end_date=gap["session_date"],
+                con_id=int(gap["con_id"]),
+                min_minutes=min_minutes,
+            )
+            if repaired_gaps:
+                logger.warning(
+                    "%s %s conId=%s: session %s still incomplete after repair",
+                    product.symbol,
+                    gap["local_symbol"],
+                    gap["con_id"],
+                    gap["session_date"],
+                )
             await asyncio.sleep(self._config.request_interval_seconds)
 
         return gaps

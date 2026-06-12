@@ -27,6 +27,10 @@ products:
     sec_type: FUT
     exchange: CME
     currency: USD
+  - symbol: HG
+    sec_type: FUT
+    exchange: COMEX
+    currency: USD
   - symbol: USD.JPY
     sec_type: CASH
     exchange: IDEALPRO
@@ -35,11 +39,6 @@ products:
     sec_type: CASH
     exchange: IDEALPRO
     currency: USD
-  - symbol: HG
-    sec_type: FUT
-    exchange: COMEX
-    currency: USD
-
 start: "2024-01-01"
 end: "2026-05-31"
 futures_overlap_trading_days: 30

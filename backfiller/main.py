@@ -247,6 +247,7 @@ async def cmd_repair_futures_session_gaps(args, cfg):
                 print(
                     f"  {gap['session_date']} {gap['local_symbol']} "
                     f"conId={gap['con_id']} minutes={gap['minute_count']} "
+                    f"day_minutes={gap.get('day_session_count')} "
                     f"daily_vol={gap['daily_volume']} "
                     f"window={gap['session_start']}..{gap['session_end']} "
                     f"loaded={gap['minute_min_time']}..{gap['minute_max_time']}"

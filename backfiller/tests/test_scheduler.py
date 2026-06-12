@@ -43,6 +43,7 @@ def mock_writer():
     writer.has_daily_window_coverage = AsyncMock(return_value=False)
     writer.has_futures_daily_window_coverage = AsyncMock(return_value=False)
     writer.has_futures_window_coverage = AsyncMock(return_value=False)
+    writer.detect_futures_session_gaps = AsyncMock(return_value=[])
     return writer
 
 
@@ -366,7 +367,7 @@ async def test_pull_fut_uses_overlap_before_previous_expiry(
         for call in ib_instance.reqHistoricalDataAsync.await_args_list
         if call.args[0] is second_contract
     ]
-    assert second_contract_windows[0] == "20240309-23:59:59"
+    assert second_contract_windows[0] == "20240308-23:59:59"
 
 
 @pytest.mark.asyncio
@@ -391,7 +392,15 @@ async def test_pull_fut_resumes_from_contract_checkpoint(
     with patch("backfiller.scheduler.IB") as MockIB:
         ib_instance = MockIB.return_value
         ib_instance.isConnected.return_value = True
-        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[])
+        mock_bar = MagicMock()
+        mock_bar.date = datetime(2024, 3, 5, 12, 0, tzinfo=timezone.utc)
+        mock_bar.open = 1
+        mock_bar.high = 2
+        mock_bar.low = 0.5
+        mock_bar.close = 1.5
+        mock_bar.volume = 10
+        mock_bar.barCount = 3
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[mock_bar])
 
         scheduler = PullScheduler(cfg, mock_writer, tmp_path)
         scheduler._ib = ib_instance
@@ -410,6 +419,98 @@ async def test_pull_fut_resumes_from_contract_checkpoint(
     ]
     assert requested_end_times == ["20240306-23:59:59"]
     assert scheduler._store.load_task_windows("MES", "FUT:123456:202403") == []
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_keeps_checkpoint_when_window_returns_no_bars(
+    mock_writer, tmp_path,
+):
+    """IBKR 空返回不能被当作完成窗口。"""
+    product = ProductConfig(
+        symbol="MES", sec_type="FUT", exchange="CME", currency="USD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-03-05",
+        end="2024-03-06",
+        request_interval_seconds=0,
+    )
+
+    contract = MagicMock()
+    contract.conId = 123456
+    contract.lastTradeDateOrContractMonth = "20240315"
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(return_value=[contract])
+
+        await scheduler._pull_product(product)
+
+    assert scheduler._store.load_task_windows("MES", "FUT:123456:202403") == [
+        ("2024-03-05", "2024-03-05"),
+        ("2024-03-06", "2024-03-06"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pull_fut_keeps_checkpoint_when_window_still_has_gaps(
+    mock_writer, tmp_path,
+):
+    """写库后复查仍有缺口时，窗口必须保留以便后续补拉。"""
+    product = ProductConfig(
+        symbol="MES", sec_type="FUT", exchange="CME", currency="USD",
+    )
+    cfg = AppConfig(
+        products=[product],
+        start="2024-03-05",
+        end="2024-03-06",
+        request_interval_seconds=0,
+    )
+
+    contract = MagicMock()
+    contract.conId = 123456
+    contract.lastTradeDateOrContractMonth = "20240315"
+
+    mock_bar = MagicMock()
+    mock_bar.date = datetime(2024, 3, 5, 12, 0, tzinfo=timezone.utc)
+    mock_bar.open = 1
+    mock_bar.high = 2
+    mock_bar.low = 0.5
+    mock_bar.close = 1.5
+    mock_bar.volume = 10
+    mock_bar.barCount = 3
+    mock_writer.detect_futures_session_gaps = AsyncMock(
+        return_value=[
+            {
+                "session_date": date(2024, 3, 5),
+                "minute_count": 960,
+                "day_session_count": 60,
+                "minute_min_time": datetime(2024, 3, 5, tzinfo=timezone.utc),
+                "minute_max_time": datetime(2024, 3, 5, 23, 59, tzinfo=timezone.utc),
+            }
+        ]
+    )
+
+    with patch("backfiller.scheduler.IB") as MockIB:
+        ib_instance = MockIB.return_value
+        ib_instance.isConnected.return_value = True
+        ib_instance.reqHistoricalDataAsync = AsyncMock(return_value=[mock_bar])
+
+        scheduler = PullScheduler(cfg, mock_writer, tmp_path)
+        scheduler._ib = ib_instance
+        scheduler._resolve_fut_contracts = AsyncMock(return_value=[contract])
+
+        await scheduler._pull_product(product)
+
+    assert scheduler._store.load_task_windows("MES", "FUT:123456:202403") == [
+        ("2024-03-05", "2024-03-05"),
+        ("2024-03-06", "2024-03-06"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -432,7 +533,7 @@ async def test_pull_fut_skips_windows_already_covered_in_db(
     contract.lastTradeDateOrContractMonth = "20240315"
 
     async def _coverage(_symbol, _con_id, window_start, _window_end):
-        return window_start == "2024-03-01"
+        return window_start in {"2024-03-01", "2024-03-02", "2024-03-03"}
 
     mock_writer.has_futures_window_coverage = AsyncMock(side_effect=_coverage)
 
