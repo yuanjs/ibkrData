@@ -1,0 +1,49 @@
+products:
+  - symbol: SPI
+    sec_type: FUT
+    exchange: SNFE
+    currency: AUD
+  - symbol: MYM
+    sec_type: FUT
+    exchange: CBOT
+    currency: USD
+  - symbol: N225M
+    sec_type: FUT
+    exchange: OSE.JPN
+    currency: JPY
+  - symbol: "10Y"
+    sec_type: FUT
+    exchange: CBOT
+    currency: USD
+  - symbol: ZC
+    sec_type: FUT
+    exchange: CBOT
+    currency: USD
+  - symbol: MNQ
+    sec_type: FUT
+    exchange: CME
+    currency: USD
+  - symbol: MES
+    sec_type: FUT
+    exchange: CME
+    currency: USD
+  - symbol: HG
+    sec_type: FUT
+    exchange: COMEX
+    currency: USD
+  - symbol: USD.JPY
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: JPY
+  - symbol: AUD.USD
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: USD
+start: "2023-12-18"
+end: "2026-06-12"
+futures_overlap_trading_days: 30
+request_interval_seconds: 10
+ib_host: "127.0.0.1"
+ib_port: 4002
+ib_client_id: 99
+db_url: "postgresql://ibkr:password@localhost:5432/ibkrdata"
