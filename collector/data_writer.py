@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import asyncpg
 
@@ -36,6 +36,34 @@ def _clean_int(val):
 def _contract_month_from_ib_contract(contract):
     raw = getattr(contract, "lastTradeDateOrContractMonth", None)
     return raw[:6] if raw and len(raw) >= 6 else raw
+
+
+def _last_trade_date_from_ib_contract(contract):
+    raw = getattr(contract, "lastTradeDateOrContractMonth", None) or ""
+    if len(raw) < 8:
+        return None
+    try:
+        return date.fromisoformat(f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}")
+    except ValueError:
+        return None
+
+
+def _parse_daily_bar_date(val):
+    if isinstance(val, datetime):
+        d = val.astimezone(timezone.utc).date() if val.tzinfo else val.date()
+    elif isinstance(val, date):
+        d = val
+    elif isinstance(val, str):
+        s = val.strip()
+        if len(s) < 8 or not s[:8].isdigit():
+            return None
+        try:
+            d = date.fromisoformat(f"{s[:4]}-{s[4:6]}-{s[6:8]}")
+        except ValueError:
+            return None
+    else:
+        return None
+    return d.strftime("%Y%m%d"), datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
 class DataWriter:
@@ -90,6 +118,90 @@ class DataWriter:
             _clean_int(row.get("volume")),
             _clean_int(row.get("bar_count")),
         )
+
+    def _futures_contract_record(self, row):
+        if not isinstance(row, dict):
+            return row
+        return (
+            row["symbol"],
+            int(row["con_id"]),
+            row.get("local_symbol"),
+            row.get("trading_class"),
+            row.get("contract_month"),
+            row.get("last_trade_date"),
+            row.get("exchange"),
+            row.get("currency"),
+            row.get("multiplier"),
+            row.get("source", "live_collector"),
+        )
+
+    def _futures_daily_bar_record(self, row):
+        if not isinstance(row, dict):
+            return row
+        return (
+            row["symbol"],
+            int(row["con_id"]),
+            row["date_str"],
+            row["time"],
+            row.get("local_symbol"),
+            row.get("trading_class"),
+            row.get("contract_month"),
+            row.get("last_trade_date"),
+            row.get("exchange"),
+            row.get("currency"),
+            row.get("multiplier"),
+            _clean_num(row.get("open")),
+            _clean_num(row.get("high")),
+            _clean_num(row.get("low")),
+            _clean_num(row.get("close")),
+            _clean_int(row.get("volume")),
+            _clean_int(row.get("bar_count")),
+        )
+
+    @staticmethod
+    def futures_contract_identity(symbol: str, contract) -> dict:
+        con_id = getattr(contract, "conId", None)
+        return {
+            "symbol": symbol,
+            "con_id": int(con_id) if con_id else None,
+            "local_symbol": getattr(contract, "localSymbol", None) or None,
+            "trading_class": getattr(contract, "tradingClass", None) or None,
+            "contract_month": _contract_month_from_ib_contract(contract),
+            "last_trade_date": _last_trade_date_from_ib_contract(contract),
+            "exchange": getattr(contract, "exchange", None) or None,
+            "currency": getattr(contract, "currency", None) or None,
+            "multiplier": getattr(contract, "multiplier", None) or None,
+        }
+
+    @staticmethod
+    def futures_daily_bar_rows(symbol: str, contract, bars: list) -> list[dict]:
+        identity = DataWriter.futures_contract_identity(symbol, contract)
+        return DataWriter.futures_daily_bar_rows_from_identity(identity, bars)
+
+    @staticmethod
+    def futures_daily_bar_rows_from_identity(identity: dict, bars: list) -> list[dict]:
+        if not identity.get("con_id"):
+            return []
+        rows = []
+        for bar in bars:
+            parsed = _parse_daily_bar_date(getattr(bar, "date", None))
+            if parsed is None:
+                continue
+            date_str, ts = parsed
+            rows.append(
+                {
+                    **identity,
+                    "date_str": date_str,
+                    "time": ts,
+                    "open": getattr(bar, "open", None),
+                    "high": getattr(bar, "high", None),
+                    "low": getattr(bar, "low", None),
+                    "close": getattr(bar, "close", None),
+                    "volume": getattr(bar, "volume", None),
+                    "bar_count": getattr(bar, "barCount", None),
+                }
+            )
+        return rows
 
     async def write_raw_ticks(self, rows: list[tuple]):
         """Batch insert raw trade ticks into the ticks table."""
@@ -157,6 +269,67 @@ class DataWriter:
                 )
         except Exception as e:
             logger.error(f"upsert_futures_minute_bars_from_live error: {e}")
+
+    async def upsert_futures_contracts(self, rows: list[dict | tuple]):
+        """Upsert live-discovered futures contract metadata."""
+        if not rows:
+            return
+        try:
+            records = [self._futures_contract_record(r) for r in rows if r]
+            async with self.pool.acquire() as conn:
+                await conn.executemany(
+                    "INSERT INTO futures_contracts("
+                    "symbol,con_id,local_symbol,trading_class,contract_month,"
+                    "last_trade_date,exchange,currency,multiplier,source"
+                    ") VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) "
+                    "ON CONFLICT (symbol, con_id) DO UPDATE SET "
+                    "local_symbol=EXCLUDED.local_symbol,"
+                    "trading_class=EXCLUDED.trading_class,"
+                    "contract_month=EXCLUDED.contract_month,"
+                    "last_trade_date=EXCLUDED.last_trade_date,"
+                    "exchange=EXCLUDED.exchange,"
+                    "currency=EXCLUDED.currency,"
+                    "multiplier=EXCLUDED.multiplier,"
+                    "source=EXCLUDED.source,"
+                    "last_seen_at=NOW()",
+                    records,
+                )
+        except Exception as e:
+            logger.error(f"upsert_futures_contracts error: {e}")
+
+    async def upsert_futures_daily_bars_from_live(self, rows: list[dict | tuple]):
+        """Upsert IBKR daily bars for real futures contracts."""
+        if not rows:
+            return
+        try:
+            records = [self._futures_daily_bar_record(r) for r in rows]
+            async with self.pool.acquire() as conn:
+                await conn.executemany(
+                    "INSERT INTO futures_daily_bars("
+                    "symbol,con_id,date_str,time,local_symbol,trading_class,"
+                    "contract_month,last_trade_date,exchange,currency,multiplier,"
+                    "open,high,low,close,volume,bar_count"
+                    ") VALUES("
+                    "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17"
+                    ") ON CONFLICT (symbol, con_id, date_str) DO UPDATE SET "
+                    "time=EXCLUDED.time,"
+                    "local_symbol=EXCLUDED.local_symbol,"
+                    "trading_class=EXCLUDED.trading_class,"
+                    "contract_month=EXCLUDED.contract_month,"
+                    "last_trade_date=EXCLUDED.last_trade_date,"
+                    "exchange=EXCLUDED.exchange,"
+                    "currency=EXCLUDED.currency,"
+                    "multiplier=EXCLUDED.multiplier,"
+                    "open=EXCLUDED.open,"
+                    "high=EXCLUDED.high,"
+                    "low=EXCLUDED.low,"
+                    "close=EXCLUDED.close,"
+                    "volume=EXCLUDED.volume,"
+                    "bar_count=EXCLUDED.bar_count",
+                    records,
+                )
+        except Exception as e:
+            logger.error(f"upsert_futures_daily_bars_from_live error: {e}")
 
     async def write_account(self, accounts: list[dict]):
         now = datetime.now(timezone.utc)

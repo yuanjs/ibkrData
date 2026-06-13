@@ -311,8 +311,14 @@ def _first_after(rows: list[dict], after_date: date) -> Optional[dict]:
 
 
 class RollCalendarGenerator:
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        contract_source: str = "historical_bars",
+    ) -> None:
         self._pool = pool
+        self._contract_source = contract_source
 
     async def generate(
         self,
@@ -400,6 +406,9 @@ class RollCalendarGenerator:
         return events
 
     async def _load_contracts(self, symbol: str) -> list[ContractSummary]:
+        if self._contract_source == "live_contracts":
+            return await self._load_live_contracts(symbol)
+
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -411,6 +420,43 @@ class RollCalendarGenerator:
                 GROUP BY symbol, con_id, contract_month, local_symbol,
                          last_trade_date
                 ORDER BY contract_month
+                """,
+                symbol,
+            )
+
+        return [
+            ContractSummary(
+                symbol=r["symbol"],
+                con_id=r["con_id"],
+                contract_month=r["contract_month"],
+                local_symbol=r["local_symbol"],
+                last_trade_date=r["last_trade_date"],
+                min_time=r["min_time"],
+                max_time=r["max_time"],
+            )
+            for r in rows
+        ]
+
+    async def _load_live_contracts(self, symbol: str) -> list[ContractSummary]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    c.symbol,
+                    c.con_id,
+                    c.contract_month,
+                    c.local_symbol,
+                    c.last_trade_date,
+                    COALESCE(MIN(d.time), c.first_seen_at) AS min_time,
+                    COALESCE(MAX(d.time), c.last_seen_at) AS max_time
+                FROM futures_contracts c
+                LEFT JOIN futures_daily_bars d
+                  ON d.symbol = c.symbol
+                 AND d.con_id = c.con_id
+                WHERE c.symbol = $1
+                GROUP BY c.symbol, c.con_id, c.contract_month, c.local_symbol,
+                         c.last_trade_date, c.first_seen_at, c.last_seen_at
+                ORDER BY c.contract_month
                 """,
                 symbol,
             )

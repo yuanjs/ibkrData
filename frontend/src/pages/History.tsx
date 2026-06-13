@@ -60,7 +60,7 @@ export function History() {
         const contract = await futuresApi.activeContract(symbol, asOf)
         setActiveContract(contract)
         if (interval === '1d') {
-          data = await futuresApi.daily(symbol, startIso, asOf, 'back_adjusted')
+          data = await futuresApi.daily(symbol, startIso, asOf, 'back_adjusted', true)
         } else {
           data = await futuresApi.minute(symbol, startIso, endIso, 'active_raw', asOf)
           data = aggregateCandles(data, interval)

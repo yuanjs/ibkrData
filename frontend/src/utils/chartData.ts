@@ -87,9 +87,12 @@ export function getFuturesDailyAsOf(symbol: string, baseDate = new Date()) {
   const m = get('month')
   const d = get('day')
 
-  const advanced = hour > config.rollHour || (hour === config.rollHour && minute >= config.rollMinute)
+  const currentSessionNoon = new Date(Date.UTC(y, m - 1, d, 12))
+  const advanced = isWeekendInTimeZone(baseDate, config.timezone)
+    ? nextBusinessDayAfter(y, m, d - 1, config.timezone)
+    : hour > config.rollHour || (hour === config.rollHour && minute >= config.rollMinute)
     ? nextBusinessDayAfter(y, m, d, config.timezone)
-    : new Date(Date.UTC(y, m - 1, d, 12))
+    : currentSessionNoon
 
   return advanced.toISOString()
 }

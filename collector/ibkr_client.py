@@ -8,7 +8,7 @@ from config import BARK_KEY, BARK_SERVER, NOTIFY_THRESHOLD_SECONDS, PRODUCT_ROLL
 from daily_tracker import _bucket_time
 from daily_tracker import _effective_date_str as _get_effective_date_str
 from daily_tracker import _parse_trading_days_str
-from ib_insync import IB, Contract, Stock, Ticker, MarketOrder, ContFuture
+from ib_insync import IB, Contract, Future, Stock, Ticker, MarketOrder, ContFuture
 from notifier import BarkNotifier
 
 
@@ -40,7 +40,8 @@ class IBKRClient:
         self.port = port
         self.client_id = client_id
         self.ib = IB()
-        self._tickers: dict[str, Ticker] = {}
+        self._tickers: dict[object, Ticker] = {}
+        self._ticker_roles: dict[object, str] = {}
         self._symbol_map: dict[int, str] = {}  # conId -> symbol mapping
         self._tick_callbacks = []  # (symbol, price, size, time) callbacks
         self._retry = 0
@@ -49,7 +50,7 @@ class IBKRClient:
         self._trading_days: dict[str, set[str]] = {}  # symbol -> set of YYYYMMDD trading days
 
         self._notifier = BarkNotifier(BARK_SERVER, BARK_KEY)
-        self._last_trade_prices: dict[str, float] = {}  # symbol -> last trade price
+        self._last_trade_prices: dict[object, float] = {}  # subscription key -> last trade price
         self._first_fail_time = None
         self._alert_sent = False
 
@@ -60,10 +61,10 @@ class IBKRClient:
         self._reconnect_task = None
         self._data_suspended = False
 
-    def _is_new_trade(self, symbol: str, price: float) -> bool:
+    def _is_new_trade(self, key, price: float) -> bool:
         """Check if this is a genuine new trade, not a bid/ask update with stale last."""
-        prev = self._last_trade_prices.get(symbol)
-        self._last_trade_prices[symbol] = price
+        prev = self._last_trade_prices.get(key)
+        self._last_trade_prices[key] = price
         return prev is None or price != prev
 
     def _on_error(self, reqId, errorCode, errorString, contract):
@@ -144,6 +145,7 @@ class IBKRClient:
         logger.info(f"Re-subscribing to {len(self._subscriptions)} symbols...")
         # Clear existing tickers as they are bound to the old connection
         self._tickers.clear()
+        self._ticker_roles.clear()
         self._symbol_map.clear()
 
         # Deep copy the subscriptions to avoid mutation during iteration
@@ -388,6 +390,225 @@ class IBKRClient:
 
         ticker.updateEvent += _on_mkt_data_update
 
+    def _build_futures_contract(
+        self,
+        symbol: str,
+        exchange: str,
+        currency: str,
+        contract_identity: dict,
+    ) -> Contract:
+        return Contract(
+            secType="FUT",
+            symbol=contract_identity.get("symbol") or symbol,
+            conId=int(contract_identity["con_id"])
+            if contract_identity.get("con_id") is not None
+            else 0,
+            localSymbol=contract_identity.get("local_symbol") or "",
+            tradingClass=contract_identity.get("trading_class") or "",
+            lastTradeDateOrContractMonth=contract_identity.get("contract_month")
+            or "",
+            exchange=contract_identity.get("exchange") or exchange,
+            currency=contract_identity.get("currency") or currency,
+            multiplier=str(contract_identity.get("multiplier") or ""),
+        )
+
+    def _futures_identity_from_contract(
+        self,
+        symbol: str,
+        contract: Contract,
+        exchange: str,
+        currency: str,
+        fallback: dict | None = None,
+    ) -> dict:
+        fallback = fallback or {}
+        con_id = contract.conId or fallback.get("con_id")
+        return {
+            "symbol": symbol,
+            "sec_type": "FUT",
+            "con_id": int(con_id) if con_id else None,
+            "local_symbol": _clean_contract_value(contract.localSymbol)
+            or fallback.get("local_symbol"),
+            "contract_month": _contract_month(
+                contract,
+                fallback.get("contract_month"),
+            ),
+            "trading_class": _clean_contract_value(contract.tradingClass)
+            or fallback.get("trading_class"),
+            "last_trade_date": _last_trade_date(contract)
+            or fallback.get("last_trade_date"),
+            "exchange": _clean_contract_value(contract.exchange)
+            or fallback.get("exchange")
+            or exchange,
+            "currency": _clean_contract_value(contract.currency)
+            or fallback.get("currency")
+            or currency,
+            "multiplier": _clean_contract_value(contract.multiplier)
+            or fallback.get("multiplier"),
+        }
+
+    async def list_futures_contracts(
+        self,
+        symbol: str,
+        exchange: str,
+        currency: str,
+    ) -> list[Contract]:
+        """Return live-discoverable futures contracts sorted by expiry."""
+        details = await self.ib.reqContractDetailsAsync(
+            Future(symbol, exchange=exchange, currency=currency)
+        )
+        contracts = [d.contract for d in details]
+        contracts.sort(key=lambda c: c.lastTradeDateOrContractMonth or "")
+        return contracts
+
+    async def request_futures_daily_bars(
+        self,
+        contract_identity: dict,
+        *,
+        duration: str = "10 D",
+    ) -> list:
+        """Request per-contract daily trade bars from IBKR."""
+        contract = self._build_futures_contract(
+            contract_identity["symbol"],
+            contract_identity.get("exchange") or "",
+            contract_identity.get("currency") or "",
+            contract_identity,
+        )
+        qualified = await self.ib.qualifyContractsAsync(contract)
+        if qualified:
+            contract = qualified[0]
+        return await self.ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime="",
+            durationStr=duration,
+            barSizeSetting="1 day",
+            whatToShow="TRADES",
+            useRTH=False,
+            formatDate=1,
+        )
+
+    async def subscribe_futures_contract(
+        self,
+        symbol: str,
+        exchange: str,
+        currency: str,
+        contract_identity: dict,
+        *,
+        role: str = "active",
+    ) -> dict | None:
+        """Subscribe to a concrete futures contract by conId."""
+        if not contract_identity or not contract_identity.get("con_id"):
+            logger.error("Cannot subscribe %s FUT without con_id", symbol)
+            return None
+
+        key = (symbol, int(contract_identity["con_id"]))
+        if key in self._tickers:
+            self._ticker_roles[key] = role
+            return {
+                **contract_identity,
+                "symbol": symbol,
+                "role": role,
+            }
+
+        contract = self._build_futures_contract(
+            symbol,
+            exchange,
+            currency,
+            contract_identity,
+        )
+        qualified = await self.ib.qualifyContractsAsync(contract)
+        if qualified:
+            contract = qualified[0]
+
+        identity = self._futures_identity_from_contract(
+            symbol,
+            contract,
+            exchange,
+            currency,
+            contract_identity,
+        )
+        if not identity.get("con_id"):
+            logger.error("Qualified FUT contract for %s has no con_id", symbol)
+            return None
+
+        key = (symbol, int(identity["con_id"]))
+        ticker = self.ib.reqMktData(contract, "", False, False)
+        self._tickers[key] = ticker
+        self._ticker_roles[key] = role
+        self._symbol_map[int(identity["con_id"])] = symbol
+        logger.info(
+            "Subscribed %s FUT %s conId=%s role=%s",
+            symbol,
+            identity.get("local_symbol"),
+            identity.get("con_id"),
+            role,
+        )
+
+        def _on_futures_update(ticker, symbol=symbol, key=key):
+            if self._data_suspended:
+                logger.info(
+                    f"Market data received for {symbol}. Stopping auto-reconnect."
+                )
+                self._data_suspended = False
+
+            price = ticker.last if hasattr(ticker, "last") else None
+            size = ticker.lastSize if hasattr(ticker, "lastSize") else 0.0
+            if (
+                price is None
+                or (isinstance(price, float) and math.isnan(price))
+                or price <= 0
+            ):
+                has_bid_ask = (
+                    ticker.bid is not None and not math.isnan(ticker.bid) and ticker.bid > 0 and
+                    ticker.ask is not None and not math.isnan(ticker.ask) and ticker.ask > 0
+                )
+                if has_bid_ask:
+                    price = (ticker.bid + ticker.ask) * 0.5
+                    size = 0.0
+
+            if (
+                price is None
+                or (isinstance(price, float) and math.isnan(price))
+                or price <= 0
+                or not self._is_new_trade(key, float(price))
+            ):
+                return
+
+            tick_time = ticker.lastTimestamp or ticker.rtTime or ticker.time
+            payload = {
+                **identity,
+                "role": self._ticker_roles.get(key, role),
+                "time": tick_time,
+                "price": float(price),
+                "last": float(price),
+                "size": float(size or 0),
+                "volume": float(size or 0),
+            }
+            for attr in ("bid", "ask", "open", "high", "low", "close"):
+                if hasattr(ticker, attr):
+                    payload[attr] = getattr(ticker, attr)
+
+            for cb in self._tick_callbacks:
+                try:
+                    cb(payload)
+                except Exception as e:
+                    logger.error(f"Tick callback error: {e}")
+
+        ticker.updateEvent += _on_futures_update
+        return {**identity, "role": role}
+
+    def set_futures_role(self, symbol: str, con_id: int, role: str):
+        key = (symbol, int(con_id))
+        if key in self._tickers:
+            self._ticker_roles[key] = role
+
+    def unsubscribe_futures_contract(self, symbol: str, con_id: int):
+        key = (symbol, int(con_id))
+        ticker = self._tickers.pop(key, None)
+        self._ticker_roles.pop(key, None)
+        self._last_trade_prices.pop(key, None)
+        if ticker:
+            self.ib.cancelMktData(ticker.contract)
+
     async def get_historical_daily_bars(self, symbol: str, duration: str = "1 Y"):
         """Fetch historical daily bars from IBKR."""
         if symbol not in self._subscriptions:
@@ -514,10 +735,26 @@ class IBKRClient:
         ticker = self._tickers.pop(symbol, None)
         if ticker:
             self.ib.cancelMktData(ticker.contract)
+        futures_keys = [
+            key for key in self._tickers
+            if isinstance(key, tuple) and key[0] == symbol
+        ]
+        for key in futures_keys:
+            ticker = self._tickers.pop(key, None)
+            self._ticker_roles.pop(key, None)
+            self._last_trade_prices.pop(key, None)
+            if ticker:
+                self.ib.cancelMktData(ticker.contract)
 
     def get_snapshots(self) -> dict:
         result = {}
-        for symbol, ticker in self._tickers.items():
+        for key, ticker in self._tickers.items():
+            if isinstance(key, tuple):
+                if self._ticker_roles.get(key) != "active":
+                    continue
+                symbol = key[0]
+            else:
+                symbol = key
             result[symbol] = {
                 "bid": ticker.bid,
                 "ask": ticker.ask,

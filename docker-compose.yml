@@ -38,7 +38,9 @@ services:
     restart: unless-stopped
 
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     env_file: .env
     network_mode: host
     environment:

@@ -73,8 +73,8 @@ export interface FuturesRollState {
 export const futuresApi = {
   activeContract: (symbol: string, asOf?: string) =>
     api.get<FuturesActiveContract>(`/futures/${symbol}/active-contract${query({ as_of: asOf })}`),
-  daily: (symbol: string, start: string, asOf?: string, adjustment = 'back_adjusted') =>
-    api.get<any[]>(`/futures/${symbol}/daily${query({ start, as_of: asOf, adjustment })}`),
+  daily: (symbol: string, start: string, asOf?: string, adjustment = 'back_adjusted', includeLivePartial = false) =>
+    api.get<any[]>(`/futures/${symbol}/daily${query({ start, as_of: asOf, adjustment, include_live_partial: includeLivePartial })}`),
   minute: (symbol: string, start: string, end: string, mode: 'active_raw' | 'adjusted' = 'active_raw', asOf?: string) =>
     api.get<any[]>(`/futures/${symbol}/minute${query({ start, end, mode, as_of: asOf })}`),
 }

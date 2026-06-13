@@ -251,3 +251,25 @@ CREATE TABLE IF NOT EXISTS futures_roll_events (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (symbol, from_con_id, to_con_id, roll_time)
 );
+
+CREATE TABLE IF NOT EXISTS futures_contracts (
+    symbol            TEXT NOT NULL,
+    con_id            BIGINT NOT NULL,
+    local_symbol      TEXT,
+    trading_class     TEXT,
+    contract_month    TEXT,
+    last_trade_date   DATE,
+    exchange          TEXT,
+    currency          TEXT,
+    multiplier        TEXT,
+    first_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source            TEXT NOT NULL DEFAULT 'live_collector',
+    PRIMARY KEY (symbol, con_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_futures_contracts_symbol_month
+    ON futures_contracts (symbol, contract_month, con_id);
+
+CREATE INDEX IF NOT EXISTS idx_futures_contracts_symbol_last_trade
+    ON futures_contracts (symbol, last_trade_date, con_id);

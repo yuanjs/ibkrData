@@ -60,7 +60,7 @@ export function Monitor() {
       let res: CandleLike[]
       if (isFutures) {
         if (inv === '1d') {
-          res = await futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted')
+          res = await futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted', true)
         } else {
           res = await futuresApi.minute(sym, start.toISOString(), queryEnd.toISOString(), 'active_raw', end.toISOString())
         }

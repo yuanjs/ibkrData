@@ -1,8 +1,11 @@
 *
+!api/
+!api/**
 !collector/
 !collector/**
 !backfiller/
 !backfiller/__init__.py
 !backfiller/roll_calendar.py
+!backfiller/roll_sync.py
 **/__pycache__/
 **/*.pyc

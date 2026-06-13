@@ -25,6 +25,8 @@ from config import (
     FUTURES_ROLL_CALENDAR_ENABLED,
     FUTURES_ROLL_CALENDAR_INDEX_SAFETY_DAYS,
     FUTURES_ROLL_CALENDAR_INTERVAL_SECONDS,
+    FUTURES_LIVE_CONTRACT_REFRESH_SECONDS,
+    FUTURES_LIVE_DAILY_REFRESH_SECONDS,
     HEALTH_PORT,
     IB_CLIENT_ID,
     IB_HOST,
@@ -35,6 +37,7 @@ from config import (
 )
 from daily_tracker import DailyBarTracker
 from data_writer import DataWriter
+from futures_runtime import LiveFuturesRuntime
 from ibkr_client import IBKRClient
 from publisher import Publisher
 from backfiller.roll_calendar import RollCalendarGenerator
@@ -449,7 +452,7 @@ async def futures_roll_calendar_loop(
         logger.info("Futures roll calendar loop disabled")
         return
 
-    generator = RollCalendarGenerator(pool)
+    generator = RollCalendarGenerator(pool, contract_source="live_contracts")
     while True:
         try:
             now = datetime.now(timezone.utc)
@@ -505,6 +508,46 @@ async def futures_roll_calendar_loop(
         except Exception as e:
             logger.error(f"Futures roll calendar loop error: {e}")
 
+        await asyncio.sleep(interval)
+
+
+async def live_futures_contract_loop(runtime, symbols, interval: int):
+    """Refresh live futures contract chain and maintain market data subscriptions."""
+    while True:
+        try:
+            if runtime.client.is_connected:
+                await runtime.refresh_contracts(symbols)
+                await runtime.ensure_market_data()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Live futures contract loop error: {e}")
+        await asyncio.sleep(interval)
+
+
+async def live_futures_daily_loop(runtime, interval: int):
+    """Refresh per-contract IBKR daily bars for live futures roll decisions."""
+    while True:
+        try:
+            if runtime.client.is_connected:
+                await runtime.refresh_daily_bars()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Live futures daily loop error: {e}")
+        await asyncio.sleep(interval)
+
+
+async def live_futures_subscription_loop(runtime, interval: int = 60):
+    """Ensure pending roll events can promote candidate subscriptions promptly."""
+    while True:
+        try:
+            if runtime.client.is_connected:
+                await runtime.ensure_market_data()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Live futures subscription loop error: {e}")
         await asyncio.sleep(interval)
 
 
@@ -850,19 +893,21 @@ async def main():
 
     await client.connect_with_retry()
 
-    active_futures_contracts: dict[str, dict] = {}
+    futures_runtime = LiveFuturesRuntime(client, writer, pool, pub)
+    await futures_runtime.refresh_contracts(symbols)
+    await futures_runtime.ensure_market_data()
+    await futures_runtime.refresh_daily_bars()
+
     for s in symbols:
-        contract_identity = None
         if s["sec_type"] == "FUT":
-            contract_identity = await load_active_futures_contract(pool, s["symbol"])
-            if contract_identity:
-                active_futures_contracts[s["symbol"]] = contract_identity
+            # Futures are managed by LiveFuturesRuntime so active/next concrete
+            # contracts can coexist during roll windows.
+            continue
         await client.subscribe(
             s["symbol"],
             s["sec_type"],
             s["exchange"],
             s["currency"],
-            contract_identity=contract_identity,
         )
 
     # Share trading days from IBKRClient with the tracker (populated during subscribe)
@@ -934,14 +979,23 @@ async def main():
             trading_days_refresh_loop(client, daily_tracker), name="trading_days_refresh"
         ),
         asyncio.create_task(
-            futures_roll_state_loop(
-                client,
-                pub,
-                pool,
+            live_futures_contract_loop(
+                futures_runtime,
                 symbols,
-                active_futures_contracts,
+                FUTURES_LIVE_CONTRACT_REFRESH_SECONDS,
             ),
-            name="futures_roll_state",
+            name="live_futures_contracts",
+        ),
+        asyncio.create_task(
+            live_futures_daily_loop(
+                futures_runtime,
+                FUTURES_LIVE_DAILY_REFRESH_SECONDS,
+            ),
+            name="live_futures_daily",
+        ),
+        asyncio.create_task(
+            live_futures_subscription_loop(futures_runtime),
+            name="live_futures_subscriptions",
         ),
         asyncio.create_task(
             futures_roll_calendar_loop(pool),
