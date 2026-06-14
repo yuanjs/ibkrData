@@ -62,7 +62,7 @@ async def ensure_futures_roll_calendar(
     if _LAST_SYNCED_SESSION.get(symbol) == session_date:
         return False
 
-    generator = RollCalendarGenerator(pool)
+    generator = RollCalendarGenerator(pool, contract_source="live_contracts")
     safety_days = roll_calendar_safety_days(symbol)
 
     async with pool.acquire() as conn:
