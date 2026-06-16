@@ -601,6 +601,20 @@ class IBKRClient:
         if key in self._tickers:
             self._ticker_roles[key] = role
 
+    def is_futures_contract_subscribed(
+        self,
+        symbol: str,
+        con_id: int,
+        *,
+        role: str | None = None,
+    ) -> bool:
+        key = (symbol, int(con_id))
+        if key not in self._tickers:
+            return False
+        if role is None:
+            return True
+        return self._ticker_roles.get(key) == role
+
     def unsubscribe_futures_contract(self, symbol: str, con_id: int):
         key = (symbol, int(con_id))
         ticker = self._tickers.pop(key, None)

@@ -139,3 +139,16 @@ async def ws_futures_roll_state(ws: WebSocket, token: str = Query(default="")):
             await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect("futures:roll-state:", ws)
+
+
+async def ws_futures_minute_complete(ws: WebSocket, token: str = Query(default="")):
+    """WebSocket endpoint for finalized 1-minute futures bars."""
+    if not _verify_token(token):
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+    await manager.connect("futures:minute-complete:", ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect("futures:minute-complete:", ws)

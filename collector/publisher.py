@@ -39,6 +39,19 @@ class Publisher:
         })
         await self.redis.publish(f"tick:{symbol}", json.dumps(payload))
 
+    async def publish_futures_minute_complete(self, symbol: str, bar: dict):
+        """Publish a finalized 1-minute futures bar."""
+        payload = _sanitize({
+            "type": "minute_complete",
+            "symbol": symbol,
+            "final": True,
+            **bar,
+        })
+        await self.redis.publish(
+            f"futures:minute-complete:{symbol}",
+            json.dumps(payload),
+        )
+
     async def publish_account(self, data: dict):
         await self.redis.publish("account:update", json.dumps(_sanitize(data)))
 

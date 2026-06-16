@@ -23,7 +23,11 @@ if "aiohttp" not in sys.modules:
 
 from data_writer import DataWriter
 from futures_runtime import LiveFuturesRuntime, LiveFuturesState
-from main import TickBuffer
+from main import (
+    TickBuffer,
+    should_publish_futures_minute_complete,
+    should_publish_live_tick,
+)
 
 
 class FakeWriter:
@@ -120,6 +124,100 @@ async def test_tick_buffer_flushes_raw_and_futures_ticks_separately():
     assert writer.futures_minute_rows[0]["open"] == 7000.0
     assert writer.futures_minute_rows[0]["close"] == 7000.0
     assert writer.futures_minute_rows[0]["bar_count"] == 1
+
+
+def test_should_publish_live_tick_filters_candidate_futures_only():
+    assert should_publish_live_tick("AAPL") is True
+    assert should_publish_live_tick({
+        "symbol": "AAPL",
+        "sec_type": "STK",
+    }) is True
+    assert should_publish_live_tick({
+        "symbol": "MYM",
+        "sec_type": "FUT",
+        "role": "active",
+    }) is True
+    assert should_publish_live_tick({
+        "symbol": "MYM",
+        "sec_type": "FUT",
+        "role": "candidate",
+    }) is False
+
+
+def test_should_publish_futures_minute_complete_filters_candidate_only():
+    assert should_publish_futures_minute_complete({
+        "symbol": "MYM",
+        "role": "active",
+    }) is True
+    assert should_publish_futures_minute_complete({
+        "symbol": "MYM",
+        "role": "candidate",
+    }) is False
+
+
+def test_tick_buffer_emits_completed_minute_bars_on_minute_rollover():
+    writer = FakeWriter()
+    buffer = TickBuffer(writer)
+    t1 = datetime(2026, 6, 12, 10, 0, 10, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 12, 10, 0, 45, tzinfo=timezone.utc)
+    t3 = datetime(2026, 6, 12, 10, 1, 2, tzinfo=timezone.utc)
+
+    buffer.add_futures_tick({
+        "symbol": "SPI",
+        "con_id": 12345,
+        "role": "active",
+        "local_symbol": "APM6",
+        "contract_month": "202606",
+        "trading_class": "AP",
+        "exchange": "SNFE",
+        "currency": "AUD",
+        "multiplier": "25",
+        "price": 7000.0,
+        "size": 1.0,
+        "time": t1,
+    })
+    buffer.add_futures_tick({
+        "symbol": "SPI",
+        "con_id": 12345,
+        "role": "active",
+        "local_symbol": "APM6",
+        "contract_month": "202606",
+        "trading_class": "AP",
+        "exchange": "SNFE",
+        "currency": "AUD",
+        "multiplier": "25",
+        "price": 7003.0,
+        "size": 2.0,
+        "time": t2,
+    })
+    buffer.add_futures_tick({
+        "symbol": "SPI",
+        "con_id": 12345,
+        "role": "active",
+        "local_symbol": "APM6",
+        "contract_month": "202606",
+        "trading_class": "AP",
+        "exchange": "SNFE",
+        "currency": "AUD",
+        "multiplier": "25",
+        "price": 7005.0,
+        "size": 1.0,
+        "time": t3,
+    })
+
+    completed = buffer.pop_completed_futures_minute_bars(t3)
+    assert len(completed) == 1
+    bar = completed[0]
+    assert bar["symbol"] == "SPI"
+    assert bar["role"] == "active"
+    assert bar["time"] == datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc)
+    assert bar["bar_start"] == datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc)
+    assert bar["open"] == 7000.0
+    assert bar["high"] == 7003.0
+    assert bar["low"] == 7000.0
+    assert bar["close"] == 7003.0
+    assert bar["volume"] == 3.0
+    assert bar["bar_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -318,6 +416,9 @@ async def test_runtime_subscribes_next_when_pending_roll_exists_before_tick_wind
         async def subscribe_futures_contract(self, symbol, exchange, currency, identity, *, role):
             return {**identity, "symbol": symbol, "role": role}
 
+        def is_futures_contract_subscribed(self, symbol, con_id, *, role=None):
+            return False
+
     pool = FakePool()
     pool.conn.fetchrow_result = {"exists": 1}
     runtime = LiveFuturesRuntime(FakeClient(), FakeWriter(), pool, SimpleNamespace())
@@ -336,6 +437,36 @@ async def test_runtime_subscribes_next_when_pending_roll_exists_before_tick_wind
     }
 
     assert await runtime._should_subscribe_next(state) is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_resubscribes_when_client_lost_futures_ticker_after_reconnect():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def is_futures_contract_subscribed(self, symbol, con_id, *, role=None):
+            return False
+
+        async def subscribe_futures_contract(self, symbol, exchange, currency, identity, *, role):
+            self.calls.append((symbol, exchange, currency, identity["con_id"], role))
+            return {**identity, "symbol": symbol, "role": role}
+
+    client = FakeClient()
+    runtime = LiveFuturesRuntime(client, FakeWriter(), FakePool(), SimpleNamespace())
+    state = LiveFuturesState("N225M", "OSE.JPN", "JPY")
+    state.active = {
+        "symbol": "N225M",
+        "con_id": 123,
+        "contract_month": "202609",
+        "last_trade_date": datetime.now(timezone.utc).date() + timedelta(days=90),
+    }
+    state.subscribed[123] = "active"
+
+    await runtime._ensure_subscribed(state, state.active, "active")
+
+    assert client.calls == [("N225M", "OSE.JPN", "JPY", 123, "active")]
+    assert state.subscribed[123] == "active"
 
 
 @pytest.mark.asyncio

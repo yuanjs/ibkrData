@@ -211,7 +211,14 @@ class LiveFuturesRuntime:
         role: str,
     ) -> None:
         con_id = int(identity["con_id"])
-        if state.subscribed.get(con_id) == role:
+        if (
+            state.subscribed.get(con_id) == role
+            and self.client.is_futures_contract_subscribed(
+                state.symbol,
+                con_id,
+                role=role,
+            )
+        ):
             return
         subscribed = await self.client.subscribe_futures_contract(
             state.symbol,

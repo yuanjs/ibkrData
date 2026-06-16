@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from db import get_pool, close_pool
-from websocket import manager, redis_forwarder, ws_market, ws_account, ws_orders, ws_tick, ws_gateway_map, ws_futures_roll_state
+from websocket import manager, redis_forwarder, ws_market, ws_account, ws_orders, ws_tick, ws_gateway_map, ws_futures_roll_state, ws_futures_minute_complete
 from routers import symbols, history, futures, account, orders, settings, gateway
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(redis_forwarder("order:update"), name="fwd_orders"),
         asyncio.create_task(redis_forwarder("gateway:map:update"), name="fwd_gateway_map"),
         asyncio.create_task(redis_forwarder("futures:roll-state:"), name="fwd_futures_roll_state"),
+        asyncio.create_task(redis_forwarder("futures:minute-complete:"), name="fwd_futures_minute_complete"),
     ]
 
     yield
@@ -62,3 +63,4 @@ app.add_api_websocket_route("/ws/orders", ws_orders)
 app.add_api_websocket_route("/ws/tick", ws_tick)
 app.add_api_websocket_route("/ws/gateway/map", ws_gateway_map)
 app.add_api_websocket_route("/ws/futures/roll-state", ws_futures_roll_state)
+app.add_api_websocket_route("/ws/futures/minute-complete", ws_futures_minute_complete)

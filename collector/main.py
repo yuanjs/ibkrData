@@ -138,6 +138,7 @@ class TickBuffer:
         self._buffer = []
         self._futures_buffer = []
         self._futures_minute_bars = {}
+        self._futures_minute_complete_bars = {}
         self._lock = asyncio.Lock()
 
     def add_tick(self, symbol, price=None, size=None, tick_time=None):
@@ -164,8 +165,15 @@ class TickBuffer:
         }
         self._futures_buffer.append(normalized)
         self._update_futures_minute_bar(normalized)
+        self._update_futures_minute_complete_bar(normalized)
 
     def _update_futures_minute_bar(self, tick: dict):
+        self._update_minute_bar_store(self._futures_minute_bars, tick)
+
+    def _update_futures_minute_complete_bar(self, tick: dict):
+        self._update_minute_bar_store(self._futures_minute_complete_bars, tick)
+
+    def _update_minute_bar_store(self, store: dict, tick: dict):
         price = tick.get("last", tick.get("price"))
         tick_time = tick.get("time")
         con_id = tick.get("con_id")
@@ -174,12 +182,13 @@ class TickBuffer:
         bucket = tick_time.replace(second=0, microsecond=0)
         key = (tick["symbol"], int(con_id), bucket)
         size = tick.get("volume", tick.get("size")) or 0
-        bar = self._futures_minute_bars.get(key)
+        bar = store.get(key)
         if bar is None:
-            self._futures_minute_bars[key] = {
+            store[key] = {
                 "time": bucket,
                 "symbol": tick["symbol"],
                 "con_id": int(con_id),
+                "role": tick.get("role"),
                 "local_symbol": tick.get("local_symbol"),
                 "trading_class": tick.get("trading_class"),
                 "contract_month": tick.get("contract_month"),
@@ -201,6 +210,27 @@ class TickBuffer:
         bar["close"] = price
         bar["volume"] = (bar.get("volume") or 0) + size
         bar["bar_count"] = (bar.get("bar_count") or 0) + 1
+
+    def pop_completed_futures_minute_bars(self, reference_time: datetime | None = None) -> list[dict]:
+        """Return and remove finalized minute bars strictly before the reference minute."""
+        if not self._futures_minute_complete_bars:
+            return []
+
+        if reference_time is None:
+            reference_time = datetime.now(timezone.utc)
+        reference_bucket = reference_time.replace(second=0, microsecond=0)
+        completed = []
+        for key, bar in list(self._futures_minute_complete_bars.items()):
+            if bar["time"] < reference_bucket:
+                completed.append({
+                    **bar,
+                    "bar_start": bar["time"],
+                    "bar_end": bar["time"] + timedelta(seconds=59, microseconds=999000),
+                })
+                del self._futures_minute_complete_bars[key]
+
+        completed.sort(key=lambda item: (item["symbol"], item["con_id"], item["time"]))
+        return completed
 
     async def flush(self):
         """Async flush to database."""
@@ -224,6 +254,22 @@ class TickBuffer:
             await self.writer.write_futures_ticks(futures_rows)
         if futures_minute_rows:
             await self.writer.upsert_futures_minute_bars_from_live(futures_minute_rows)
+
+
+def should_publish_live_tick(payload_or_symbol) -> bool:
+    """Only expose active futures ticks on the shared symbol-level tick channel."""
+    if not isinstance(payload_or_symbol, dict):
+        return True
+    if payload_or_symbol.get("sec_type") != "FUT":
+        return True
+    return payload_or_symbol.get("role", "active") == "active"
+
+
+def should_publish_futures_minute_complete(bar: dict) -> bool:
+    """Only expose active-contract futures minute bars on the symbol-level channel."""
+    if not isinstance(bar, dict):
+        return True
+    return bar.get("role", "active") == "active"
 
 
 async def load_subscriptions(pool):
@@ -578,6 +624,21 @@ async def tick_flush_loop(tick_buffer):
             logger.error(f"Tick buffer flush error: {e}")
 
 
+async def futures_minute_complete_loop(tick_buffer, pub):
+    """Publish completed futures minute bars when no next-minute tick arrives."""
+    while True:
+        await asyncio.sleep(1)
+        try:
+            completed_bars = tick_buffer.pop_completed_futures_minute_bars()
+            for bar in completed_bars:
+                if should_publish_futures_minute_complete(bar):
+                    await pub.publish_futures_minute_complete(bar["symbol"], bar)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Futures minute-complete loop error: {e}")
+
+
 async def account_loop(client, writer, pub, interval, gateway="live", redis=None):
     first_fetch = True
     while True:
@@ -869,13 +930,22 @@ async def main():
     # 2) Track today's daily OHLCV from real-time ticks
     # 3) Publish each tick in real-time via Redis (for frontend live display)
     def on_trade_tick(*args):
+        publish_live_tick = True
         if len(args) == 1 and isinstance(args[0], dict):
             payload = args[0]
             symbol = payload["symbol"]
             price = payload.get("last", payload.get("price"))
             size = payload.get("volume", payload.get("size", 0))
             tick_time = payload["time"]
+            publish_live_tick = should_publish_live_tick(payload)
             tick_buffer.add_futures_tick(payload)
+            completed_bars = tick_buffer.pop_completed_futures_minute_bars(tick_time)
+            for bar in completed_bars:
+                if should_publish_futures_minute_complete(bar):
+                    t_complete = asyncio.ensure_future(
+                        pub.publish_futures_minute_complete(bar["symbol"], bar)
+                    )
+                    t_complete.add_done_callback(_on_task_done)
         else:
             symbol, price, size, tick_time = args
             # Buffer the raw tick for batch DB write
@@ -886,8 +956,9 @@ async def main():
         if symbol not in futures_symbol_set:
             daily_tracker.on_tick(symbol, price, size, tick_time)
         # Async publish for real-time frontend (fire-and-forget)
-        t = asyncio.ensure_future(pub.publish_tick(symbol, price, size, tick_time))
-        t.add_done_callback(_on_task_done)
+        if publish_live_tick:
+            t = asyncio.ensure_future(pub.publish_tick(symbol, price, size, tick_time))
+            t.add_done_callback(_on_task_done)
 
     client.register_tick_handler(on_trade_tick)
 
@@ -963,6 +1034,10 @@ async def main():
     tasks = [
         asyncio.create_task(tick_loop(client, pub), name="tick_loop"),
         asyncio.create_task(tick_flush_loop(tick_buffer), name="tick_flush"),
+        asyncio.create_task(
+            futures_minute_complete_loop(tick_buffer, pub),
+            name="futures_minute_complete",
+        ),
         asyncio.create_task(
             account_loop(client, writer, pub, ACCOUNT_REFRESH_INTERVAL,
                          gateway="live", redis=redis_client),

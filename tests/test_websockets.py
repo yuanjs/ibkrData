@@ -37,3 +37,13 @@ async def test_ws_orders_connection(api_base_url):
     async with websockets.connect(f"{ws_url}?token={token}") as ws:
         await asyncio.sleep(0.2)
         assert ws.state.name == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_ws_futures_minute_complete_connection(api_base_url):
+    ws_url = api_base_url.replace("http://", "ws://") + "/ws/futures/minute-complete"
+    token = os.getenv("JWT_TOKEN", "yuanjs666")
+
+    async with websockets.connect(f"{ws_url}?token={token}") as ws:
+        await asyncio.sleep(0.2)
+        assert ws.state.name == "OPEN"
