@@ -177,6 +177,57 @@ async def test_write_futures_ticks_uses_futures_ticks_shape():
 
 
 @pytest.mark.asyncio
+async def test_upsert_futures_minute_bars_from_live_merges_existing_bar():
+    pool = FakePool()
+    writer = DataWriter(pool)
+
+    await writer.upsert_futures_minute_bars_from_live([
+        {
+            "time": datetime(2026, 6, 16, 5, 54, tzinfo=timezone.utc),
+            "symbol": "SPI",
+            "con_id": 749811513,
+            "local_symbol": "APM6",
+            "trading_class": "AP",
+            "contract_month": "202606",
+            "last_trade_date": date(2026, 6, 19),
+            "exchange": "SNFE",
+            "currency": "AUD",
+            "multiplier": "25",
+            "open": 8915,
+            "high": 8916,
+            "low": 8915,
+            "close": 8916,
+            "volume": 2,
+            "bar_count": 2,
+        }
+    ])
+
+    assert "GREATEST(COALESCE(futures_minute_bars.high, EXCLUDED.high), EXCLUDED.high)" in pool.conn.sql
+    assert "LEAST(COALESCE(futures_minute_bars.low, EXCLUDED.low), EXCLUDED.low)" in pool.conn.sql
+    assert "COALESCE(futures_minute_bars.volume, 0) + COALESCE(EXCLUDED.volume, 0)" in pool.conn.sql
+    assert "COALESCE(futures_minute_bars.bar_count, 0) + COALESCE(EXCLUDED.bar_count, 0)" in pool.conn.sql
+    assert len(pool.conn.records) == 1
+    assert pool.conn.records[0][:16] == (
+        datetime(2026, 6, 16, 5, 54, tzinfo=timezone.utc),
+        "SPI",
+        749811513,
+        "APM6",
+        "AP",
+        "202606",
+        date(2026, 6, 19),
+        "SNFE",
+        "AUD",
+        "25",
+        8915.0,
+        8916.0,
+        8915.0,
+        8916.0,
+        2,
+        2,
+    )
+
+
+@pytest.mark.asyncio
 async def test_upsert_futures_contracts_uses_live_metadata_shape():
     pool = FakePool()
     writer = DataWriter(pool)

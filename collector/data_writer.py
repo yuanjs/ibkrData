@@ -259,12 +259,12 @@ class DataWriter:
                     "exchange=EXCLUDED.exchange,"
                     "currency=EXCLUDED.currency,"
                     "multiplier=EXCLUDED.multiplier,"
-                    "open=EXCLUDED.open,"
-                    "high=EXCLUDED.high,"
-                    "low=EXCLUDED.low,"
+                    "open=COALESCE(futures_minute_bars.open, EXCLUDED.open),"
+                    "high=GREATEST(COALESCE(futures_minute_bars.high, EXCLUDED.high), EXCLUDED.high),"
+                    "low=LEAST(COALESCE(futures_minute_bars.low, EXCLUDED.low), EXCLUDED.low),"
                     "close=EXCLUDED.close,"
-                    "volume=EXCLUDED.volume,"
-                    "bar_count=EXCLUDED.bar_count",
+                    "volume=COALESCE(futures_minute_bars.volume, 0) + COALESCE(EXCLUDED.volume, 0),"
+                    "bar_count=COALESCE(futures_minute_bars.bar_count, 0) + COALESCE(EXCLUDED.bar_count, 0)",
                     records,
                 )
         except Exception as e:
