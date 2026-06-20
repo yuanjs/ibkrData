@@ -93,6 +93,17 @@ SESSION_BOUNDARIES = {
     "HG": SessionBoundary("America/New_York", time(17, 0)),
 }
 
+QUARTERLY_MONTHS = frozenset({"03", "06", "09", "12"})
+ROLL_CONTRACT_MONTHS = {
+    "SPI": QUARTERLY_MONTHS,
+    "MYM": QUARTERLY_MONTHS,
+    "MNQ": QUARTERLY_MONTHS,
+    "MES": QUARTERLY_MONTHS,
+    "N225M": QUARTERLY_MONTHS,
+    "10Y": QUARTERLY_MONTHS,
+    "ZC": frozenset({"03", "05", "07", "09", "12"}),
+}
+
 
 def subtract_trading_days(d: date, days: int) -> date:
     current = d
@@ -127,6 +138,15 @@ def session_start_time_utc(symbol: str, session_date: date) -> datetime:
         tzinfo=ZoneInfo(boundary.timezone_name),
     )
     return local_dt.astimezone(timezone.utc)
+
+
+def is_roll_contract_month(symbol: str, contract_month: str | None) -> bool:
+    months = ROLL_CONTRACT_MONTHS.get(symbol)
+    if not months:
+        return True
+    if not contract_month or len(contract_month) < 6:
+        return False
+    return contract_month[4:6] in months
 
 
 def choose_roll_candidate(
@@ -435,6 +455,7 @@ class RollCalendarGenerator:
                 max_time=r["max_time"],
             )
             for r in rows
+            if is_roll_contract_month(r["symbol"], r["contract_month"])
         ]
 
     async def _load_live_contracts(self, symbol: str) -> list[ContractSummary]:
@@ -472,6 +493,7 @@ class RollCalendarGenerator:
                 max_time=r["max_time"],
             )
             for r in rows
+            if is_roll_contract_month(r["symbol"], r["contract_month"])
         ]
 
     async def _generate_pair(

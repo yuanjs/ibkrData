@@ -7,6 +7,7 @@ from backfiller.roll_calendar import (
     choose_roll_candidate,
     choose_volume_safety_candidate,
     default_fallback_roll_date,
+    is_roll_contract_month,
     next_weekday,
     session_start_time_utc,
     subtract_trading_days,
@@ -212,3 +213,9 @@ def test_session_start_time_utc_uses_exchange_timezone():
         10,
         tzinfo=timezone.utc,
     )
+
+
+def test_is_roll_contract_month_filters_spi_to_quarterly_months():
+    assert is_roll_contract_month("SPI", "202606") is True
+    assert is_roll_contract_month("SPI", "202607") is False
+    assert is_roll_contract_month("SPI", "202609") is True

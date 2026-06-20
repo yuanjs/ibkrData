@@ -66,12 +66,15 @@ class FakeConn:
         self.sql = None
         self.records = None
         self.fetchrow_result = None
+        self.fetchrow_results = []
 
     async def executemany(self, sql, records):
         self.sql = sql
         self.records = records
 
     async def fetchrow(self, *args):
+        if self.fetchrow_results:
+            return self.fetchrow_results.pop(0)
         return self.fetchrow_result
 
 
@@ -83,7 +86,7 @@ class FakePool:
         return FakeAcquire(self.conn)
 
     async def fetchrow(self, *args):
-        return self.conn.fetchrow_result
+        return await self.conn.fetchrow(*args)
 
 
 @pytest.mark.asyncio
@@ -520,6 +523,71 @@ async def test_runtime_filters_spi_to_quarterly_contracts_for_next_selection():
     state = runtime.states["SPI"]
     assert [c["contract_month"] for c in state.contracts] == ["202606", "202609"]
     assert state.next["local_symbol"] == "APU6"
+
+
+@pytest.mark.asyncio
+async def test_runtime_promotes_next_when_expiry_day_active_ticks_are_stale():
+    class FakeClient:
+        def __init__(self):
+            self.roles = {}
+            self.unsubscribed = []
+
+        def is_futures_contract_subscribed(self, symbol, con_id, *, role=None):
+            current = self.roles.get((symbol, con_id))
+            return current == role if role else current is not None
+
+        async def subscribe_futures_contract(self, symbol, exchange, currency, identity, *, role):
+            self.roles[(symbol, identity["con_id"])] = role
+            return {**identity, "symbol": symbol, "role": role}
+
+        def unsubscribe_futures_contract(self, symbol, con_id):
+            self.unsubscribed.append((symbol, con_id))
+            self.roles.pop((symbol, con_id), None)
+
+    class FakePub:
+        def __init__(self):
+            self.roll_states = []
+
+        async def publish_futures_roll_state(self, symbol, data):
+            self.roll_states.append((symbol, data))
+
+    pool = FakePool()
+    now = datetime.now(timezone.utc)
+    pool.conn.fetchrow_results = [
+        {
+            "active_last_tick": now - timedelta(minutes=30),
+            "next_last_tick": now - timedelta(seconds=10),
+        }
+    ]
+    client = FakeClient()
+    pub = FakePub()
+    runtime = LiveFuturesRuntime(client, FakeWriter(), pool, pub)
+    state = LiveFuturesState("SPI", "SNFE", "AUD")
+    state.active = {
+        "symbol": "SPI",
+        "con_id": 1,
+        "contract_month": "202606",
+        "local_symbol": "APM6",
+        "last_trade_date": now.date(),
+    }
+    state.next = {
+        "symbol": "SPI",
+        "con_id": 2,
+        "contract_month": "202609",
+        "local_symbol": "APU6",
+        "last_trade_date": now.date() + timedelta(days=90),
+    }
+    state.subscribed[1] = "active"
+    state.subscribed[2] = "candidate"
+    client.roles[("SPI", 1)] = "active"
+    client.roles[("SPI", 2)] = "candidate"
+
+    await runtime._promote_next_if_active_stale(state)
+
+    assert state.active["con_id"] == 2
+    assert client.roles[("SPI", 2)] == "active"
+    assert client.unsubscribed == [("SPI", 1)]
+    assert pub.roll_states[0][0] == "SPI"
 
 
 @pytest.mark.asyncio

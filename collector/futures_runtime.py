@@ -10,6 +10,8 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+ACTIVE_STALE_PROMOTION_SECONDS = 300
+
 QUARTERLY_MONTHS = frozenset({"03", "06", "09", "12"})
 LIVE_CONTRACT_MONTHS = {
     "SPI": QUARTERLY_MONTHS,
@@ -149,6 +151,7 @@ class LiveFuturesRuntime:
 
             if state.next and await self._should_subscribe_next(state):
                 await self._ensure_subscribed(state, state.next, "candidate")
+                await self._promote_next_if_active_stale(state)
 
     async def refresh_daily_bars(self) -> None:
         for state in self.states.values():
@@ -250,6 +253,74 @@ class LiveFuturesRuntime:
                 "time": datetime.now(timezone.utc),
             },
         )
+
+    async def _promote_next_if_active_stale(self, state: LiveFuturesState) -> None:
+        """Promote next contract on expiry day when the active contract stops ticking.
+
+        Some contracts stop trading intraday while their last_trade_date is still
+        today's UTC date.  The as-of roll state can therefore lag until the next
+        calendar day; live ticks should follow the contract that is actually
+        producing current market data.
+        """
+        if not state.active or not state.next:
+            return
+
+        active_last_trade_date = state.active.get("last_trade_date")
+        today = datetime.now(timezone.utc).date()
+        if active_last_trade_date is None or active_last_trade_date > today:
+            return
+
+        active_con_id = int(state.active.get("con_id") or 0)
+        next_con_id = int(state.next.get("con_id") or 0)
+        if not active_con_id or not next_con_id:
+            return
+
+        row = await self.pool.fetchrow(
+            """
+            SELECT
+                (SELECT max(time) FROM futures_ticks WHERE symbol = $1 AND con_id = $2) AS active_last_tick,
+                (SELECT max(time) FROM futures_ticks WHERE symbol = $1 AND con_id = $3) AS next_last_tick
+            """,
+            state.symbol,
+            active_con_id,
+            next_con_id,
+        )
+        if not row:
+            return
+
+        active_last_tick = row.get("active_last_tick")
+        next_last_tick = row.get("next_last_tick")
+        if next_last_tick is None:
+            return
+
+        now = datetime.now(timezone.utc)
+        if next_last_tick.tzinfo is None:
+            next_last_tick = next_last_tick.replace(tzinfo=timezone.utc)
+        if (now - next_last_tick).total_seconds() > ACTIVE_STALE_PROMOTION_SECONDS:
+            return
+
+        active_is_stale = active_last_tick is None
+        if active_last_tick is not None:
+            if active_last_tick.tzinfo is None:
+                active_last_tick = active_last_tick.replace(tzinfo=timezone.utc)
+            active_is_stale = (
+                (now - active_last_tick).total_seconds() > ACTIVE_STALE_PROMOTION_SECONDS
+                and next_last_tick > active_last_tick
+            )
+
+        if not active_is_stale:
+            return
+
+        logger.info(
+            "Promoting %s next contract %s because active conId=%s is stale "
+            "(active_last_tick=%s, next_last_tick=%s)",
+            state.symbol,
+            state.next.get("con_id"),
+            active_con_id,
+            active_last_tick,
+            next_last_tick,
+        )
+        await self._promote_active(state, state.next)
 
     async def _should_subscribe_next(self, state: LiveFuturesState) -> bool:
         if not state.active or not state.next:
