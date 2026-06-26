@@ -1,9 +1,35 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { QuoteTable } from '../components/QuoteTable'
 import { CandleChart } from '../components/CandleChart'
 import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
 import { aggregateCandles, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../utils/chartData'
+
+function getHistoryLookbackHours(interval: string) {
+  if (interval.endsWith('s')) return 6
+  if (interval === '1m') return 24 * 30
+  if (interval.endsWith('m')) return 24 * 90
+  if (interval.endsWith('h')) return 24 * 180
+  if (interval === '1d') return 24 * 365
+  if (interval === '1w') return 24 * 365 * 2
+  return 24
+}
+
+function getInitialHistoryLookbackHours(interval: string) {
+  if (interval.endsWith('s')) return 6
+  if (interval === '1m') return 6
+  if (interval.endsWith('m')) return 24 * 7
+  if (interval.endsWith('h')) return 24 * 14
+  return getHistoryLookbackHours(interval)
+}
+
+function dedupeAndSortCandles(rows: CandleLike[]) {
+  const byTime = new Map<number, CandleLike>()
+  for (const row of rows) {
+    byTime.set(Number(row.time), row)
+  }
+  return Array.from(byTime.values()).sort((a, b) => Number(a.time) - Number(b.time))
+}
 
 export function Monitor() {
   const activeSymbol = useMarketStore(s => s.activeSymbol)
@@ -27,6 +53,7 @@ export function Monitor() {
   const [candles, setCandles] = useState<any[]>([])
   const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const historyRequestIdRef = useRef(0)
 
   const initQuotes = useMarketStore(s => s.initQuotes)
 
@@ -39,41 +66,53 @@ export function Monitor() {
   }, [initQuotes])
 
   const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
+    const requestId = ++historyRequestIdRef.current
+    const end = new Date()
+    const totalHours = getHistoryLookbackHours(inv)
+    const initialHours = Math.min(getInitialHistoryLookbackHours(inv), totalHours)
+    const totalStart = new Date(end.getTime() - totalHours * 3600 * 1000)
+    const initialStart = new Date(end.getTime() - initialHours * 3600 * 1000)
+
+    const fetchRange = async (start: Date, rangeEnd: Date) => {
+      if (isFutures) {
+        if (inv === '1d') {
+          return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted', true)
+        }
+        return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', end.toISOString())
+      }
+      return api.get<{ time: string, open: number, high: number, low: number, close: number }[]>(
+        `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}`
+      )
+    }
+
+    const normalizeRows = (rows: CandleLike[]) => {
+      const chartRows = isFutures && inv !== '1d' ? aggregateCandles(rows, inv) : rows
+      return dedupeAndSortCandles(normalizeCandles(chartRows, inv))
+    }
+
     try {
       setError(null)
-      const end = new Date()
-      // Fetch appropriate window for each interval
-      let hours = 24
-      if (inv.endsWith('s') || inv === '1m') hours = 6
-      else if (inv === '1d') hours = 24 * 365
-      else if (inv === '1w') hours = 24 * 365 * 2
-      else if (inv.endsWith('m')) hours = 24 * 7
-      else hours = 24 * 14
-
-      const start = new Date(end.getTime() - hours * 3600 * 1000)
 
       // For daily bars, extend end time by 1 day to include bars whose UTC noon
       // timestamp is in the future (e.g., today's post-roll-hour bar gets date_str
       // of tomorrow, with UTC noon as its time field).
       const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
 
-      let res: CandleLike[]
-      if (isFutures) {
-        if (inv === '1d') {
-          res = await futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted', true)
-        } else {
-          res = await futuresApi.minute(sym, start.toISOString(), queryEnd.toISOString(), 'active_raw', end.toISOString())
-        }
-      } else {
-        res = await api.get<{ time: string, open: number, high: number, low: number, close: number }[]>(
-          `/history/${sym}?start=${start.toISOString()}&end=${queryEnd.toISOString()}&interval=${inv}`
-        )
+      const recentRows = await fetchRange(initialStart, queryEnd)
+      if (historyRequestIdRef.current !== requestId) return
+      setCandles(normalizeRows(recentRows))
+
+      if (totalStart >= initialStart) return
+
+      try {
+        const olderRows = await fetchRange(totalStart, initialStart)
+        if (historyRequestIdRef.current !== requestId) return
+        setCandles(normalizeRows([...olderRows, ...recentRows]))
+      } catch (e) {
+        console.warn('Failed to fetch older chart history:', e)
       }
-      setCandles(normalizeCandles(
-        isFutures && inv !== '1d' ? aggregateCandles(res, inv) : res,
-        inv,
-      ))
     } catch (e: any) {
+      if (historyRequestIdRef.current !== requestId) return
       setError(e.message)
       setCandles([])
     }
@@ -114,9 +153,6 @@ export function Monitor() {
 
   const handleIntervalChange = (newInterval: string) => {
     setChartInterval(newInterval)
-    if (activeSymbol) {
-      fetchHistory(activeSymbol, newInterval, isActiveFutures)
-    }
   }
 
   const contract = activeRollState?.active || activeContract
