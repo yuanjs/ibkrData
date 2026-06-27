@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { WebSocketProvider } from './components/WebSocketProvider'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { useMarketStore } from './store/marketStore'
 import { Monitor } from './pages/Monitor'
 import { Account } from './pages/Account'
@@ -134,13 +135,15 @@ export default function App() {
         </nav>
 
         <main className="flex-1 overflow-auto">
-          <Routes>
-            <Route path="/" element={<Monitor />} />
-            <Route path="/account" element={<Account />} />
-            <Route path="/orders" element={<Orders />} />
-            <Route path="/history" element={<History />} />
-            <Route path="/settings" element={<Settings />} />
-          </Routes>
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Monitor />} />
+              <Route path="/account" element={<Account />} />
+              <Route path="/orders" element={<Orders />} />
+              <Route path="/history" element={<History />} />
+              <Route path="/settings" element={<Settings />} />
+            </Routes>
+          </ErrorBoundary>
         </main>
       </div>
     </BrowserRouter>

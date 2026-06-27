@@ -5,32 +5,35 @@ import { useOrderStore } from '../store/orderStore'
 import { useMarketStore } from '../store/marketStore'
 import { getProductConfig, getSymbolDecimalPlaces } from '../config/productConfig'
 
+interface EquityPoint {
+  time: string
+  net_liquidation: number
+  daily_pnl?: number
+}
+
 export function Account() {
-  const activeGateway = useAccountStore(s => s.activeGateway)
-  const setActiveGateway = useAccountStore(s => s.setActiveGateway)
-  const hasPaper = useAccountStore(s => s.hasPaper)
-  const summary = useAccountStore(s => activeGateway === 'live' ? s.live.summary : s.paper.summary)
-  const positions = useAccountStore(s => activeGateway === 'live' ? s.live.positions : s.paper.positions)
-  const gatewayMap = useAccountStore(s => s.gatewayMap)
+  const connectedGateway = useAccountStore(s => s.connectedGateway)
+  const accountIds = useAccountStore(s => s.accountIds)
+  const summary = useAccountStore(s => s.summary)
+  const positions = useAccountStore(s => s.positions)
   const setGatewayMap = useAccountStore(s => s.setGatewayMap)
   const orders = useOrderStore(s => s.orders) as Array<Record<string, unknown>>
   const [closePending, setClosePending] = useState<{ closeId: string; symbol: string } | null>(null)
   const [closeMsg, setCloseMsg] = useState<string | null>(null)
+  const [equityDays, setEquityDays] = useState(30)
+  const [equityHistory, setEquityHistory] = useState<EquityPoint[]>([])
 
   // 加载 gateway map — 仅在 WebSocket 尚未推送时通过 HTTP 获取
   useEffect(() => {
-    if (Object.keys(gatewayMap).length === 0) {
-      api.get<Record<string, string[]>>('/gateway/map').then(setGatewayMap).catch(() => {})
-    }
-  }, [gatewayMap, setGatewayMap])
+    api.get<Record<string, unknown>>('/gateway/map').then(setGatewayMap).catch(() => {})
+  }, [setGatewayMap])
 
-  // 页面初始加载（store 在 gatewayMap 未到时自动放 live 显示）
+  // 页面初始加载；gatewayMap 到达后自动按 collector 当前 gateway 重新加载
   useEffect(() => {
-    const stored = useAccountStore.getState()
-    if (Object.keys(stored.live.summary).length > 0) return
+    const params = connectedGateway ? `?gateway=${connectedGateway}` : ''
     Promise.all([
-      api.get<Record<string, unknown>[]>('/account'),
-      api.get<Record<string, unknown>[]>('/positions'),
+      api.get<Record<string, unknown>[]>(`/account${params}`),
+      api.get<Record<string, unknown>[]>(`/positions${params}`),
     ]).then(([accounts, positions]) => {
       if (Array.isArray(accounts) && accounts.length) {
         useAccountStore.getState().setAccount({
@@ -39,7 +42,20 @@ export function Account() {
         })
       }
     }).catch(() => {})
-  }, [])
+  }, [connectedGateway])
+
+  useEffect(() => {
+    const end = new Date()
+    const start = new Date(end.getTime() - equityDays * 24 * 60 * 60 * 1000)
+    const params = new URLSearchParams({
+      start: start.toISOString(),
+      end: end.toISOString(),
+    })
+    if (connectedGateway) params.set('gateway', connectedGateway)
+    api.get<EquityPoint[]>(`/account/history?${params.toString()}`)
+      .then(rows => setEquityHistory(Array.isArray(rows) ? rows : []))
+      .catch(() => setEquityHistory([]))
+  }, [connectedGateway, equityDays])
 
   const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '-'
   const fmtPrice = (v: number | undefined, sym?: string) => {
@@ -154,6 +170,56 @@ export function Account() {
     <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', marginLeft: 3, verticalAlign: 'super' }}>⚡</span>
   )
 
+  const EquityChart = () => {
+    const width = 720
+    const height = 180
+    const pad = 24
+    const validRows = equityHistory.filter(p => Number.isFinite(Number(p.net_liquidation)))
+    const stride = Math.max(1, Math.ceil(validRows.length / 800))
+    const rows = validRows.filter((_, index) => index % stride === 0 || index === validRows.length - 1)
+    if (rows.length < 2) {
+      return (
+        <div className="h-[180px] flex items-center justify-center text-sm" style={{ color: 'var(--text-secondary)' }}>
+          暂无资金曲线数据
+        </div>
+      )
+    }
+    let min = Number(rows[0].net_liquidation)
+    let max = min
+    for (const row of rows) {
+      const value = Number(row.net_liquidation)
+      if (value < min) min = value
+      if (value > max) max = value
+    }
+    const span = max - min || 1
+    const points = rows.map((p, i) => {
+      const x = pad + (i / (rows.length - 1)) * (width - pad * 2)
+      const y = pad + ((max - Number(p.net_liquidation)) / span) * (height - pad * 2)
+      return `${x},${y}`
+    }).join(' ')
+    const first = rows[0]
+    const last = rows[rows.length - 1]
+    const change = Number(last.net_liquidation) - Number(first.net_liquidation)
+
+    return (
+      <div>
+        <div className="mb-2 flex items-center justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
+          <span>{new Date(first.time).toLocaleDateString()} - {new Date(last.time).toLocaleDateString()}</span>
+          <span className="font-mono" style={{ color: change >= 0 ? '#26a641' : '#d32f2f' }}>
+            {fmt(change)}
+          </span>
+        </div>
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-[180px] w-full" role="img" aria-label="账户资金曲线">
+          <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="var(--border)" />
+          <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="var(--border)" />
+          <polyline points={points} fill="none" stroke="#1a7f64" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+          <text x={pad} y={16} fill="var(--text-secondary)" fontSize="11">{fmt(max)}</text>
+          <text x={pad} y={height - 6} fill="var(--text-secondary)" fontSize="11">{fmt(min)}</text>
+        </svg>
+      </div>
+    )
+  }
+
   // Watch for close order result via WebSocket
   useEffect(() => {
     if (!closePending) return
@@ -187,7 +253,7 @@ export function Account() {
       setCloseMsg(null)
       const res = await api.post<{ close_id: string }>('/positions/close', {
         symbol,
-        gateway: activeGateway,
+        gateway: connectedGateway ?? 'live',
       })
       setClosePending({ closeId: res.close_id, symbol })
       setCloseMsg(`平仓指令已发送: ${symbol}`)
@@ -198,27 +264,24 @@ export function Account() {
 
   return (
     <div className="p-4 space-y-6">
-      {/* Gateway 切换标签 — 仅在有 paper 账户时显示 */}
-      {hasPaper && (
-        <div className="flex gap-2 mb-2">
-          <button onClick={() => setActiveGateway('live')}
-            className={`px-4 py-1.5 text-sm rounded ${
-              activeGateway === 'live'
-                ? 'bg-blue-600 text-white'
-                : 'text-[var(--text-secondary)] bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
-            }`}>
-            实盘
-          </button>
-          <button onClick={() => setActiveGateway('paper')}
-            className={`px-4 py-1.5 text-sm rounded ${
-              activeGateway === 'paper'
-                ? 'bg-blue-600 text-white'
-                : 'text-[var(--text-secondary)] bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
-            }`}>
-            模拟
-          </button>
+      <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-surface)' }}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Gateway</span>
+          <span className="font-mono text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            {connectedGateway ?? '-'}
+          </span>
         </div>
-      )}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {accountIds.length > 0 ? accountIds.map(id => (
+            <span key={id} className="rounded px-2 py-1 font-mono text-xs"
+              style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-primary)' }}>
+              {id}
+            </span>
+          )) : (
+            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>暂无 account_id</span>
+          )}
+        </div>
+      </div>
 
       {closeMsg && (
         <div className="px-4 py-2 rounded text-sm"
@@ -242,6 +305,21 @@ export function Account() {
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-surface)' }}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm" style={{ color: 'var(--text-secondary)' }}>账户资金曲线</h2>
+          <div className="flex gap-2">
+            {[7, 30, 90].map(days => (
+              <button key={days} onClick={() => setEquityDays(days)}
+                className={`rounded px-3 py-1 text-xs ${equityDays === days ? 'bg-blue-600 text-white' : 'text-[var(--text-secondary)] bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'}`}>
+                {days}天
+              </button>
+            ))}
+          </div>
+        </div>
+        <EquityChart />
       </div>
 
       <div className="overflow-x-auto">

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -16,6 +17,84 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
 # Allowed status filter values
 _OPEN_STATUSES = ("Filled", "Cancelled", "Inactive")
+
+
+def _num(value) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    return Decimal(str(value))
+
+
+def _mult(value) -> Decimal:
+    try:
+        m = _num(value)
+        return m if m > 0 else Decimal("1")
+    except Exception:
+        return Decimal("1")
+
+
+def _contract_key(row: dict) -> tuple:
+    return (
+        row.get("account_id"),
+        row.get("symbol"),
+        row.get("con_id"),
+        row.get("local_symbol"),
+    )
+
+
+def _execution_sign(side: str | None) -> int:
+    return 1 if side == "BOT" else -1
+
+
+def _realized_pnl_rows(rows: list[dict]) -> list[dict]:
+    lots: dict[tuple, list[dict]] = {}
+    realized: list[dict] = []
+
+    for row in rows:
+        key = _contract_key(row)
+        side = row.get("side")
+        sign = _execution_sign(side)
+        remaining = _num(row.get("quantity"))
+        price = _num(row.get("price"))
+        multiplier = _mult(row.get("multiplier"))
+        commission = _num(row.get("commission"))
+        open_lots = lots.setdefault(key, [])
+
+        while remaining > 0 and open_lots and open_lots[0]["sign"] != sign:
+            lot = open_lots[0]
+            close_qty = min(remaining, lot["quantity"])
+            if lot["sign"] > 0:
+                pnl = (price - lot["price"]) * close_qty * multiplier
+            else:
+                pnl = (lot["price"] - price) * close_qty * multiplier
+            commission_alloc = commission * (close_qty / _num(row.get("quantity"))) if row.get("quantity") else Decimal("0")
+            pnl -= commission_alloc
+
+            realized.append({
+                "time": row.get("time"),
+                "account_id": row.get("account_id"),
+                "symbol": row.get("symbol"),
+                "con_id": row.get("con_id"),
+                "local_symbol": row.get("local_symbol"),
+                "contract_month": row.get("contract_month"),
+                "side": side,
+                "quantity": float(close_qty),
+                "entry_price": float(lot["price"]),
+                "exit_price": float(price),
+                "realized_pnl": float(pnl),
+                "commission": float(commission_alloc),
+                "trade_count": 1,
+            })
+
+            remaining -= close_qty
+            lot["quantity"] -= close_qty
+            if lot["quantity"] <= 0:
+                open_lots.pop(0)
+
+        if remaining > 0:
+            open_lots.append({"quantity": remaining, "price": price, "sign": sign})
+
+    return sorted(realized, key=lambda r: r["time"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
 
 async def _gateway_account_ids(gateway: str) -> list[str]:
@@ -60,17 +139,17 @@ async def get_orders(status: str = "all", start: Optional[datetime] = None,
         where.append(f"status != ALL(${len(args)})")
     if start:
         args.append(start)
-        where.append(f"updated_at >= ${len(args)}")
+        where.append(f"created_at >= ${len(args)}")
     if end:
         args.append(end)
-        where.append(f"updated_at <= ${len(args)}")
+        where.append(f"created_at <= ${len(args)}")
     if gateway:
         ids = await _gateway_account_ids(gateway)
         if ids:
             args.append(ids)
             where.append(f"account_id = ANY(${len(args)})")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
-    rows = await pool.fetch(f"SELECT * FROM orders {clause} ORDER BY updated_at DESC LIMIT 500", *args)
+    rows = await pool.fetch(f"SELECT * FROM orders {clause} ORDER BY created_at DESC, updated_at DESC LIMIT 500", *args)
     return [dict(r) for r in rows]
 
 
@@ -113,23 +192,35 @@ async def export_trades(start: Optional[datetime] = None, end: Optional[datetime
 
 
 @router.get("/pnl")
-async def get_pnl(gateway: Optional[str] = None):
+async def get_pnl(start: Optional[datetime] = None, end: Optional[datetime] = None,
+                  symbol: Optional[str] = None, gateway: Optional[str] = None):
     pool = await get_pool()
-    query = """
-        SELECT symbol,
-               sum(quantity * price * CASE WHEN side='BOT' THEN -1 ELSE 1 END) AS realized_pnl,
-               count(*) AS trade_count
-        FROM executions
-    """
-    args = []
+    where, args = [], []
+    if end:
+        args.append(end)
+        where.append(f"time <= ${len(args)}")
+    if symbol:
+        args.append(symbol)
+        where.append(f"symbol = ${len(args)}")
     if gateway:
         ids = await _gateway_account_ids(gateway)
         if ids:
             args.append(ids)
-            query += " WHERE account_id = ANY($1)"
-    query += " GROUP BY symbol ORDER BY realized_pnl"
-    rows = await pool.fetch(query, *args)
-    return [dict(r) for r in rows]
+            where.append(f"account_id = ANY(${len(args)})")
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = await pool.fetch(
+        f"""
+        SELECT *
+        FROM executions
+        {clause}
+        ORDER BY account_id, symbol, con_id NULLS LAST, local_symbol NULLS LAST, time ASC
+        """,
+        *args,
+    )
+    realized = _realized_pnl_rows([dict(r) for r in rows])
+    if start:
+        realized = [r for r in realized if r["time"] and r["time"] >= start]
+    return realized
 
 
 @router.post("/positions/close")

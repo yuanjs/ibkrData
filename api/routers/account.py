@@ -37,12 +37,28 @@ async def get_account(gateway: str | None = None):
 
 
 @router.get("/account/history")
-async def get_account_history(start: datetime, end: datetime):
+async def get_account_history(start: datetime, end: datetime, gateway: str | None = None):
     pool = await get_pool()
+    args = [start, end]
+    where = "WHERE time BETWEEN $1 AND $2"
+    if gateway:
+        ids = await _gateway_account_ids(gateway)
+        if ids:
+            args.append(ids)
+            where += " AND account_id = ANY($3)"
     rows = await pool.fetch(
-        "SELECT time, account_id, net_liquidation, daily_pnl FROM account_snapshots "
-        "WHERE time BETWEEN $1 AND $2 ORDER BY time",
-        start, end
+        "WITH latest AS ("
+        "  SELECT DISTINCT ON (bucket, account_id) "
+        "         bucket, account_id, net_liquidation, daily_pnl "
+        "  FROM ("
+        "    SELECT time_bucket('1 day', time) AS bucket, time, account_id, net_liquidation, daily_pnl "
+        f"    FROM account_snapshots {where}"
+        "  ) snapshots "
+        "  ORDER BY bucket, account_id, time DESC"
+        ") "
+        "SELECT bucket AS time, sum(net_liquidation) AS net_liquidation, sum(daily_pnl) AS daily_pnl "
+        "FROM latest GROUP BY bucket ORDER BY bucket",
+        *args
     )
     return [dict(r) for r in rows]
 

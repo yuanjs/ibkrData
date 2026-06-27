@@ -964,6 +964,14 @@ async def main():
 
     await client.connect_with_retry()
 
+    # 同步历史成交（连接前已完成但未入库的记录），避免订单页/盈亏页落后于 IBKR。
+    try:
+        fills = await client.ib.reqExecutionsAsync()
+        await writer.sync_executions(fills)
+        logger.info(f"Synced {len(fills)} historical executions for live account")
+    except Exception as e:
+        logger.warning(f"Failed to sync live execution history: {e}")
+
     futures_runtime = LiveFuturesRuntime(client, writer, pool, pub)
     await futures_runtime.refresh_contracts(symbols)
     await futures_runtime.ensure_market_data()
