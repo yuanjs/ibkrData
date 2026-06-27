@@ -6,12 +6,19 @@ import { useOrderStore } from '../store/orderStore'
 
 type GatewayFilter = '' | 'live' | 'paper'
 
+const formatNumber = (value: unknown, decimals?: number, fallback = '-') => {
+  const num = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(num) ? num.toFixed(decimals) : fallback
+}
+
 export function Orders() {
   const [orders, setOrders] = useState<unknown[]>([])
   const [trades, setTrades] = useState<unknown[]>([])
   const [tab, setTab] = useState<'orders' | 'trades' | 'pnl'>('orders')
   const [pnl, setPnl] = useState<unknown[]>([])
   const [gateway, setGateway] = useState<GatewayFilter>('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const gatewayMap = useAccountStore(s => s.gatewayMap)
   const setGatewayMap = useAccountStore(s => s.setGatewayMap)
@@ -27,9 +34,22 @@ export function Orders() {
 
   const fetchData = useCallback(() => {
     const params = gateway ? `?gateway=${gateway}` : ''
-    api.get(`/orders${params}`).then(d => { if (Array.isArray(d)) setOrders(d) })
-    api.get(`/trades${params}`).then(d => { if (Array.isArray(d)) setTrades(d) })
-    api.get(`/pnl${params}`).then(d => { if (Array.isArray(d)) setPnl(d) })
+    setLoading(true)
+    setError(null)
+    Promise.all([
+      api.get(`/orders${params}`),
+      api.get(`/trades${params}`),
+      api.get(`/pnl${params}`),
+    ])
+      .then(([ordersData, tradesData, pnlData]) => {
+        setOrders(Array.isArray(ordersData) ? ordersData : [])
+        setTrades(Array.isArray(tradesData) ? tradesData : [])
+        setPnl(Array.isArray(pnlData) ? pnlData : [])
+      })
+      .catch(err => {
+        setError(err instanceof Error ? err.message : '订单数据加载失败')
+      })
+      .finally(() => setLoading(false))
   }, [gateway])
 
   useEffect(() => { fetchData() }, [fetchData])
@@ -112,6 +132,16 @@ export function Orders() {
 
       <GatewayTabs />
 
+      {error && (
+        <div className="mb-3 rounded border px-3 py-2 text-sm" style={{ borderColor: '#d32f2f', color: '#d32f2f', backgroundColor: 'var(--bg-raised)' }}>
+          {error}
+        </div>
+      )}
+
+      {loading && (
+        <div className="mb-3 text-sm" style={{ color: 'var(--text-secondary)' }}>加载中...</div>
+      )}
+
       {tab === 'orders' && (
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[550px] md:min-w-0">
@@ -128,10 +158,14 @@ export function Orders() {
                 </td>
                 <td className="py-2 px-3" style={{ color: o.action === 'BUY' ? '#26a641' : '#d32f2f' }}>{o.action as string}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{o.quantity as number}</td>
-                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{(o.limit_price as number)?.toFixed(getSymbolDecimalPlaces(o.symbol as string)) ?? '-'}</td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{formatNumber(o.limit_price, getSymbolDecimalPlaces(o.symbol as string))}</td>
                 <td className="py-2 px-3" style={{ color: 'var(--text-secondary)' }}>{o.status as string}</td>
               </tr>
-            ))}</tbody>
+            ))}
+              {!loading && orders.length === 0 && (
+                <tr><td colSpan={5} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无订单数据</td></tr>
+              )}
+            </tbody>
           </table>
         </div>
       )}
@@ -153,10 +187,14 @@ export function Orders() {
                 </td>
                 <td className="py-2 px-3" style={{ color: t.side === 'BOT' ? '#26a641' : '#d32f2f' }}>{t.side as string}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{t.quantity as number}</td>
-                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{(t.price as number)?.toFixed(getSymbolDecimalPlaces(t.symbol as string))}</td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{formatNumber(t.price, getSymbolDecimalPlaces(t.symbol as string))}</td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{t.commission as number}</td>
               </tr>
-            ))}</tbody>
+            ))}
+              {!loading && trades.length === 0 && (
+                <tr><td colSpan={6} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无成交数据</td></tr>
+              )}
+            </tbody>
           </table>
         </div>
       )}
@@ -173,11 +211,15 @@ export function Orders() {
               <tr key={i} className="border-b" style={{ borderColor: 'var(--border-light)' }}>
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{p.symbol as string}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: (p.realized_pnl as number) >= 0 ? '#26a641' : '#d32f2f' }}>
-                  {(p.realized_pnl as number)?.toFixed(2)}
+                  {formatNumber(p.realized_pnl, 2)}
                 </td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{p.trade_count as number}</td>
               </tr>
-            ))}</tbody>
+            ))}
+              {!loading && pnl.length === 0 && (
+                <tr><td colSpan={3} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无盈亏数据</td></tr>
+              )}
+            </tbody>
           </table>
         </div>
       )}
