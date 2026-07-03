@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+import asyncpg
 from fastapi import APIRouter, Depends
 from db import get_pool
 from auth import require_auth
@@ -40,19 +41,38 @@ async def get_account(gateway: str | None = None):
 async def get_account_history(start: datetime, end: datetime, gateway: str | None = None):
     pool = await get_pool()
     args = [start, end]
-    where = "WHERE time BETWEEN $1 AND $2"
+    ids = None
     if gateway:
         ids = await _gateway_account_ids(gateway)
         if ids:
             args.append(ids)
-            where += " AND account_id = ANY($3)"
+
+    daily_where = "WHERE bucket BETWEEN time_bucket('1 day', $1::timestamptz) AND $2"
+    if ids:
+        daily_where += " AND account_id = ANY($3)"
+    try:
+        rows = await pool.fetch(
+            "SELECT bucket AS time, "
+            "       sum(net_liquidation) AS net_liquidation, "
+            "       sum(daily_pnl) AS daily_pnl "
+            f"FROM account_daily_snapshots {daily_where} "
+            "GROUP BY bucket ORDER BY bucket",
+            *args
+        )
+        return [dict(r) for r in rows]
+    except asyncpg.UndefinedTableError:
+        pass
+
+    raw_where = "WHERE time BETWEEN $1 AND $2"
+    if ids:
+        raw_where += " AND account_id = ANY($3)"
     rows = await pool.fetch(
         "WITH latest AS ("
         "  SELECT DISTINCT ON (bucket, account_id) "
         "         bucket, account_id, net_liquidation, daily_pnl "
         "  FROM ("
         "    SELECT time_bucket('1 day', time) AS bucket, time, account_id, net_liquidation, daily_pnl "
-        f"    FROM account_snapshots {where}"
+        f"    FROM account_snapshots {raw_where}"
         "  ) snapshots "
         "  ORDER BY bucket, account_id, time DESC"
         ") "

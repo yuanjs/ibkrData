@@ -62,6 +62,8 @@ CREATE TABLE account_snapshots (
     realized_pnl        NUMERIC(16,2)
 );
 SELECT create_hypertable('account_snapshots', 'time');
+CREATE INDEX IF NOT EXISTS idx_account_snapshots_account_time
+    ON account_snapshots (account_id, time DESC);
 
 -- 持仓表
 CREATE TABLE positions (
@@ -189,6 +191,31 @@ SELECT
     sum(volume)        AS volume
 FROM ticks
 GROUP BY bucket, symbol;
+
+-- 账户日级资金曲线聚合
+CREATE MATERIALIZED VIEW account_daily_snapshots
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 day', time) AS bucket,
+    account_id,
+    last(net_liquidation, time) AS net_liquidation,
+    last(daily_pnl, time) AS daily_pnl
+FROM account_snapshots
+GROUP BY bucket, account_id
+WITH NO DATA;
+
+ALTER MATERIALIZED VIEW account_daily_snapshots
+    SET (timescaledb.materialized_only = false);
+
+CREATE INDEX IF NOT EXISTS idx_account_daily_snapshots_account_bucket
+    ON account_daily_snapshots (account_id, bucket DESC);
+
+SELECT add_continuous_aggregate_policy(
+    'account_daily_snapshots',
+    start_offset => INTERVAL '180 days',
+    end_offset => INTERVAL '1 minute',
+    schedule_interval => INTERVAL '5 minutes'
+);
 
 -- 数据保留策略 (延长至365天以支持长期回测)
 SELECT add_retention_policy('ticks', INTERVAL '365 days');
