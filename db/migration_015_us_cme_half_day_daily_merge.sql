@@ -1,27 +1,15 @@
--- IBKR Data System - Migration 008: Exchange-calendar daily normalization
---
--- Upgrades futures_daily_bars_session_normalized from weekend/override logic
--- to exchange-calendar driven session mapping.  Raw futures_daily_bars remains
--- immutable.
+-- Merge the 2026-07-03 US CME Independence Day half-session into the
+-- following trading session for normalized futures daily bars.
 
-CREATE TABLE IF NOT EXISTS exchange_trading_days (
-    exchange_code  TEXT NOT NULL,
-    trading_date   DATE NOT NULL,
-    is_open        BOOLEAN NOT NULL,
-    reason         TEXT,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (exchange_code, trading_date)
-);
-
-CREATE INDEX IF NOT EXISTS idx_exchange_trading_days_open
-    ON exchange_trading_days (exchange_code, trading_date)
-    WHERE is_open;
-
-CREATE TABLE IF NOT EXISTS futures_daily_symbol_calendars (
-    symbol         TEXT PRIMARY KEY,
-    exchange_code  TEXT NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+INSERT INTO exchange_trading_days (
+    exchange_code, trading_date, is_open, reason
+)
+VALUES
+    ('US_CME', DATE '2026-07-03', FALSE, 'half_day_merge_next_session'),
+    ('US_CME', DATE '2026-07-06', TRUE, NULL)
+ON CONFLICT (exchange_code, trading_date) DO UPDATE SET
+    is_open = EXCLUDED.is_open,
+    reason = EXCLUDED.reason;
 
 CREATE OR REPLACE VIEW futures_daily_bars_session_normalized AS
 WITH mapped AS (

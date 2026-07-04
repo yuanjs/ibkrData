@@ -16,6 +16,11 @@ class CalendarDay:
     reason: str | None
 
 
+HALF_DAY_MERGE_NEXT_SESSION: dict[str, set[date]] = {
+    "US_CME": {date(2026, 7, 3)},
+}
+
+
 def observed(d: date) -> date:
     if d.weekday() == 5:
         return d - timedelta(days=1)
@@ -176,8 +181,14 @@ def generate_calendar(exchange_code: str, start: date, end: date) -> list[Calend
     d = start
     while d <= end:
         weekend = d.weekday() >= 5
-        reason = "weekend" if weekend else holidays.get(d)
-        days.append(CalendarDay(exchange_code, d, not weekend and d not in holidays, reason))
+        half_day_merge = d in HALF_DAY_MERGE_NEXT_SESSION.get(exchange_code, set())
+        reason = (
+            "weekend" if weekend else
+            "half_day_merge_next_session" if half_day_merge else
+            holidays.get(d)
+        )
+        is_open = not weekend and d not in holidays and not half_day_merge
+        days.append(CalendarDay(exchange_code, d, is_open, reason))
         d += timedelta(days=1)
     return days
 

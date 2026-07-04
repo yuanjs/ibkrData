@@ -34,6 +34,15 @@ def test_us_cme_holidays_include_good_friday_and_christmas():
     assert holidays[date(2025, 12, 25)] == "christmas"
 
 
+def test_generate_calendar_marks_us_cme_20260703_half_day_for_merge():
+    days = generate_calendar("US_CME", date(2026, 7, 3), date(2026, 7, 6))
+    by_date = {d.trading_date: d for d in days}
+
+    assert by_date[date(2026, 7, 3)].is_open is False
+    assert by_date[date(2026, 7, 3)].reason == "half_day_merge_next_session"
+    assert by_date[date(2026, 7, 6)].is_open is True
+
+
 def test_generate_calendar_marks_weekends_and_holidays_closed():
     days = generate_calendar("AU_ASX", date(2025, 4, 18), date(2025, 4, 22))
     by_date = {d.trading_date: d for d in days}

@@ -162,6 +162,11 @@ class TestEffectiveDateStr:
             == "20251226"
         )
 
+    def test_us_cme_20260703_half_day_maps_to_following_monday(self):
+        trading_days = {"20260703", "20260706"}
+        t = dt(2026, 7, 3, 10, 0)
+        assert _effective_date_str(t, "MES", trading_days) == "20260706"
+
 
 # ── DailyBarTracker ───────────────────────────────────────────────────────────
 
@@ -180,6 +185,20 @@ class TestDailyBarTracker:
         tracker.on_tick("MYM", 100.0, 1.0, t)
         bars = tracker.get_dirty_bars()
         assert bars[0]["date_str"] == "20251226"
+
+    def test_us_cme_20260703_half_day_merges_into_monday_bar(self):
+        tracker = DailyBarTracker()
+        tracker.trading_days["MES"] = {"20260703", "20260706"}
+
+        tracker.on_tick("MES", 100.0, 1.0, dt(2026, 7, 3, 10, 0))
+        tracker.on_tick("MES", 110.0, 2.0, dt(2026, 7, 6, 10, 0))
+
+        bars = tracker.get_dirty_bars()
+        assert bars[0]["date_str"] == "20260706"
+        assert bars[0]["open"] == 100.0
+        assert bars[0]["high"] == 110.0
+        assert bars[0]["close"] == 110.0
+        assert bars[0]["volume"] == 3.0
 
     def test_new_day_resets_bar(self):
         tracker = DailyBarTracker()

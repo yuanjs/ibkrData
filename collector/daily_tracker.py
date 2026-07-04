@@ -6,6 +6,9 @@ from config import PRODUCT_ROLL_CONFIG
 
 logger = logging.getLogger(__name__)
 
+US_CME_HALF_DAY_MERGE_NEXT_SESSION = {"20260703"}
+US_CME_DAILY_SYMBOLS = {"MYM", "MNQ", "MES", "HG", "ZC", "10Y"}
+
 
 def _parse_trading_days_str(trading_hours: str) -> set[str]:
     """Parse IBKR tradingHours string into a set of trading date strings (YYYYMMDD)."""
@@ -65,6 +68,12 @@ def _effective_date_str(bar_time, symbol: str, trading_days: set[str] | None = N
 
     if local_dt.weekday() >= 5:
         return _next_trading_day(local_dt - timedelta(days=1), trading_days)
+
+    if (
+        symbol in US_CME_DAILY_SYMBOLS
+        and local_dt.strftime("%Y%m%d") in US_CME_HALF_DAY_MERGE_NEXT_SESSION
+    ):
+        return _next_trading_day(local_dt, trading_days)
 
     if (local_dt.hour > config["roll_hour"]
             or (local_dt.hour == config["roll_hour"] and local_dt.minute >= config["roll_minute"])):
