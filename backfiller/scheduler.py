@@ -337,20 +337,32 @@ class PullScheduler:
         if not self._should_stop:
             logger.info("%s: done — all windows completed", product.symbol)
 
-    # ── FUT: quarterly-contract chain backfill ──────────────────
+    # ── FUT: contract-chain backfill ────────────────────────────
 
     _QUARTERLY_MONTHS = frozenset({"03", "06", "09", "12"})
+    _ROLL_CONTRACT_MONTHS = {
+        "SPI": _QUARTERLY_MONTHS,
+        "MYM": _QUARTERLY_MONTHS,
+        "MNQ": _QUARTERLY_MONTHS,
+        "MES": _QUARTERLY_MONTHS,
+        "N225M": _QUARTERLY_MONTHS,
+        "10Y": _QUARTERLY_MONTHS,
+        "ZC": frozenset({"03", "05", "07", "09", "12"}),
+    }
 
-    @staticmethod
-    def _is_quarterly_contract(contract: Contract) -> bool:
-        """True for contracts expiring in Mar/Jun/Sep/Dec."""
+    @classmethod
+    def _is_roll_contract(cls, symbol: str, contract: Contract) -> bool:
+        """True when *contract* belongs to the product's roll cycle."""
+        months = cls._ROLL_CONTRACT_MONTHS.get(symbol)
+        if not months:
+            return True
         exp = (contract.lastTradeDateOrContractMonth or "0000")
-        return len(exp) >= 6 and exp[4:6] in PullScheduler._QUARTERLY_MONTHS
+        return len(exp) >= 6 and exp[4:6] in months
 
     async def _resolve_fut_contracts(
         self, product: ProductConfig,
     ) -> list[Contract]:
-        """Fetch all available (incl. expired) contracts; return quarterly ones
+        """Fetch all available (incl. expired) contracts; return roll contracts
         sorted by expiry ascending."""
         if not await self.ensure_connected():
             return []
@@ -363,18 +375,18 @@ class PullScheduler:
             logger.error("%s: failed to list contracts: %s", product.symbol, exc)
             return []
 
-        quarterly = [
+        contracts = [
             d.contract for d in details
-            if self._is_quarterly_contract(d.contract)
+            if self._is_roll_contract(product.symbol, d.contract)
         ]
-        quarterly.sort(key=lambda c: c.lastTradeDateOrContractMonth or "")
+        contracts.sort(key=lambda c: c.lastTradeDateOrContractMonth or "")
         logger.info(
-            "%s: resolved %d/%d quarterly contracts [%s .. %s]",
-            product.symbol, len(quarterly), len(details),
-            quarterly[0].lastTradeDateOrContractMonth[:6] if quarterly else "?",
-            quarterly[-1].lastTradeDateOrContractMonth[:6] if quarterly else "?",
+            "%s: resolved %d/%d roll contracts [%s .. %s]",
+            product.symbol, len(contracts), len(details),
+            contracts[0].lastTradeDateOrContractMonth[:6] if contracts else "?",
+            contracts[-1].lastTradeDateOrContractMonth[:6] if contracts else "?",
         )
-        return quarterly
+        return contracts
 
     async def _pull_fut_via_expired_contracts(
         self, product: ProductConfig,

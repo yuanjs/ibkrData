@@ -20,6 +20,70 @@ ROLL_CALENDAR_LOCK_KEY = 817_260_611_001
 _LAST_SYNCED_SESSION: dict[str, date] = {}
 
 
+async def sync_futures_contracts_from_daily_bars(pool, symbol: str) -> None:
+    """Backfill futures_contracts metadata from historical daily bars."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO futures_contracts (
+                symbol, con_id, local_symbol, trading_class, contract_month,
+                last_trade_date, exchange, currency, multiplier, source,
+                first_seen_at, last_seen_at
+            )
+            SELECT
+                symbol,
+                con_id,
+                (array_agg(local_symbol ORDER BY time DESC))[1],
+                (array_agg(trading_class ORDER BY time DESC))[1],
+                contract_month,
+                MAX(last_trade_date),
+                (array_agg(exchange ORDER BY time DESC))[1],
+                (array_agg(currency ORDER BY time DESC))[1],
+                (array_agg(multiplier ORDER BY time DESC))[1],
+                'historical_daily',
+                MIN(created_at),
+                MAX(created_at)
+            FROM futures_daily_bars
+            WHERE symbol = $1
+            GROUP BY symbol, con_id, contract_month
+            ON CONFLICT (symbol, con_id) DO UPDATE SET
+                local_symbol = COALESCE(
+                    futures_contracts.local_symbol,
+                    EXCLUDED.local_symbol
+                ),
+                trading_class = COALESCE(
+                    futures_contracts.trading_class,
+                    EXCLUDED.trading_class
+                ),
+                contract_month = COALESCE(
+                    futures_contracts.contract_month,
+                    EXCLUDED.contract_month
+                ),
+                last_trade_date = COALESCE(
+                    futures_contracts.last_trade_date,
+                    EXCLUDED.last_trade_date
+                ),
+                exchange = COALESCE(
+                    futures_contracts.exchange,
+                    EXCLUDED.exchange
+                ),
+                currency = COALESCE(
+                    futures_contracts.currency,
+                    EXCLUDED.currency
+                ),
+                multiplier = COALESCE(
+                    futures_contracts.multiplier,
+                    EXCLUDED.multiplier
+                ),
+                last_seen_at = GREATEST(
+                    futures_contracts.last_seen_at,
+                    EXCLUDED.last_seen_at
+                )
+            """,
+            symbol,
+        )
+
+
 def roll_calendar_safety_days(symbol: str) -> int:
     if symbol in COMMODITY_ROLL_SYMBOLS:
         return FUTURES_ROLL_CALENDAR_COMMODITY_SAFETY_DAYS
@@ -76,6 +140,14 @@ async def ensure_futures_roll_calendar(
                     "Skipping on-demand futures roll calendar generation for %s; lock is held elsewhere",
                     symbol,
                 )
+                return False
+
+            await sync_futures_contracts_from_daily_bars(pool, symbol)
+            if symbol == "HG":
+                logger.info(
+                    "Skipping on-demand HG roll calendar generation; using curated safety-day events",
+                )
+                _LAST_SYNCED_SESSION[symbol] = session_date
                 return False
 
             await generator.generate_asof(

@@ -57,6 +57,42 @@ def _effective_futures_session_date(symbol: str, ts: datetime) -> date:
     return local_dt.date()
 
 
+async def _effective_futures_session_date_with_calendar(
+    pool,
+    symbol: str,
+    ts: datetime,
+    cache: dict[tuple[str, date], date] | None = None,
+) -> date:
+    session_date = _effective_futures_session_date(symbol, ts)
+    cache_key = (symbol, session_date)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    row = await pool.fetchrow(
+        """
+        SELECT etd.trading_date
+        FROM futures_daily_symbol_calendars sc
+        JOIN exchange_trading_days etd
+          ON etd.exchange_code = sc.exchange_code
+        WHERE sc.symbol = $1
+          AND etd.trading_date >= $2
+          AND etd.is_open
+        ORDER BY etd.trading_date
+        LIMIT 1
+        """,
+        symbol,
+        session_date,
+    )
+    if row is None:
+        if cache is not None:
+            cache[cache_key] = session_date
+        return session_date
+    trading_date = row["trading_date"]
+    if cache is not None:
+        cache[cache_key] = trading_date
+    return trading_date
+
+
 def _daily_time(session_date: date) -> datetime:
     return datetime(
         session_date.year,
@@ -164,6 +200,7 @@ async def _append_live_partial_daily(
     if not minute_rows and not appended_daily:
         return rows
     partials: dict[date, dict] = {}
+    session_date_cache: dict[tuple[str, date], date] = {}
     for raw_record in minute_rows:
         record = dict(raw_record)
         if (
@@ -174,7 +211,12 @@ async def _append_live_partial_daily(
             or record.get("close") is None
         ):
             continue
-        session_date = _effective_futures_session_date(symbol, record["time"])
+        session_date = await _effective_futures_session_date_with_calendar(
+            pool,
+            symbol,
+            record["time"],
+            session_date_cache,
+        )
         if session_date < start_date or session_date > as_of_session_date:
             continue
         if session_date in existing_sessions:
@@ -304,7 +346,11 @@ async def get_futures_daily(
             symbol=symbol,
             start_date=dt_start.date(),
             as_of=dt_as_of,
-            as_of_session_date=_effective_futures_session_date(symbol, dt_as_of),
+            as_of_session_date=await _effective_futures_session_date_with_calendar(
+                pool,
+                symbol,
+                dt_as_of,
+            ),
         )
     if limit is not None and len(result) > limit:
         result = result[-limit:]

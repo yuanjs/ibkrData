@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from ib_insync import Future
+
 from backfiller.scheduler import (
     PullScheduler,
     split_date_windows,
@@ -83,6 +85,21 @@ def test_split_date_windows_uses_requested_size():
 def test_subtract_trading_days_skips_weekends():
     assert subtract_trading_days(date(2024, 3, 18), 1) == date(2024, 3, 15)
     assert subtract_trading_days(date(2024, 3, 18), 5) == date(2024, 3, 11)
+
+
+def test_is_roll_contract_uses_product_specific_months():
+    assert PullScheduler._is_roll_contract(
+        "ZC", Future(lastTradeDateOrContractMonth="20260514")
+    )
+    assert PullScheduler._is_roll_contract(
+        "ZC", Future(lastTradeDateOrContractMonth="20260714")
+    )
+    assert not PullScheduler._is_roll_contract(
+        "ZC", Future(lastTradeDateOrContractMonth="20260614")
+    )
+    assert PullScheduler._is_roll_contract(
+        "HG", Future(lastTradeDateOrContractMonth="20260729")
+    )
 
 
 # ------------------------------------------------------------------

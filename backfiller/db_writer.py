@@ -112,6 +112,23 @@ ON CONFLICT (symbol, con_id, date_str) DO UPDATE SET
     bar_count = EXCLUDED.bar_count\
 """
 
+_FUTURES_CONTRACT_INSERT_SQL = """\
+INSERT INTO futures_contracts (
+    symbol, con_id, local_symbol, trading_class, contract_month,
+    last_trade_date, exchange, currency, multiplier, source
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'historical_daily')
+ON CONFLICT (symbol, con_id) DO UPDATE SET
+    local_symbol = COALESCE(futures_contracts.local_symbol, EXCLUDED.local_symbol),
+    trading_class = COALESCE(futures_contracts.trading_class, EXCLUDED.trading_class),
+    contract_month = COALESCE(futures_contracts.contract_month, EXCLUDED.contract_month),
+    last_trade_date = COALESCE(futures_contracts.last_trade_date, EXCLUDED.last_trade_date),
+    exchange = COALESCE(futures_contracts.exchange, EXCLUDED.exchange),
+    currency = COALESCE(futures_contracts.currency, EXCLUDED.currency),
+    multiplier = COALESCE(futures_contracts.multiplier, EXCLUDED.multiplier),
+    last_seen_at = NOW()\
+"""
+
 
 def _contract_month(contract: Contract) -> Optional[str]:
     raw = contract.lastTradeDateOrContractMonth or None
@@ -558,7 +575,19 @@ class MinuteBarWriter:
             )
             return 0
 
+        contract_record = (
+            symbol,
+            int(con_id),
+            getattr(contract, "localSymbol", None) or None,
+            getattr(contract, "tradingClass", None) or None,
+            _contract_month(contract),
+            _last_trade_date(contract),
+            getattr(contract, "exchange", None) or None,
+            getattr(contract, "currency", None) or None,
+            getattr(contract, "multiplier", None) or None,
+        )
         async with self._pool.acquire() as conn:
+            await conn.execute(_FUTURES_CONTRACT_INSERT_SQL, *contract_record)
             await conn.executemany(_FUTURES_DAILY_INSERT_SQL, records)
 
         logger.info(
