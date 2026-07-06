@@ -71,7 +71,7 @@ export default function App() {
     api.get<any[]>('/symbols').then(data => {
       if (Array.isArray(data)) {
         const symList = data.map(s => s.symbol)
-        initQuotes(symList)
+        initQuotes(data)
         if (symList.length > 0 && !useMarketStore.getState().activeSymbol) {
           useMarketStore.getState().setActiveSymbol(symList[0])
         }

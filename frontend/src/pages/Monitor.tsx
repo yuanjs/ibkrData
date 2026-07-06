@@ -1,9 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { QuoteTable } from '../components/QuoteTable'
 import { CandleChart } from '../components/CandleChart'
-import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../api/client'
+import { api, futuresApi, type FuturesActiveContract } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
 import { aggregateCandles, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../utils/chartData'
+
+const DAILY_CHART_LIMIT = 120
+const historyCache = new Map<string, CandleLike[]>()
+
+function cloneCandles(rows: CandleLike[]) {
+  return rows.map(row => ({ ...row }))
+}
 
 function getHistoryLookbackHours(interval: string) {
   if (interval.endsWith('s')) return 6
@@ -55,16 +62,6 @@ export function Monitor() {
   const [error, setError] = useState<string | null>(null)
   const historyRequestIdRef = useRef(0)
 
-  const initQuotes = useMarketStore(s => s.initQuotes)
-
-  useEffect(() => {
-    api.get<SymbolSubscription[]>('/symbols').then(data => {
-      if (Array.isArray(data)) {
-        initQuotes(data)
-      }
-    }).catch(err => console.error('Failed to fetch symbols:', err))
-  }, [initQuotes])
-
   const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
     const requestId = ++historyRequestIdRef.current
     const end = new Date()
@@ -72,11 +69,20 @@ export function Monitor() {
     const initialHours = Math.min(getInitialHistoryLookbackHours(inv), totalHours)
     const totalStart = new Date(end.getTime() - totalHours * 3600 * 1000)
     const initialStart = new Date(end.getTime() - initialHours * 3600 * 1000)
+    const cacheKey = `${sym}:${inv}:${isFutures ? 'futures' : 'cash'}`
+    const cachedRows = historyCache.get(cacheKey)
+    const hasCachedRows = Boolean(cachedRows)
+
+    if (cachedRows) {
+      setCandles(cloneCandles(cachedRows))
+    } else {
+      setCandles([])
+    }
 
     const fetchRange = async (start: Date, rangeEnd: Date) => {
       if (isFutures) {
         if (inv === '1d') {
-          return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted', true)
+          return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted', true, DAILY_CHART_LIMIT)
         }
         return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', end.toISOString())
       }
@@ -100,21 +106,27 @@ export function Monitor() {
 
       const recentRows = await fetchRange(initialStart, queryEnd)
       if (historyRequestIdRef.current !== requestId) return
-      setCandles(normalizeRows(recentRows))
+      const normalizedRecentRows = normalizeRows(recentRows)
+      historyCache.set(cacheKey, cloneCandles(normalizedRecentRows))
+      setCandles(normalizedRecentRows)
 
       if (totalStart >= initialStart) return
 
       try {
         const olderRows = await fetchRange(totalStart, initialStart)
         if (historyRequestIdRef.current !== requestId) return
-        setCandles(normalizeRows([...olderRows, ...recentRows]))
+        const normalizedRows = normalizeRows([...olderRows, ...recentRows])
+        historyCache.set(cacheKey, cloneCandles(normalizedRows))
+        setCandles(normalizedRows)
       } catch (e) {
         console.warn('Failed to fetch older chart history:', e)
       }
     } catch (e: any) {
       if (historyRequestIdRef.current !== requestId) return
       setError(e.message)
-      setCandles([])
+      if (!hasCachedRows) {
+        setCandles([])
+      }
     }
   }, [])
 
@@ -122,7 +134,7 @@ export function Monitor() {
     if (activeSymbol) {
       fetchHistory(activeSymbol, chartInterval, isActiveFutures)
     }
-  }, [activeSymbol, fetchHistory, chartInterval, isActiveFutures, activeRollState?.active?.con_id])
+  }, [activeSymbol, fetchHistory, chartInterval, isActiveFutures])
 
   useEffect(() => {
     if (!activeSymbol || !isActiveFutures) {
