@@ -42,6 +42,40 @@ _MINUTE_BAR_INTERVALS = {
 }
 
 
+async def _fetch_tick_bars(pool, bucket: timedelta, symbol: str, start: datetime, end: datetime):
+    if start > end:
+        return []
+    return await pool.fetch(
+        "SELECT time_bucket($1, time) AS time, "
+        "first(last,time) AS open, max(last) AS high, min(last) AS low, "
+        "last(last,time) AS close, sum(volume) AS volume "
+        "FROM ticks WHERE symbol=$2 AND time BETWEEN $3 AND $4 "
+        "GROUP BY 1 ORDER BY 1",
+        bucket,
+        symbol,
+        start,
+        end,
+    )
+
+
+def _merge_ohlcv_rows(rows):
+    merged = {}
+    for row in rows:
+        item = dict(row)
+        key = item["time"]
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = item
+            continue
+
+        existing["high"] = max(existing["high"], item["high"])
+        existing["low"] = min(existing["low"], item["low"])
+        existing["close"] = item["close"]
+        existing["volume"] = (existing.get("volume") or 0) + (item.get("volume") or 0)
+
+    return [merged[key] for key in sorted(merged)]
+
+
 @router.get("/history/{symbol}")
 async def get_history(symbol: str, start: str, end: str, interval: str = "1min"):
     # Robustly convert ISO strings to UTC datetime objects for asyncpg
@@ -86,6 +120,14 @@ async def get_history(symbol: str, start: str, end: str, interval: str = "1min")
             dt_end,
         )
     elif interval in _MINUTE_BAR_INTERVALS:
+        bounds = await pool.fetchrow(
+            "SELECT min(time) AS first_time, max(time) AS last_time "
+            "FROM minute_bars WHERE symbol=$1 AND time BETWEEN $2 AND $3",
+            symbol,
+            dt_start,
+            dt_end,
+        )
+
         if interval in {"1m", "1min"}:
             rows = await pool.fetch(
                 "SELECT time, open, high, low, close, volume "
@@ -108,31 +150,20 @@ async def get_history(symbol: str, start: str, end: str, interval: str = "1min")
                 dt_end,
             )
 
-        if not rows:
-            rows = await pool.fetch(
-                "SELECT time_bucket($1, time) AS time, "
-                "first(last,time) AS open, max(last) AS high, min(last) AS low, "
-                "last(last,time) AS close, sum(volume) AS volume "
-                "FROM ticks WHERE symbol=$2 AND time BETWEEN $3 AND $4 "
-                "GROUP BY 1 ORDER BY 1",
-                bucket,
-                symbol,
-                dt_start,
-                dt_end,
-            )
+        first_time = bounds["first_time"] if bounds else None
+        last_time = bounds["last_time"] if bounds else None
+        if first_time is None or last_time is None:
+            rows = await _fetch_tick_bars(pool, bucket, symbol, dt_start, dt_end)
+        else:
+            rows = list(rows)
+            if dt_start < first_time:
+                rows.extend(await _fetch_tick_bars(pool, bucket, symbol, dt_start, first_time - timedelta(microseconds=1)))
+            if last_time < dt_end:
+                rows.extend(await _fetch_tick_bars(pool, bucket, symbol, last_time + timedelta(minutes=1), dt_end))
+            rows = _merge_ohlcv_rows(rows)
     else:
         # Second-level intervals still aggregate directly from raw ticks.
-        rows = await pool.fetch(
-            "SELECT time_bucket($1, time) AS time, "
-            "first(last,time) AS open, max(last) AS high, min(last) AS low, "
-            "last(last,time) AS close, sum(volume) AS volume "
-            "FROM ticks WHERE symbol=$2 AND time BETWEEN $3 AND $4 "
-            "GROUP BY 1 ORDER BY 1",
-            bucket,
-            symbol,
-            dt_start,
-            dt_end,
-        )
+        rows = await _fetch_tick_bars(pool, bucket, symbol, dt_start, dt_end)
     return [dict(r) for r in rows]
 
 
