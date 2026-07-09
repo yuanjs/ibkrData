@@ -208,7 +208,7 @@ def test_tick_buffer_emits_completed_minute_bars_on_minute_rollover():
         "time": t3,
     })
 
-    completed = buffer.pop_completed_futures_minute_bars(t3)
+    completed = buffer.pop_completed_futures_minute_bars(t3, finalization_delay=timedelta(0))
     assert len(completed) == 1
     bar = completed[0]
     assert bar["symbol"] == "SPI"
@@ -221,6 +221,46 @@ def test_tick_buffer_emits_completed_minute_bars_on_minute_rollover():
     assert bar["close"] == 7003.0
     assert bar["volume"] == 3.0
     assert bar["bar_count"] == 2
+
+
+def test_tick_buffer_delays_completed_minute_bars_until_grace_window_expires():
+    writer = FakeWriter()
+    buffer = TickBuffer(writer)
+    t1 = datetime(2026, 6, 12, 10, 0, 10, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 12, 10, 0, 45, tzinfo=timezone.utc)
+
+    for tick_time, price in ((t1, 7000.0), (t2, 7003.0)):
+        buffer.add_futures_tick({
+            "symbol": "SPI",
+            "con_id": 12345,
+            "role": "active",
+            "local_symbol": "APM6",
+            "contract_month": "202606",
+            "trading_class": "AP",
+            "exchange": "SNFE",
+            "currency": "AUD",
+            "multiplier": "25",
+            "price": price,
+            "size": 1.0,
+            "time": tick_time,
+        })
+
+    delay = timedelta(seconds=5)
+    before_delay = datetime(2026, 6, 12, 10, 1, 4, tzinfo=timezone.utc)
+    after_delay = datetime(2026, 6, 12, 10, 1, 5, tzinfo=timezone.utc)
+
+    assert buffer.pop_completed_futures_minute_bars(
+        before_delay,
+        finalization_delay=delay,
+    ) == []
+
+    completed = buffer.pop_completed_futures_minute_bars(
+        after_delay,
+        finalization_delay=delay,
+    )
+    assert len(completed) == 1
+    assert completed[0]["time"] == datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc)
+    assert completed[0]["close"] == 7003.0
 
 
 @pytest.mark.asyncio

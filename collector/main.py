@@ -27,6 +27,7 @@ from config import (
     FUTURES_ROLL_CALENDAR_INTERVAL_SECONDS,
     FUTURES_LIVE_CONTRACT_REFRESH_SECONDS,
     FUTURES_LIVE_DAILY_REFRESH_SECONDS,
+    FUTURES_MINUTE_COMPLETE_DELAY_SECONDS,
     HEALTH_PORT,
     IB_CLIENT_ID,
     IB_HOST,
@@ -211,21 +212,27 @@ class TickBuffer:
         bar["volume"] = (bar.get("volume") or 0) + size
         bar["bar_count"] = (bar.get("bar_count") or 0) + 1
 
-    def pop_completed_futures_minute_bars(self, reference_time: datetime | None = None) -> list[dict]:
-        """Return and remove finalized minute bars strictly before the reference minute."""
+    def pop_completed_futures_minute_bars(
+        self,
+        reference_time: datetime | None = None,
+        finalization_delay: timedelta | None = None,
+    ) -> list[dict]:
+        """Return bars whose minute has remained stable for the configured delay."""
         if not self._futures_minute_complete_bars:
             return []
 
         if reference_time is None:
             reference_time = datetime.now(timezone.utc)
-        reference_bucket = reference_time.replace(second=0, microsecond=0)
+        if finalization_delay is None:
+            finalization_delay = timedelta(seconds=FUTURES_MINUTE_COMPLETE_DELAY_SECONDS)
         completed = []
         for key, bar in list(self._futures_minute_complete_bars.items()):
-            if bar["time"] < reference_bucket:
+            bar_end = bar["time"] + timedelta(seconds=59, microseconds=999000)
+            if bar_end + finalization_delay <= reference_time:
                 completed.append({
                     **bar,
                     "bar_start": bar["time"],
-                    "bar_end": bar["time"] + timedelta(seconds=59, microseconds=999000),
+                    "bar_end": bar_end,
                 })
                 del self._futures_minute_complete_bars[key]
 
@@ -625,11 +632,14 @@ async def tick_flush_loop(tick_buffer):
 
 
 async def futures_minute_complete_loop(tick_buffer, pub):
-    """Publish completed futures minute bars when no next-minute tick arrives."""
+    """Publish completed futures minute bars after a late-tick grace window."""
+    finalization_delay = timedelta(seconds=FUTURES_MINUTE_COMPLETE_DELAY_SECONDS)
     while True:
         await asyncio.sleep(1)
         try:
-            completed_bars = tick_buffer.pop_completed_futures_minute_bars()
+            completed_bars = tick_buffer.pop_completed_futures_minute_bars(
+                finalization_delay=finalization_delay,
+            )
             for bar in completed_bars:
                 if should_publish_futures_minute_complete(bar):
                     await pub.publish_futures_minute_complete(bar["symbol"], bar)
