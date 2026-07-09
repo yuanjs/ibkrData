@@ -138,15 +138,23 @@ class IBKRClient:
         logger.info("Connected to IB Gateway")
         asyncio.ensure_future(self._resubscribe_all())
 
+    def _clear_market_data_state(self):
+        for key, ticker in list(self._tickers.items()):
+            try:
+                self.ib.cancelMktData(ticker.contract)
+            except Exception as e:
+                logger.warning("Failed to cancel market data for %s: %s", key, e)
+        self._tickers.clear()
+        self._ticker_roles.clear()
+        self._symbol_map.clear()
+        self._last_trade_prices.clear()
+
     async def _resubscribe_all(self):
         if not self._subscriptions:
             return
 
         logger.info(f"Re-subscribing to {len(self._subscriptions)} symbols...")
-        # Clear existing tickers as they are bound to the old connection
-        self._tickers.clear()
-        self._ticker_roles.clear()
-        self._symbol_map.clear()
+        self._clear_market_data_state()
 
         # Deep copy the subscriptions to avoid mutation during iteration
         subs = list(self._subscriptions.values())

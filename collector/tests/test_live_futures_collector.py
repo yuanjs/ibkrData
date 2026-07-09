@@ -24,6 +24,7 @@ if "aiohttp" not in sys.modules:
 from data_writer import DataWriter
 from futures_runtime import LiveFuturesRuntime, LiveFuturesState
 from main import (
+    IBKRClient,
     TickBuffer,
     should_publish_futures_minute_complete,
     should_publish_live_tick,
@@ -87,6 +88,44 @@ class FakePool:
 
     async def fetchrow(self, *args):
         return await self.conn.fetchrow(*args)
+
+
+@pytest.mark.asyncio
+async def test_resubscribe_all_cancels_old_market_data_before_replacing_tickers():
+    class FakeIB:
+        def __init__(self):
+            self.cancelled = []
+
+        def cancelMktData(self, contract):
+            self.cancelled.append(contract)
+
+    client = IBKRClient.__new__(IBKRClient)
+    client.ib = FakeIB()
+    client._tickers = {
+        "AUD.USD": SimpleNamespace(contract="cash-contract"),
+        ("SPI", 123): SimpleNamespace(contract="futures-contract"),
+    }
+    client._ticker_roles = {("SPI", 123): "active"}
+    client._symbol_map = {123: "SPI"}
+    client._last_trade_prices = {"AUD.USD": 0.65, ("SPI", 123): 7100.0}
+    client._subscriptions = {
+        "AUD.USD": {"symbol": "AUD.USD"},
+    }
+    resubscribed = []
+
+    async def fake_subscribe(**params):
+        resubscribed.append(params)
+
+    client.subscribe = fake_subscribe
+
+    await client._resubscribe_all()
+
+    assert client.ib.cancelled == ["cash-contract", "futures-contract"]
+    assert client._tickers == {}
+    assert client._ticker_roles == {}
+    assert client._symbol_map == {}
+    assert client._last_trade_prices == {}
+    assert resubscribed == [{"symbol": "AUD.USD"}]
 
 
 @pytest.mark.asyncio

@@ -81,6 +81,7 @@ _paper_tasks: set[asyncio.Task] = set()
 
 COMMODITY_ROLL_SYMBOLS = {"HG", "ZC"}
 ROLL_CALENDAR_LOCK_KEY = 817_260_611_001
+LIVE_TICK_PUBLISH_QUEUE_MAX = 5000
 
 
 async def _update_gateway_map(redis, gateway: str, accounts: list[dict]):
@@ -912,6 +913,19 @@ def _on_task_done(task: asyncio.Task):
         logger.error(f"Background task failed: {exc}", exc_info=exc)
 
 
+async def live_tick_publish_loop(queue: asyncio.Queue, pub: Publisher):
+    while True:
+        symbol, price, size, tick_time = await queue.get()
+        try:
+            await pub.publish_tick(symbol, price, size, tick_time)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Live tick publish error: {e}")
+        finally:
+            queue.task_done()
+
+
 async def init_paper(pool, redis_client, writer, pub):
     try:
         from config import PAPER_IB_HOST, PAPER_IB_PORT, PAPER_IB_CLIENT_ID, ACCOUNT_REFRESH_INTERVAL
@@ -984,6 +998,8 @@ async def main():
     pub = Publisher(redis_client)
     tick_buffer = TickBuffer(writer)
     daily_tracker = DailyBarTracker()
+    live_tick_queue: asyncio.Queue = asyncio.Queue(maxsize=LIVE_TICK_PUBLISH_QUEUE_MAX)
+    live_tick_queue_drops = 0
 
     # Load the most recent daily bars from DB so tracker preserves OHLC across restarts
     symbols = await load_subscriptions(pool)
@@ -995,6 +1011,7 @@ async def main():
     # 2) Track today's daily OHLCV from real-time ticks
     # 3) Publish each tick in real-time via Redis (for frontend live display)
     def on_trade_tick(*args):
+        nonlocal live_tick_queue_drops
         publish_live_tick = True
         if len(args) == 1 and isinstance(args[0], dict):
             payload = args[0]
@@ -1022,8 +1039,22 @@ async def main():
             daily_tracker.on_tick(symbol, price, size, tick_time)
         # Async publish for real-time frontend (fire-and-forget)
         if publish_live_tick:
-            t = asyncio.ensure_future(pub.publish_tick(symbol, price, size, tick_time))
-            t.add_done_callback(_on_task_done)
+            item = (symbol, price, size, tick_time)
+            try:
+                live_tick_queue.put_nowait(item)
+            except asyncio.QueueFull:
+                try:
+                    live_tick_queue.get_nowait()
+                    live_tick_queue.task_done()
+                except asyncio.QueueEmpty:
+                    pass
+                live_tick_queue.put_nowait(item)
+                live_tick_queue_drops += 1
+                if live_tick_queue_drops % 1000 == 1:
+                    logger.warning(
+                        "Dropped %s live tick publish events due to Redis backpressure",
+                        live_tick_queue_drops,
+                    )
 
     client.register_tick_handler(on_trade_tick)
 
@@ -1105,6 +1136,10 @@ async def main():
 
     # Run main loops as tasks
     tasks = [
+        asyncio.create_task(
+            live_tick_publish_loop(live_tick_queue, pub),
+            name="live_tick_publish",
+        ),
         asyncio.create_task(tick_loop(client, pub), name="tick_loop"),
         asyncio.create_task(tick_flush_loop(tick_buffer), name="tick_flush"),
         asyncio.create_task(
