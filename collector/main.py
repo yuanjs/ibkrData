@@ -28,6 +28,7 @@ from config import (
     FUTURES_LIVE_CONTRACT_REFRESH_SECONDS,
     FUTURES_LIVE_DAILY_REFRESH_SECONDS,
     FUTURES_MINUTE_COMPLETE_DELAY_SECONDS,
+    FUTURES_MINUTE_COMPLETE_FINAL_DELAY_SECONDS,
     HEALTH_PORT,
     IB_CLIENT_ID,
     IB_HOST,
@@ -140,6 +141,7 @@ class TickBuffer:
         self._futures_buffer = []
         self._futures_minute_bars = {}
         self._futures_minute_complete_bars = {}
+        self._futures_minute_published_revisions = {}
         self._lock = asyncio.Lock()
 
     def add_tick(self, symbol, price=None, size=None, tick_time=None):
@@ -203,6 +205,7 @@ class TickBuffer:
                 "close": price,
                 "volume": size,
                 "bar_count": 1,
+                "_revision": 1,
             }
             return
 
@@ -211,6 +214,20 @@ class TickBuffer:
         bar["close"] = price
         bar["volume"] = (bar.get("volume") or 0) + size
         bar["bar_count"] = (bar.get("bar_count") or 0) + 1
+        bar["_revision"] = (bar.get("_revision") or 0) + 1
+
+    def _minute_complete_payload(self, bar: dict, *, final: bool) -> dict:
+        payload = {
+            key: value
+            for key, value in bar.items()
+            if not key.startswith("_")
+        }
+        payload["bar_start"] = bar["time"]
+        payload["bar_end"] = bar["time"] + timedelta(seconds=59, microseconds=999000)
+        payload["final"] = final
+        payload["status"] = "final" if final else "provisional"
+        payload["revision"] = int(bar.get("_revision") or 0)
+        return payload
 
     def pop_completed_futures_minute_bars(
         self,
@@ -229,15 +246,51 @@ class TickBuffer:
         for key, bar in list(self._futures_minute_complete_bars.items()):
             bar_end = bar["time"] + timedelta(seconds=59, microseconds=999000)
             if bar_end + finalization_delay <= reference_time:
-                completed.append({
-                    **bar,
-                    "bar_start": bar["time"],
-                    "bar_end": bar_end,
-                })
+                completed.append(self._minute_complete_payload(bar, final=True))
                 del self._futures_minute_complete_bars[key]
+                self._futures_minute_published_revisions.pop(key, None)
 
         completed.sort(key=lambda item: (item["symbol"], item["con_id"], item["time"]))
         return completed
+
+    def pop_publishable_futures_minute_bars(
+        self,
+        reference_time: datetime | None = None,
+        provisional_delay: timedelta | None = None,
+        finalization_delay: timedelta | None = None,
+    ) -> list[dict]:
+        """Return provisional revisions quickly, then one final revision later."""
+        if not self._futures_minute_complete_bars:
+            return []
+
+        if reference_time is None:
+            reference_time = datetime.now(timezone.utc)
+        if provisional_delay is None:
+            provisional_delay = timedelta(seconds=FUTURES_MINUTE_COMPLETE_DELAY_SECONDS)
+        if finalization_delay is None:
+            finalization_delay = timedelta(seconds=FUTURES_MINUTE_COMPLETE_FINAL_DELAY_SECONDS)
+
+        publishable = []
+        for key, bar in list(self._futures_minute_complete_bars.items()):
+            bar_end = bar["time"] + timedelta(seconds=59, microseconds=999000)
+            revision = int(bar.get("_revision") or 0)
+
+            if bar_end + finalization_delay <= reference_time:
+                publishable.append(self._minute_complete_payload(bar, final=True))
+                del self._futures_minute_complete_bars[key]
+                self._futures_minute_published_revisions.pop(key, None)
+                continue
+
+            if bar_end + provisional_delay <= reference_time:
+                published_revision = self._futures_minute_published_revisions.get(key, 0)
+                if revision > published_revision:
+                    publishable.append(self._minute_complete_payload(bar, final=False))
+                    self._futures_minute_published_revisions[key] = revision
+
+        publishable.sort(
+            key=lambda item: (item["symbol"], item["con_id"], item["time"], item["revision"])
+        )
+        return publishable
 
     async def flush(self):
         """Async flush to database."""
@@ -632,12 +685,14 @@ async def tick_flush_loop(tick_buffer):
 
 
 async def futures_minute_complete_loop(tick_buffer, pub):
-    """Publish completed futures minute bars after a late-tick grace window."""
-    finalization_delay = timedelta(seconds=FUTURES_MINUTE_COMPLETE_DELAY_SECONDS)
+    """Publish quick provisional bars, then final revisions after a grace window."""
+    provisional_delay = timedelta(seconds=FUTURES_MINUTE_COMPLETE_DELAY_SECONDS)
+    finalization_delay = timedelta(seconds=FUTURES_MINUTE_COMPLETE_FINAL_DELAY_SECONDS)
     while True:
         await asyncio.sleep(1)
         try:
-            completed_bars = tick_buffer.pop_completed_futures_minute_bars(
+            completed_bars = tick_buffer.pop_publishable_futures_minute_bars(
+                provisional_delay=provisional_delay,
                 finalization_delay=finalization_delay,
             )
             for bar in completed_bars:

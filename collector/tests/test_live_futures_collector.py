@@ -221,13 +221,17 @@ def test_tick_buffer_emits_completed_minute_bars_on_minute_rollover():
     assert bar["close"] == 7003.0
     assert bar["volume"] == 3.0
     assert bar["bar_count"] == 2
+    assert bar["final"] is True
+    assert bar["status"] == "final"
+    assert bar["revision"] == 2
 
 
-def test_tick_buffer_delays_completed_minute_bars_until_grace_window_expires():
+def test_tick_buffer_publishes_provisional_revisions_then_final_bar():
     writer = FakeWriter()
     buffer = TickBuffer(writer)
     t1 = datetime(2026, 6, 12, 10, 0, 10, tzinfo=timezone.utc)
     t2 = datetime(2026, 6, 12, 10, 0, 45, tzinfo=timezone.utc)
+    t3 = datetime(2026, 6, 12, 10, 0, 50, tzinfo=timezone.utc)
 
     for tick_time, price in ((t1, 7000.0), (t2, 7003.0)):
         buffer.add_futures_tick({
@@ -245,22 +249,71 @@ def test_tick_buffer_delays_completed_minute_bars_until_grace_window_expires():
             "time": tick_time,
         })
 
-    delay = timedelta(seconds=5)
+    provisional_delay = timedelta(seconds=5)
+    finalization_delay = timedelta(seconds=75)
     before_delay = datetime(2026, 6, 12, 10, 1, 4, tzinfo=timezone.utc)
     after_delay = datetime(2026, 6, 12, 10, 1, 5, tzinfo=timezone.utc)
 
-    assert buffer.pop_completed_futures_minute_bars(
+    assert buffer.pop_publishable_futures_minute_bars(
         before_delay,
-        finalization_delay=delay,
+        provisional_delay=provisional_delay,
+        finalization_delay=finalization_delay,
     ) == []
 
-    completed = buffer.pop_completed_futures_minute_bars(
+    provisional = buffer.pop_publishable_futures_minute_bars(
         after_delay,
-        finalization_delay=delay,
+        provisional_delay=provisional_delay,
+        finalization_delay=finalization_delay,
     )
-    assert len(completed) == 1
-    assert completed[0]["time"] == datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc)
-    assert completed[0]["close"] == 7003.0
+    assert len(provisional) == 1
+    assert provisional[0]["time"] == datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc)
+    assert provisional[0]["close"] == 7003.0
+    assert provisional[0]["final"] is False
+    assert provisional[0]["status"] == "provisional"
+    assert provisional[0]["revision"] == 2
+
+    assert buffer.pop_publishable_futures_minute_bars(
+        after_delay,
+        provisional_delay=provisional_delay,
+        finalization_delay=finalization_delay,
+    ) == []
+
+    buffer.add_futures_tick({
+        "symbol": "SPI",
+        "con_id": 12345,
+        "role": "active",
+        "local_symbol": "APM6",
+        "contract_month": "202606",
+        "trading_class": "AP",
+        "exchange": "SNFE",
+        "currency": "AUD",
+        "multiplier": "25",
+        "price": 7006.0,
+        "size": 1.0,
+        "time": t3,
+    })
+
+    revised = buffer.pop_publishable_futures_minute_bars(
+        datetime(2026, 6, 12, 10, 1, 6, tzinfo=timezone.utc),
+        provisional_delay=provisional_delay,
+        finalization_delay=finalization_delay,
+    )
+    assert len(revised) == 1
+    assert revised[0]["close"] == 7006.0
+    assert revised[0]["final"] is False
+    assert revised[0]["status"] == "provisional"
+    assert revised[0]["revision"] == 3
+
+    final = buffer.pop_publishable_futures_minute_bars(
+        datetime(2026, 6, 12, 10, 2, 15, tzinfo=timezone.utc),
+        provisional_delay=provisional_delay,
+        finalization_delay=finalization_delay,
+    )
+    assert len(final) == 1
+    assert final[0]["close"] == 7006.0
+    assert final[0]["final"] is True
+    assert final[0]["status"] == "final"
+    assert final[0]["revision"] == 3
 
 
 @pytest.mark.asyncio
