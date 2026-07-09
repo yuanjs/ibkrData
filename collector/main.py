@@ -139,6 +139,7 @@ class TickBuffer:
         self.writer = writer
         self.batch_size = batch_size
         self._buffer = []
+        self._minute_bars = {}
         self._futures_buffer = []
         self._futures_minute_bars = {}
         self._futures_minute_complete_bars = {}
@@ -154,6 +155,7 @@ class TickBuffer:
         self._buffer.append(
             (tick_time, symbol, price, size, price, price, price, price)
         )
+        self._update_cash_minute_bar(symbol, price, size, tick_time)
 
     def add_futures_tick(self, tick: dict):
         """Synchronous add of a real-contract futures tick."""
@@ -176,6 +178,32 @@ class TickBuffer:
 
     def _update_futures_minute_complete_bar(self, tick: dict):
         self._update_minute_bar_store(self._futures_minute_complete_bars, tick)
+
+    def _update_cash_minute_bar(self, symbol, price, size, tick_time):
+        if price is None or tick_time is None:
+            return
+        bucket = tick_time.replace(second=0, microsecond=0)
+        key = (symbol, bucket)
+        size = size or 0
+        bar = self._minute_bars.get(key)
+        if bar is None:
+            self._minute_bars[key] = {
+                "time": bucket,
+                "symbol": symbol,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": size,
+                "bar_count": 1,
+            }
+            return
+
+        bar["high"] = max(bar["high"], price)
+        bar["low"] = min(bar["low"], price)
+        bar["close"] = price
+        bar["volume"] = (bar.get("volume") or 0) + size
+        bar["bar_count"] = (bar.get("bar_count") or 0) + 1
 
     def _update_minute_bar_store(self, store: dict, tick: dict):
         price = tick.get("last", tick.get("price"))
@@ -298,19 +326,24 @@ class TickBuffer:
         async with self._lock:
             if (
                 not self._buffer
+                and not self._minute_bars
                 and not self._futures_buffer
                 and not self._futures_minute_bars
             ):
                 return
             rows = list(self._buffer)
+            minute_rows = list(self._minute_bars.values())
             futures_rows = list(self._futures_buffer)
             futures_minute_rows = list(self._futures_minute_bars.values())
             self._buffer.clear()
+            self._minute_bars.clear()
             self._futures_buffer.clear()
             self._futures_minute_bars.clear()
 
         if rows:
             await self.writer.write_raw_ticks(rows)
+        if minute_rows:
+            await self.writer.upsert_minute_bars_from_live(minute_rows)
         if futures_rows:
             await self.writer.write_futures_ticks(futures_rows)
         if futures_minute_rows:

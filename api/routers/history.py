@@ -76,6 +76,15 @@ def _merge_ohlcv_rows(rows):
     return [merged[key] for key in sorted(merged)]
 
 
+def _bucket_start(dt: datetime, bucket: timedelta) -> datetime:
+    bucket_seconds = int(bucket.total_seconds())
+    timestamp = int(dt.timestamp())
+    return datetime.fromtimestamp(
+        timestamp - (timestamp % bucket_seconds),
+        timezone.utc,
+    )
+
+
 @router.get("/history/{symbol}")
 async def get_history(symbol: str, start: str, end: str, interval: str = "1min"):
     # Robustly convert ISO strings to UTC datetime objects for asyncpg
@@ -156,10 +165,13 @@ async def get_history(symbol: str, start: str, end: str, interval: str = "1min")
             rows = await _fetch_tick_bars(pool, bucket, symbol, dt_start, dt_end)
         else:
             rows = list(rows)
-            if dt_start < first_time:
-                rows.extend(await _fetch_tick_bars(pool, bucket, symbol, dt_start, first_time - timedelta(microseconds=1)))
-            if last_time < dt_end:
-                rows.extend(await _fetch_tick_bars(pool, bucket, symbol, last_time + timedelta(minutes=1), dt_end))
+            first_bucket = _bucket_start(first_time, bucket)
+            last_bucket = _bucket_start(last_time, bucket)
+            if dt_start < first_bucket:
+                rows.extend(await _fetch_tick_bars(pool, bucket, symbol, dt_start, first_bucket - timedelta(microseconds=1)))
+            next_bucket = last_bucket + bucket
+            if next_bucket <= dt_end:
+                rows.extend(await _fetch_tick_bars(pool, bucket, symbol, next_bucket, dt_end))
             rows = _merge_ohlcv_rows(rows)
     else:
         # Second-level intervals still aggregate directly from raw ticks.

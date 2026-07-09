@@ -119,6 +119,20 @@ class DataWriter:
             _clean_int(row.get("bar_count")),
         )
 
+    def _minute_bar_record(self, row):
+        if not isinstance(row, dict):
+            return row
+        return (
+            row["time"],
+            row["symbol"],
+            _clean_num(row.get("open")),
+            _clean_num(row.get("high")),
+            _clean_num(row.get("low")),
+            _clean_num(row.get("close")),
+            _clean_int(row.get("volume")),
+            _clean_int(row.get("bar_count")),
+        )
+
     def _futures_contract_record(self, row):
         if not isinstance(row, dict):
             return row
@@ -216,6 +230,29 @@ class DataWriter:
                 )
         except Exception as e:
             logger.error(f"write_raw_ticks error: {e}")
+
+    async def upsert_minute_bars_from_live(self, rows: list[dict | tuple]):
+        """Upsert real-time cash minute bars aggregated from raw ticks."""
+        if not rows:
+            return
+        try:
+            records = [self._minute_bar_record(r) for r in rows]
+            async with self.pool.acquire() as conn:
+                await conn.executemany(
+                    "INSERT INTO minute_bars("
+                    "time,symbol,open,high,low,close,volume,bar_count"
+                    ") VALUES($1,$2,$3,$4,$5,$6,$7,$8) "
+                    "ON CONFLICT (symbol, time) DO UPDATE SET "
+                    "open=COALESCE(minute_bars.open, EXCLUDED.open),"
+                    "high=GREATEST(COALESCE(minute_bars.high, EXCLUDED.high), EXCLUDED.high),"
+                    "low=LEAST(COALESCE(minute_bars.low, EXCLUDED.low), EXCLUDED.low),"
+                    "close=EXCLUDED.close,"
+                    "volume=COALESCE(minute_bars.volume, 0) + COALESCE(EXCLUDED.volume, 0),"
+                    "bar_count=COALESCE(minute_bars.bar_count, 0) + COALESCE(EXCLUDED.bar_count, 0)",
+                    records,
+                )
+        except Exception as e:
+            logger.error(f"upsert_minute_bars_from_live error: {e}")
 
     async def write_futures_ticks(self, rows: list[dict | tuple]):
         """Batch insert raw futures ticks keyed by real contract identity."""

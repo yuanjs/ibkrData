@@ -34,12 +34,16 @@ from main import (
 class FakeWriter:
     def __init__(self):
         self.raw_rows = []
+        self.minute_rows = []
         self.futures_rows = []
         self.futures_minute_rows = []
         self.futures_contract_rows = []
 
     async def write_raw_ticks(self, rows):
         self.raw_rows.extend(rows)
+
+    async def upsert_minute_bars_from_live(self, rows):
+        self.minute_rows.extend(rows)
 
     async def write_futures_ticks(self, rows):
         self.futures_rows.extend(rows)
@@ -155,6 +159,17 @@ async def test_tick_buffer_flushes_raw_and_futures_ticks_separately():
     assert writer.raw_rows == [
         (tick_time, "AAPL", 100.0, 2.0, 100.0, 100.0, 100.0, 100.0)
     ]
+    assert len(writer.minute_rows) == 1
+    assert writer.minute_rows[0] == {
+        "time": tick_time,
+        "symbol": "AAPL",
+        "open": 100.0,
+        "high": 100.0,
+        "low": 100.0,
+        "close": 100.0,
+        "volume": 2.0,
+        "bar_count": 1,
+    }
     assert len(writer.futures_rows) == 1
     assert writer.futures_rows[0]["symbol"] == "SPI"
     assert writer.futures_rows[0]["con_id"] == 12345
@@ -166,6 +181,45 @@ async def test_tick_buffer_flushes_raw_and_futures_ticks_separately():
     assert writer.futures_minute_rows[0]["open"] == 7000.0
     assert writer.futures_minute_rows[0]["close"] == 7000.0
     assert writer.futures_minute_rows[0]["bar_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_buffer_aggregates_cash_ticks_into_minute_bars():
+    writer = FakeWriter()
+    buffer = TickBuffer(writer)
+    t1 = datetime(2026, 6, 12, 10, 0, 10, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 12, 10, 0, 45, tzinfo=timezone.utc)
+    t3 = datetime(2026, 6, 12, 10, 1, 2, tzinfo=timezone.utc)
+
+    buffer.add_tick("USD.JPY", 158.10, 1, t1)
+    buffer.add_tick("USD.JPY", 158.15, 2, t2)
+    buffer.add_tick("USD.JPY", 158.12, 3, t3)
+
+    await buffer.flush()
+
+    assert len(writer.raw_rows) == 3
+    assert writer.minute_rows == [
+        {
+            "time": datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc),
+            "symbol": "USD.JPY",
+            "open": 158.10,
+            "high": 158.15,
+            "low": 158.10,
+            "close": 158.15,
+            "volume": 3,
+            "bar_count": 2,
+        },
+        {
+            "time": datetime(2026, 6, 12, 10, 1, tzinfo=timezone.utc),
+            "symbol": "USD.JPY",
+            "open": 158.12,
+            "high": 158.12,
+            "low": 158.12,
+            "close": 158.12,
+            "volume": 3,
+            "bar_count": 1,
+        },
+    ]
 
 
 def test_should_publish_live_tick_filters_candidate_futures_only():
@@ -407,6 +461,43 @@ async def test_write_futures_ticks_uses_futures_ticks_shape():
         5400.25,
         "IBKR",
     )
+
+
+@pytest.mark.asyncio
+async def test_upsert_minute_bars_from_live_merges_existing_cash_bar():
+    pool = FakePool()
+    writer = DataWriter(pool)
+
+    await writer.upsert_minute_bars_from_live([
+        {
+            "time": datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc),
+            "symbol": "USD.JPY",
+            "open": 158.10,
+            "high": 158.15,
+            "low": 158.08,
+            "close": 158.12,
+            "volume": 3,
+            "bar_count": 2,
+        }
+    ])
+
+    assert "INSERT INTO minute_bars" in pool.conn.sql
+    assert "GREATEST(COALESCE(minute_bars.high, EXCLUDED.high), EXCLUDED.high)" in pool.conn.sql
+    assert "LEAST(COALESCE(minute_bars.low, EXCLUDED.low), EXCLUDED.low)" in pool.conn.sql
+    assert "COALESCE(minute_bars.volume, 0) + COALESCE(EXCLUDED.volume, 0)" in pool.conn.sql
+    assert "COALESCE(minute_bars.bar_count, 0) + COALESCE(EXCLUDED.bar_count, 0)" in pool.conn.sql
+    assert pool.conn.records == [
+        (
+            datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc),
+            "USD.JPY",
+            158.10,
+            158.15,
+            158.08,
+            158.12,
+            3,
+            2,
+        )
+    ]
 
 
 @pytest.mark.asyncio
