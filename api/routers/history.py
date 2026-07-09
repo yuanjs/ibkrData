@@ -29,6 +29,18 @@ _BUCKET_MAP = {
     "1w": timedelta(weeks=1),
 }
 
+_MINUTE_BAR_INTERVALS = {
+    "1m",
+    "1min",
+    "2m",
+    "3m",
+    "5m",
+    "5min",
+    "15m",
+    "1h",
+    "4h",
+}
+
 
 @router.get("/history/{symbol}")
 async def get_history(symbol: str, start: str, end: str, interval: str = "1min"):
@@ -73,8 +85,43 @@ async def get_history(symbol: str, start: str, end: str, interval: str = "1min")
             dt_start,
             dt_end,
         )
+    elif interval in _MINUTE_BAR_INTERVALS:
+        if interval in {"1m", "1min"}:
+            rows = await pool.fetch(
+                "SELECT time, open, high, low, close, volume "
+                "FROM minute_bars WHERE symbol=$1 AND time >= $2 AND time <= $3 "
+                "ORDER BY time",
+                symbol,
+                dt_start,
+                dt_end,
+            )
+        else:
+            rows = await pool.fetch(
+                "SELECT time_bucket($1, time) AS time, "
+                "first(open,time) AS open, max(high) AS high, min(low) AS low, "
+                "last(close,time) AS close, sum(volume) AS volume "
+                "FROM minute_bars WHERE symbol=$2 AND time BETWEEN $3 AND $4 "
+                "GROUP BY 1 ORDER BY 1",
+                bucket,
+                symbol,
+                dt_start,
+                dt_end,
+            )
+
+        if not rows:
+            rows = await pool.fetch(
+                "SELECT time_bucket($1, time) AS time, "
+                "first(last,time) AS open, max(last) AS high, min(last) AS low, "
+                "last(last,time) AS close, sum(volume) AS volume "
+                "FROM ticks WHERE symbol=$2 AND time BETWEEN $3 AND $4 "
+                "GROUP BY 1 ORDER BY 1",
+                bucket,
+                symbol,
+                dt_start,
+                dt_end,
+            )
     else:
-        # Use parameterized interval for tick aggregation
+        # Second-level intervals still aggregate directly from raw ticks.
         rows = await pool.fetch(
             "SELECT time_bucket($1, time) AS time, "
             "first(last,time) AS open, max(last) AS high, min(last) AS low, "
