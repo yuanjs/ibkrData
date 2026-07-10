@@ -10,6 +10,7 @@ except RuntimeError:
 
 import json
 import logging
+from dataclasses import dataclass
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -36,18 +37,28 @@ from config import (
     PRODUCT_ROLL_CONFIG,
     REDIS_URL,
     HAS_PAPER,
+    STARTUP_MINUTE_BACKFILL_ENABLED,
+    STARTUP_MINUTE_BACKFILL_FUTURES_MIN_SESSION_MINUTES,
+    STARTUP_MINUTE_BACKFILL_GAP_THRESHOLD_MINUTES,
+    STARTUP_MINUTE_BACKFILL_LOOKBACK_DAYS,
+    STARTUP_MINUTE_BACKFILL_MAX_GAPS_PER_SYMBOL,
+    STARTUP_MINUTE_BACKFILL_REQUEST_INTERVAL_SECONDS,
+    STARTUP_MINUTE_BACKFILL_STABLE_DELAY_MINUTES,
 )
 from daily_tracker import DailyBarTracker
 from data_writer import DataWriter
 from futures_runtime import LiveFuturesRuntime
 from ibkr_client import IBKRClient
 from publisher import Publisher
+from backfiller.contract import resolve_contract_async, resolve_what_to_show
+from backfiller.db_writer import MinuteBarWriter
 from backfiller.roll_calendar import RollCalendarGenerator
 
 # ====== monkey-patch: 捕获 tickType 45 (LAST_TIMESTAMP) 交易所时间戳 ======
 # ib_insync 的 Wrapper.tickString 没有处理 tickType 45，
 # 导致 CASH/FX 产品的交易所秒级时间戳被丢弃。
 # 这里在运行时添加 lastTimestamp 字段 + 补丁处理器。
+from ib_insync import Future
 from ib_insync.wrapper import Wrapper
 from ib_insync.ticker import Ticker
 from datetime import date, datetime, timedelta, timezone
@@ -66,6 +77,14 @@ Wrapper.tickString = _patched_tickString
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProductConfig:
+    symbol: str
+    sec_type: str
+    exchange: str
+    currency: str
 
 # Mapping of order_id -> close_id for correlating close order status updates
 _close_id_maps: dict[str, dict[int, str]] = {
@@ -378,6 +397,352 @@ async def load_subscriptions(pool):
         logger.warning("Failed to load subscriptions from DB, using .env SYMBOLS")
     logger.info(f"Using {len(DEFAULT_SUBSCRIPTIONS)} symbols from .env SYMBOLS")
     return DEFAULT_SUBSCRIPTIONS
+
+
+def _startup_backfill_cutoff(now: datetime | None = None) -> datetime:
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return (
+        now
+        - timedelta(minutes=STARTUP_MINUTE_BACKFILL_STABLE_DELAY_MINUTES)
+    ).replace(second=0, microsecond=0)
+
+
+def _ib_end_datetime(ts: datetime) -> str:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc).strftime("%Y%m%d %H:%M:%S UTC")
+
+
+def _ib_duration(start: datetime, end: datetime) -> str:
+    seconds = max(60, int((end - start).total_seconds()) + 60)
+    if seconds >= 86400:
+        return f"{max(1, (seconds + 86399) // 86400)} D"
+    return f"{seconds} S"
+
+
+def _product_from_subscription(sub: dict) -> ProductConfig:
+    return ProductConfig(
+        symbol=sub["symbol"],
+        sec_type=sub["sec_type"],
+        exchange=sub["exchange"],
+        currency=sub["currency"],
+    )
+
+
+async def _detect_cash_startup_minute_gaps(
+    pool,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+) -> list[tuple[datetime, datetime]]:
+    threshold = timedelta(minutes=STARTUP_MINUTE_BACKFILL_GAP_THRESHOLD_MINUTES)
+    rows = await pool.fetch(
+        """
+        WITH ordered AS (
+            SELECT time,
+                   LEAD(time) OVER (ORDER BY time) AS next_time
+            FROM minute_bars
+            WHERE symbol = $1
+              AND time >= $2
+              AND time <= $3
+        )
+        SELECT time AS gap_start, next_time AS gap_end
+        FROM ordered
+        WHERE next_time IS NOT NULL
+          AND next_time - time > $4
+        ORDER BY time
+        """,
+        symbol,
+        start,
+        end,
+        threshold,
+    )
+    return [(r["gap_start"], r["gap_end"]) for r in rows]
+
+
+async def _repair_cash_startup_minute_gaps(
+    ib,
+    pool,
+    writer: MinuteBarWriter,
+    product: ProductConfig,
+    start: datetime,
+    end: datetime,
+) -> int:
+    min_ts, max_ts, count = await writer.get_range(product.symbol, product.sec_type)
+    ranges: list[tuple[datetime, datetime]] = []
+
+    if count == 0 or max_ts is None:
+        ranges.append((start, end))
+    else:
+        if min_ts is not None and min_ts > start:
+            ranges.append((start, min(min_ts, end)))
+        ranges.extend(
+            await _detect_cash_startup_minute_gaps(
+                pool,
+                product.symbol,
+                start,
+                end,
+            )
+        )
+        stale_threshold = timedelta(
+            minutes=STARTUP_MINUTE_BACKFILL_GAP_THRESHOLD_MINUTES
+        )
+        if max_ts < end - stale_threshold:
+            ranges.append((max(max_ts, start), end))
+
+    if not ranges:
+        logger.info("%s: no startup minute gaps found", product.symbol)
+        return 0
+
+    ranges.sort(key=lambda item: item[1], reverse=True)
+
+    contract = await resolve_contract_async(
+        ib,
+        product.symbol,
+        product.sec_type,
+        product.exchange,
+        product.currency,
+    )
+    if contract is None:
+        logger.warning("%s: cannot resolve contract for startup backfill", product.symbol)
+        return 0
+
+    repaired = 0
+    for gap_start, gap_end in ranges[:STARTUP_MINUTE_BACKFILL_MAX_GAPS_PER_SYMBOL]:
+        if gap_end <= gap_start:
+            continue
+        logger.info(
+            "%s: startup minute backfill %s..%s",
+            product.symbol,
+            gap_start,
+            gap_end,
+        )
+        bars = await ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime=_ib_end_datetime(gap_end),
+            durationStr=_ib_duration(gap_start, gap_end),
+            barSizeSetting="1 min",
+            whatToShow=resolve_what_to_show(product.sec_type),
+            useRTH=False,
+            formatDate=1,
+        )
+        repaired += await writer.upsert_bars(product.symbol, bars)
+        await asyncio.sleep(STARTUP_MINUTE_BACKFILL_REQUEST_INTERVAL_SECONDS)
+
+    skipped = len(ranges) - STARTUP_MINUTE_BACKFILL_MAX_GAPS_PER_SYMBOL
+    if skipped > 0:
+        logger.warning(
+            "%s: skipped %d startup minute gaps due to max-gaps limit",
+            product.symbol,
+            skipped,
+        )
+    return repaired
+
+
+_STARTUP_FUTURES_QUARTERLY_MONTHS = frozenset({"03", "06", "09", "12"})
+_STARTUP_FUTURES_ROLL_CONTRACT_MONTHS = {
+    "SPI": _STARTUP_FUTURES_QUARTERLY_MONTHS,
+    "MYM": _STARTUP_FUTURES_QUARTERLY_MONTHS,
+    "MNQ": _STARTUP_FUTURES_QUARTERLY_MONTHS,
+    "MES": _STARTUP_FUTURES_QUARTERLY_MONTHS,
+    "N225M": _STARTUP_FUTURES_QUARTERLY_MONTHS,
+    "10Y": _STARTUP_FUTURES_QUARTERLY_MONTHS,
+    "ZC": frozenset({"03", "05", "07", "09", "12"}),
+}
+
+
+def _is_startup_roll_contract(symbol: str, contract) -> bool:
+    months = _STARTUP_FUTURES_ROLL_CONTRACT_MONTHS.get(symbol)
+    if not months:
+        return True
+    exp = (getattr(contract, "lastTradeDateOrContractMonth", None) or "0000")
+    return len(exp) >= 6 and exp[4:6] in months
+
+
+async def _resolve_startup_futures_contracts(ib, product: ProductConfig) -> list:
+    try:
+        details = await ib.reqContractDetailsAsync(
+            Future(
+                product.symbol,
+                exchange=product.exchange,
+                includeExpired=True,
+            )
+        )
+    except Exception as exc:
+        logger.warning("%s: failed to list futures contracts: %s", product.symbol, exc)
+        return []
+
+    contracts = [
+        d.contract for d in details
+        if _is_startup_roll_contract(product.symbol, d.contract)
+    ]
+    contracts.sort(key=lambda c: getattr(c, "lastTradeDateOrContractMonth", "") or "")
+    return contracts
+
+
+async def _repair_futures_startup_session_gaps(
+    ib,
+    writer: MinuteBarWriter,
+    product: ProductConfig,
+    start: datetime,
+    end: datetime,
+) -> None:
+    gaps = await writer.detect_futures_session_gaps(
+        product.symbol,
+        start_date=start.date(),
+        end_date=end.date(),
+        min_minutes=STARTUP_MINUTE_BACKFILL_FUTURES_MIN_SESSION_MINUTES,
+    )
+    if not gaps:
+        logger.info("%s: no startup futures session gaps found", product.symbol)
+        return
+
+    contracts = await _resolve_startup_futures_contracts(ib, product)
+    contracts_by_con_id = {
+        int(c.conId): c for c in contracts if getattr(c, "conId", None)
+    }
+    repaired = 0
+    for gap in gaps[:STARTUP_MINUTE_BACKFILL_MAX_GAPS_PER_SYMBOL]:
+        contract = contracts_by_con_id.get(int(gap["con_id"]))
+        if contract is None:
+            logger.warning(
+                "%s: cannot resolve conId=%s for startup session repair",
+                product.symbol,
+                gap["con_id"],
+            )
+            continue
+        contract.includeExpired = True
+        logger.info(
+            "%s %s conId=%s: startup session repair %s (%s..%s)",
+            product.symbol,
+            gap["local_symbol"],
+            gap["con_id"],
+            gap["session_date"],
+            gap["session_start"],
+            gap["session_end"],
+        )
+        bars = await ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime=_ib_end_datetime(gap["session_end"]),
+            durationStr="1 D",
+            barSizeSetting="1 min",
+            whatToShow=resolve_what_to_show(product.sec_type),
+            useRTH=False,
+            formatDate=1,
+        )
+        await writer.upsert_futures_bars(product.symbol, contract, bars)
+        repaired += 1
+        await asyncio.sleep(STARTUP_MINUTE_BACKFILL_REQUEST_INTERVAL_SECONDS)
+
+    skipped = len(gaps) - STARTUP_MINUTE_BACKFILL_MAX_GAPS_PER_SYMBOL
+    if skipped > 0:
+        logger.warning(
+            "%s: skipped %d startup futures session gaps due to max-gaps limit",
+            product.symbol,
+            skipped,
+        )
+    logger.info(
+        "%s: attempted startup repair for %d futures sessions",
+        product.symbol,
+        repaired,
+    )
+
+
+async def _repair_futures_startup_minute_gaps(
+    ib,
+    writer: MinuteBarWriter,
+    product: ProductConfig,
+    start: datetime,
+    end: datetime,
+) -> int:
+    repaired = 0
+    _, max_ts, count = await writer.get_range(product.symbol, product.sec_type)
+    stale_threshold = timedelta(minutes=STARTUP_MINUTE_BACKFILL_GAP_THRESHOLD_MINUTES)
+    if count == 0 or max_ts is None or max_ts < end - stale_threshold:
+        contract = await resolve_contract_async(
+            ib,
+            product.symbol,
+            product.sec_type,
+            product.exchange,
+            product.currency,
+        )
+        if contract is not None:
+            gap_start = start if max_ts is None else max(max_ts, start)
+            logger.info(
+                "%s: startup active-futures minute backfill %s..%s",
+                product.symbol,
+                gap_start,
+                end,
+            )
+            bars = await ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime=_ib_end_datetime(end),
+                durationStr=_ib_duration(gap_start, end),
+                barSizeSetting="1 min",
+                whatToShow=resolve_what_to_show(product.sec_type),
+                useRTH=False,
+                formatDate=1,
+            )
+            repaired += await writer.upsert_futures_bars(product.symbol, contract, bars)
+            await asyncio.sleep(STARTUP_MINUTE_BACKFILL_REQUEST_INTERVAL_SECONDS)
+        else:
+            logger.warning("%s: cannot resolve active futures contract", product.symbol)
+    else:
+        logger.info("%s: no startup active-futures tail gap found", product.symbol)
+
+    await _repair_futures_startup_session_gaps(ib, writer, product, start, end)
+    return repaired
+
+
+async def startup_minute_gap_backfill(client: IBKRClient, pool, symbols: list[dict]):
+    if not STARTUP_MINUTE_BACKFILL_ENABLED:
+        logger.info("Startup minute gap backfill disabled")
+        return
+
+    end = _startup_backfill_cutoff()
+    start = end - timedelta(days=STARTUP_MINUTE_BACKFILL_LOOKBACK_DAYS)
+    if end <= start:
+        logger.warning("Startup minute gap backfill skipped: invalid time window")
+        return
+
+    writer = MinuteBarWriter(pool)
+    logger.info(
+        "Startup minute gap backfill scanning %s..%s for %d symbols",
+        start,
+        end,
+        len(symbols),
+    )
+    ordered_symbols = sorted(
+        symbols,
+        key=lambda item: 1 if item.get("sec_type") == "FUT" else 0,
+    )
+    for sub in ordered_symbols:
+        product = _product_from_subscription(sub)
+        try:
+            if product.sec_type == "FUT":
+                await _repair_futures_startup_minute_gaps(
+                    client.ib,
+                    writer,
+                    product,
+                    start,
+                    end,
+                )
+            else:
+                await _repair_cash_startup_minute_gaps(
+                    client.ib,
+                    pool,
+                    writer,
+                    product,
+                    start,
+                    end,
+                )
+        except Exception as exc:
+            logger.warning(
+                "%s: startup minute gap backfill failed: %s",
+                product.symbol,
+                exc,
+            )
 
 
 async def _load_latest_raw_futures_contract(pool, symbol: str) -> dict | None:
@@ -1103,6 +1468,7 @@ async def main():
 
     futures_runtime = LiveFuturesRuntime(client, writer, pool, pub)
     await futures_runtime.refresh_contracts(symbols)
+    await startup_minute_gap_backfill(client, pool, symbols)
     await futures_runtime.ensure_market_data()
     await futures_runtime.refresh_daily_bars()
 
