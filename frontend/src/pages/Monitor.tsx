@@ -3,9 +3,11 @@ import { QuoteTable } from '../components/QuoteTable'
 import { CandleChart } from '../components/CandleChart'
 import { api, futuresApi, type FuturesActiveContract } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
-import { aggregateCandles, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../utils/chartData'
+import { aggregateCandles, getFuturesDailyAsOf, intervalSeconds, normalizeCandles, type CandleLike } from '../utils/chartData'
 
 const DAILY_CHART_LIMIT = 120
+const RECENT_HISTORY_REFRESH_BARS = 30
+const RECENT_HISTORY_REFRESH_DELAYS_MS = [3_000, 80_000]
 const historyCache = new Map<string, CandleLike[]>()
 
 function cloneCandles(rows: CandleLike[]) {
@@ -61,6 +63,37 @@ export function Monitor() {
   const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [error, setError] = useState<string | null>(null)
   const historyRequestIdRef = useRef(0)
+  const recentRefreshRequestIdRef = useRef(0)
+  const recentRefreshTimersRef = useRef<number[]>([])
+  const lastLiveBucketRef = useRef<number | null>(null)
+
+  const getCacheKey = useCallback((sym: string, inv: string, isFutures: boolean) => {
+    return `${sym}:${inv}:${isFutures ? 'futures' : 'cash'}`
+  }, [])
+
+  const normalizeRows = useCallback((rows: CandleLike[], inv: string, isFutures: boolean) => {
+    const chartRows = isFutures && inv !== '1d' ? aggregateCandles(rows, inv) : rows
+    return dedupeAndSortCandles(normalizeCandles(chartRows, inv))
+  }, [])
+
+  const fetchChartRange = useCallback(async (
+    sym: string,
+    inv: string,
+    isFutures: boolean,
+    start: Date,
+    rangeEnd: Date,
+    asOfBase: Date = rangeEnd,
+  ) => {
+    if (isFutures) {
+      if (inv === '1d') {
+        return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true, DAILY_CHART_LIMIT)
+      }
+      return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString())
+    }
+    return api.get<{ time: string, open: number, high: number, low: number, close: number }[]>(
+      `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}`
+    )
+  }, [])
 
   const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
     const requestId = ++historyRequestIdRef.current
@@ -69,7 +102,7 @@ export function Monitor() {
     const initialHours = Math.min(getInitialHistoryLookbackHours(inv), totalHours)
     const totalStart = new Date(end.getTime() - totalHours * 3600 * 1000)
     const initialStart = new Date(end.getTime() - initialHours * 3600 * 1000)
-    const cacheKey = `${sym}:${inv}:${isFutures ? 'futures' : 'cash'}`
+    const cacheKey = getCacheKey(sym, inv, isFutures)
     const cachedRows = historyCache.get(cacheKey)
     const hasCachedRows = Boolean(cachedRows)
 
@@ -77,23 +110,6 @@ export function Monitor() {
       setCandles(cloneCandles(cachedRows))
     } else {
       setCandles([])
-    }
-
-    const fetchRange = async (start: Date, rangeEnd: Date) => {
-      if (isFutures) {
-        if (inv === '1d') {
-          return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted', true, DAILY_CHART_LIMIT)
-        }
-        return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', end.toISOString())
-      }
-      return api.get<{ time: string, open: number, high: number, low: number, close: number }[]>(
-        `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}`
-      )
-    }
-
-    const normalizeRows = (rows: CandleLike[]) => {
-      const chartRows = isFutures && inv !== '1d' ? aggregateCandles(rows, inv) : rows
-      return dedupeAndSortCandles(normalizeCandles(chartRows, inv))
     }
 
     try {
@@ -104,18 +120,18 @@ export function Monitor() {
       // of tomorrow, with UTC noon as its time field).
       const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
 
-      const recentRows = await fetchRange(initialStart, queryEnd)
+      const recentRows = await fetchChartRange(sym, inv, isFutures, initialStart, queryEnd, end)
       if (historyRequestIdRef.current !== requestId) return
-      const normalizedRecentRows = normalizeRows(recentRows)
+      const normalizedRecentRows = normalizeRows(recentRows, inv, isFutures)
       historyCache.set(cacheKey, cloneCandles(normalizedRecentRows))
       setCandles(normalizedRecentRows)
 
       if (totalStart >= initialStart) return
 
       try {
-        const olderRows = await fetchRange(totalStart, initialStart)
+        const olderRows = await fetchChartRange(sym, inv, isFutures, totalStart, initialStart, end)
         if (historyRequestIdRef.current !== requestId) return
-        const normalizedRows = normalizeRows([...olderRows, ...recentRows])
+        const normalizedRows = normalizeRows([...olderRows, ...recentRows], inv, isFutures)
         historyCache.set(cacheKey, cloneCandles(normalizedRows))
         setCandles(normalizedRows)
       } catch (e) {
@@ -128,13 +144,73 @@ export function Monitor() {
         setCandles([])
       }
     }
-  }, [])
+  }, [fetchChartRange, getCacheKey, normalizeRows])
+
+  const refreshRecentHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
+    const seconds = intervalSeconds(inv)
+    if (seconds < 60 || inv === '1d' || inv === '1w') return
+
+    const requestId = ++recentRefreshRequestIdRef.current
+    const end = new Date()
+    const lookbackMs = Math.max(RECENT_HISTORY_REFRESH_BARS * seconds * 1000, 2 * 3600_000)
+    const start = new Date(end.getTime() - lookbackMs)
+    const cacheKey = getCacheKey(sym, inv, isFutures)
+
+    try {
+      const rows = await fetchChartRange(sym, inv, isFutures, start, end, end)
+      if (recentRefreshRequestIdRef.current !== requestId) return
+      const normalizedRows = normalizeRows(rows, inv, isFutures)
+      if (normalizedRows.length === 0) return
+
+      setCandles(prev => {
+        const merged = dedupeAndSortCandles([...prev, ...normalizedRows])
+        historyCache.set(cacheKey, cloneCandles(merged))
+        return merged
+      })
+    } catch (e) {
+      console.warn('Failed to refresh recent chart history:', e)
+    }
+  }, [fetchChartRange, getCacheKey, normalizeRows])
 
   useEffect(() => {
     if (activeSymbol) {
       fetchHistory(activeSymbol, chartInterval, isActiveFutures)
     }
   }, [activeSymbol, fetchHistory, chartInterval, isActiveFutures])
+
+  useEffect(() => {
+    lastLiveBucketRef.current = null
+    recentRefreshRequestIdRef.current += 1
+    for (const timer of recentRefreshTimersRef.current) {
+      window.clearTimeout(timer)
+    }
+    recentRefreshTimersRef.current = []
+  }, [activeSymbol, chartInterval, isActiveFutures])
+
+  useEffect(() => {
+    if (!activeSymbol || !chartLiveTick?.price) return
+
+    const seconds = intervalSeconds(chartInterval)
+    if (seconds < 60 || chartInterval === '1d' || chartInterval === '1w') return
+
+    const tickTimeSec = chartLiveTick.time
+      ? Math.floor(new Date(chartLiveTick.time).getTime() / 1000)
+      : Math.floor(Date.now() / 1000)
+    const liveBucket = tickTimeSec - (tickTimeSec % seconds)
+    const previousBucket = lastLiveBucketRef.current
+    lastLiveBucketRef.current = liveBucket
+
+    if (previousBucket == null || liveBucket <= previousBucket) return
+
+    const timers = RECENT_HISTORY_REFRESH_DELAYS_MS.map(delayMs => {
+      const timer = window.setTimeout(() => {
+        recentRefreshTimersRef.current = recentRefreshTimersRef.current.filter(current => current !== timer)
+        void refreshRecentHistory(activeSymbol, chartInterval, isActiveFutures)
+      }, delayMs)
+      return timer
+    })
+    recentRefreshTimersRef.current.push(...timers)
+  }, [activeSymbol, chartInterval, chartLiveTick, isActiveFutures, refreshRecentHistory])
 
   useEffect(() => {
     if (!activeSymbol || !isActiveFutures) {
