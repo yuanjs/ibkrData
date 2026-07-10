@@ -787,11 +787,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       if (Number(currentBucketTime) > Number(lastCandle.time)) {
         // Tick belongs to a new trading day (e.g., after roll hour)
         const newCandle = { time: currentBucketTime, open: newClose, high: newClose, low: newClose, close: newClose }
-        if (isLineChart) {
-          seriesRef.current.update({ time: currentBucketTime as any, value: newClose })
-        } else {
-          seriesRef.current.update(newCandle as any)
-        }
         currentData.push(newCandle)
       } else {
         // currentBucketTime < lastCandle.time: tick belongs to a past candle
@@ -806,21 +801,19 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         // Don't call chart update — past candle data is already finalized in DB
       }
     } else {
-      const updateTime = interval === '1d' ? lastCandle.time : Math.max(Number(lastCandle.time), Number(currentBucketTime))
-      if (isLineChart) {
-        seriesRef.current.update({ time: updateTime, value: newClose })
-      } else {
-        seriesRef.current.update({
-          time: updateTime,
-          open: lastCandle.open,
-          high: Math.max(lastCandle.high, newClose),
-          low: Math.min(lastCandle.low, newClose),
-          close: newClose,
-        })
-      }
       lastCandle.high = Math.max(lastCandle.high, newClose)
       lastCandle.low = Math.min(lastCandle.low, newClose)
       lastCandle.close = newClose
+    }
+
+    if (isLineChart) {
+      const latest = currentData[currentData.length - 1]
+      seriesRef.current.setData(currentData.map((d) => ({ time: d.time, value: (d as any).close })))
+      if (latest) {
+        seriesRef.current.update({ time: latest.time as any, value: latest.close })
+      }
+    } else {
+      seriesRef.current.setData(currentData as any)
     }
 
     // Update MA on live tick (skip for weekly — no meaningful real-time bucketing)
