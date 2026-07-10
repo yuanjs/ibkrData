@@ -843,40 +843,13 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         ma10SeriesRef.current?.update({ time: updateTime, value: sum10 / 10 })
       }
 
-      // Update KDJ on live tick using last 30 candles for performance
+      // Keep live KDJ identical to the full recompute used when history data reloads.
       if (kSeriesRef.current && dSeriesRef.current && jSeriesRef.current) {
-        const sliceData = currentData.slice(-30)
-        const kdj = calculateKDJData(sliceData)
-        const lastK = kdj.k[kdj.k.length - 1]
-        const lastD = kdj.d[kdj.d.length - 1]
-        const lastJ = kdj.j[kdj.j.length - 1]
-        if (lastK) {
-          kSeriesRef.current.update(lastK)
-          const len = kdjDataRef.current.k.length
-          if (len > 0 && kdjDataRef.current.k[len - 1].time === lastK.time) {
-            kdjDataRef.current.k[len - 1] = lastK
-          } else {
-            kdjDataRef.current.k.push(lastK)
-          }
-        }
-        if (lastD) {
-          dSeriesRef.current.update(lastD)
-          const len = kdjDataRef.current.d.length
-          if (len > 0 && kdjDataRef.current.d[len - 1].time === lastD.time) {
-            kdjDataRef.current.d[len - 1] = lastD
-          } else {
-            kdjDataRef.current.d.push(lastD)
-          }
-        }
-        if (lastJ) {
-          jSeriesRef.current.update(lastJ)
-          const len = kdjDataRef.current.j.length
-          if (len > 0 && kdjDataRef.current.j[len - 1].time === lastJ.time) {
-            kdjDataRef.current.j[len - 1] = lastJ
-          } else {
-            kdjDataRef.current.j.push(lastJ)
-          }
-        }
+        const kdj = calculateKDJData(currentData)
+        kdjDataRef.current = kdj
+        kSeriesRef.current.setData(kdj.k)
+        dSeriesRef.current.setData(kdj.d)
+        jSeriesRef.current.setData(kdj.j)
       }
     }
   }, [liveTick, interval, isLineChart])
