@@ -787,6 +787,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       if (Number(currentBucketTime) > Number(lastCandle.time)) {
         // Tick belongs to a new trading day (e.g., after roll hour)
         const newCandle = { time: currentBucketTime, open: newClose, high: newClose, low: newClose, close: newClose }
+        if (isLineChart) {
+          seriesRef.current.update({ time: currentBucketTime as any, value: newClose })
+        } else {
+          seriesRef.current.update(newCandle as any)
+        }
         currentData.push(newCandle)
       } else {
         // currentBucketTime < lastCandle.time: tick belongs to a past candle
@@ -801,19 +806,21 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         // Don't call chart update — past candle data is already finalized in DB
       }
     } else {
+      const updateTime = interval === '1d' ? lastCandle.time : Math.max(Number(lastCandle.time), Number(currentBucketTime))
+      if (isLineChart) {
+        seriesRef.current.update({ time: updateTime, value: newClose })
+      } else {
+        seriesRef.current.update({
+          time: updateTime,
+          open: lastCandle.open,
+          high: Math.max(lastCandle.high, newClose),
+          low: Math.min(lastCandle.low, newClose),
+          close: newClose,
+        })
+      }
       lastCandle.high = Math.max(lastCandle.high, newClose)
       lastCandle.low = Math.min(lastCandle.low, newClose)
       lastCandle.close = newClose
-    }
-
-    if (isLineChart) {
-      const latest = currentData[currentData.length - 1]
-      seriesRef.current.setData(currentData.map((d) => ({ time: d.time, value: (d as any).close })))
-      if (latest) {
-        seriesRef.current.update({ time: latest.time as any, value: latest.close })
-      }
-    } else {
-      seriesRef.current.setData(currentData as any)
     }
 
     // Update MA on live tick (skip for weekly — no meaningful real-time bucketing)
@@ -836,13 +843,40 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         ma10SeriesRef.current?.update({ time: updateTime, value: sum10 / 10 })
       }
 
-      // Keep live KDJ identical to the full recompute used when history data reloads.
+      // Update KDJ on live tick using last 30 candles for performance
       if (kSeriesRef.current && dSeriesRef.current && jSeriesRef.current) {
-        const kdj = calculateKDJData(currentData)
-        kdjDataRef.current = kdj
-        kSeriesRef.current.setData(kdj.k)
-        dSeriesRef.current.setData(kdj.d)
-        jSeriesRef.current.setData(kdj.j)
+        const sliceData = currentData.slice(-30)
+        const kdj = calculateKDJData(sliceData)
+        const lastK = kdj.k[kdj.k.length - 1]
+        const lastD = kdj.d[kdj.d.length - 1]
+        const lastJ = kdj.j[kdj.j.length - 1]
+        if (lastK) {
+          kSeriesRef.current.update(lastK)
+          const len = kdjDataRef.current.k.length
+          if (len > 0 && kdjDataRef.current.k[len - 1].time === lastK.time) {
+            kdjDataRef.current.k[len - 1] = lastK
+          } else {
+            kdjDataRef.current.k.push(lastK)
+          }
+        }
+        if (lastD) {
+          dSeriesRef.current.update(lastD)
+          const len = kdjDataRef.current.d.length
+          if (len > 0 && kdjDataRef.current.d[len - 1].time === lastD.time) {
+            kdjDataRef.current.d[len - 1] = lastD
+          } else {
+            kdjDataRef.current.d.push(lastD)
+          }
+        }
+        if (lastJ) {
+          jSeriesRef.current.update(lastJ)
+          const len = kdjDataRef.current.j.length
+          if (len > 0 && kdjDataRef.current.j[len - 1].time === lastJ.time) {
+            kdjDataRef.current.j[len - 1] = lastJ
+          } else {
+            kdjDataRef.current.j.push(lastJ)
+          }
+        }
       }
     }
   }, [liveTick, interval, isLineChart])
