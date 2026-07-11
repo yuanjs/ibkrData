@@ -140,3 +140,31 @@ collector（`collector/ibkr_client.py`）的表现与历史故障关系见
   告警（只发一次）。
 - **Gateway 恢复后自动重连并重新订阅全部行情，无需重启 collector、无需人工介入。**
   恢复时延 = Gateway 就绪 + 最多一次退避间隔（≤60s）。
+
+### 真实重启验证（2026-07-11，igzmf 受控压测）
+
+受控重现端口拒绝 + 恢复全过程，证实修复效果：
+
+1. **动作**：`docker stop ibkr-ib-gateway-1`（16:22，约 18 分钟不可用）→ `docker start`。
+2. **采集**：受影响进程 = collector（容器）+ 7 个 kdjclient 系 node 实例
+   （kdjclient/japclient/dowclient/spxclient/copclient/usdclient/audclient）。
+   igzmf **未装 lsof**，FD 监测改用 `/proc/<pid>/fd` 周期采样。
+3. **结果**：
+   - 不可用期 4 分钟采样：`TOTAL_FD` 稳定在 206–207，无单调上升；无 `localhost:6379`
+     连接失败（原故障标志）；SSH 全程可达。
+   - 7 个 kdjclient 各自 `Starting automatic reconnection loop` 计数 = **1**
+     （重连循环只启动 1 次，不指数增长——泄漏修复核心证据）。
+   - `docker start` 后 8 客户端全部自动恢复：collector `Connected to IB Gateway` +
+     `Re-subscribing to 2 symbols...`；每个 client `Connection established and
+     initialized.`；物理层各持 1 条 `127.0.0.1:<hport> -> 127.0.0.1:4002` ESTAB。
+     **零人工、零进程重启。**
+4. **Disconnected 日志噪声（kdjclient 侧，非泄漏）**：端口拒绝/半开窗口内每个 client
+   可能被 `@stoqey/ib` 反复 emit `EventName.disconnected`（每次 `net.connect` 失败后
+   `'close'` 回调 `onEnd` 会 emit；`connectWithRetry` catch 里主动调的
+   `this.ib.disconnect()` 也会再 emit 一次）。原监听器无条件 `console.log` 导致刷屏。
+   已把该日志行收进 `!isReconnecting` 守卫内，只在确实要派生新一轮重连时才打印。
+   （此项在 kdjclient 的 `IbkrBrokerAdapter.js`，与 ibkrData 仓库独立。）
+5. **未覆盖（如实）**：本次不会卡在 gateway 半开"握手完成又断"的 wasReady 路径，
+   原报告指数泄漏分支未被本次重现。彻底证伪仍需过渡期复现或自然 07:30 重启窗口。
+   collector 在 `ConnectionRefused` 路径本就不 emit `disconnectedEvent`，本次
+   顺带验证该路径新旧代码均无泄漏。
