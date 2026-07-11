@@ -60,6 +60,7 @@ class IBKRClient:
 
         self._reconnect_task = None
         self._data_suspended = False
+        self._gateway_reconnect_task = None  # gateway 重连去重句柄，避免指数级协程泄漏
 
     def _is_new_trade(self, key, price: float) -> bool:
         """Check if this is a genuine new trade, not a bid/ask update with stale last."""
@@ -132,7 +133,17 @@ class IBKRClient:
 
     def _on_disconnect(self):
         logger.warning("Disconnected from IB Gateway")
-        asyncio.ensure_future(self.connect_with_retry())
+        # 半开连接反复断开时 ib_insync 会反复 emit disconnectedEvent。
+        # 用 done 判断去重，确保全局只存在一个 connect_with_retry 协程，
+        # 避免每次断开都派生新协程导致重连协程数指数级增长、耗尽 FD/CPU。
+        # connect_with_retry 自身 while True 已在退避重试，无需外部多次派生。
+        task = self._gateway_reconnect_task
+        if task is None or task.done():
+            self._gateway_reconnect_task = asyncio.create_task(
+                self.connect_with_retry()
+            )
+        else:
+            logger.info("Gateway reconnect already in progress, skipping.")
 
     def _on_connect(self):
         logger.info("Connected to IB Gateway")

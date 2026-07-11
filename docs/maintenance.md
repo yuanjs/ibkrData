@@ -38,7 +38,7 @@ cd ~/projects/ibkrData
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `BACKUP_DIR` | `项目目录/backups` | 备份文件存放路径 |
-| `RETENTION_DAYS` | `10` | 保留天数，超过自动清理 |
+| `RETENTION_DAYS` | `2` | 保留天数，超过自动清理 |
 
 备份文件格式：`ibkrdata_YYYYMMDD_HHMMSS.sql.gz`（pg_dump custom 格式 + 最高压缩）。
 
@@ -67,10 +67,10 @@ docker compose exec -T timescaledb pg_restore -U ibkr -d ibkrdata \
 crontab -e
 ```
 
-添加以下行，每天凌晨 3:00 执行：
+添加以下行，每天上午 7:00 执行：
 
 ```cron
-0 3 * * * cd ~/projects/ibkrData && ./db/backup.sh --cron >> /dev/null 2>&1
+0 7 * * * cd ~/projects/ibkrData && RETENTION_DAYS=2 ./db/backup.sh --cron >> /dev/null 2>&1
 ```
 
 #### 自定义（保留 60 天，备份到其他目录）：
@@ -124,3 +124,19 @@ journalctl --user -u ibkrdata-backup.service -e
 - `--cron` 参数让脚本只写日志，不输出到终端
 - 备份脚本通过 `docker compose exec` 在 timescaledb 容器内运行，避免宿主机 `pg_dump` 版本不匹配
 - 脚本会自动清理超出保留天数的旧备份文件
+
+## Gateway 重启 / 二次验证期间的重连行为
+
+Gateway 每天自动重启、有时需手动二次验证，期间可能数分钟到十几分钟不可用。
+collector（`collector/ibkr_client.py`）的表现与历史故障关系见
+[`reconnect_leak_analysis.md`](./reconnect_leak_analysis.md)。
+
+要点：
+
+- 断线后由**唯一一个** `connect_with_retry` 协程以指数退避（封顶 60s）持续
+  重试，不再多派生协程（已修复历史上的指数级协程泄漏）。
+- 每次连接尝试 2s 超时，失败即进入下一轮退避，**不会卡死在单次 `await`**。
+- 持续故障超过 `NOTIFY_THRESHOLD_SECONDS`（默认 120s）时通过 Bark 发送一次
+  告警（只发一次）。
+- **Gateway 恢复后自动重连并重新订阅全部行情，无需重启 collector、无需人工介入。**
+  恢复时延 = Gateway 就绪 + 最多一次退避间隔（≤60s）。
