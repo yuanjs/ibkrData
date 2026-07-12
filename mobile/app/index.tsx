@@ -4,7 +4,10 @@ import { CandleChartRN } from '../src/components/CandleChartRN'
 import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../src/api/client'
 import { useMarketStore } from '../src/stores/marketStore'
 import { useTheme } from '../src/theme'
-import { aggregateCandles, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../src/utils/chartData'
+import { aggregateCandles, getFuturesDailyAsOf, intervalSeconds, normalizeCandles, type CandleLike } from '../src/utils/chartData'
+
+const RECENT_HISTORY_REFRESH_BARS = 30
+const RECENT_HISTORY_REFRESH_DELAYS_MS = [3_000, 80_000]
 
 function getHistoryLookbackHours(interval: string) {
   if (interval.endsWith('s')) return 6
@@ -52,6 +55,9 @@ export default function Monitor() {
   const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [error, setError] = useState<string | null>(null)
   const historyRequestIdRef = useRef(0)
+  const recentRefreshRequestIdRef = useRef(0)
+  const recentRefreshTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const lastLiveBucketRef = useRef<number | null>(null)
 
   const initQuotes = useMarketStore(s => s.initQuotes)
 
@@ -63,6 +69,30 @@ export default function Monitor() {
     }).catch(err => console.error('Failed to fetch symbols:', err))
   }, [initQuotes])
 
+  const normalizeRows = useCallback((rows: CandleLike[], inv: string, isFutures: boolean) => {
+    const chartRows = isFutures && inv !== '1d' ? aggregateCandles(rows, inv) : rows
+    return dedupeAndSortCandles(normalizeCandles(chartRows, inv))
+  }, [])
+
+  const fetchChartRange = useCallback(async (
+    sym: string,
+    inv: string,
+    isFutures: boolean,
+    start: Date,
+    rangeEnd: Date,
+    asOfBase: Date = rangeEnd,
+  ) => {
+    if (isFutures) {
+      if (inv === '1d') {
+        return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true)
+      }
+      return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString())
+    }
+    return api.get<{ time: string; open: number; high: number; low: number; close: number }[]>(
+      `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}`
+    )
+  }, [])
+
   const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
     const requestId = ++historyRequestIdRef.current
     const end = new Date()
@@ -71,37 +101,20 @@ export default function Monitor() {
     const totalStart = new Date(end.getTime() - totalHours * 3600 * 1000)
     const initialStart = new Date(end.getTime() - initialHours * 3600 * 1000)
 
-    const fetchRange = async (start: Date, rangeEnd: Date) => {
-      if (isFutures) {
-        if (inv === '1d') {
-          return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, end), 'back_adjusted', true)
-        }
-        return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', end.toISOString())
-      }
-      return api.get<{ time: string; open: number; high: number; low: number; close: number }[]>(
-        `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}`
-      )
-    }
-
-    const normalizeRows = (rows: CandleLike[]) => {
-      const chartRows = isFutures && inv !== '1d' ? aggregateCandles(rows, inv) : rows
-      return dedupeAndSortCandles(normalizeCandles(chartRows, inv))
-    }
-
     try {
       setError(null)
       const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
 
-      const recentRows = await fetchRange(initialStart, queryEnd)
+      const recentRows = await fetchChartRange(sym, inv, isFutures, initialStart, queryEnd, end)
       if (historyRequestIdRef.current !== requestId) return
-      setCandles(normalizeRows(recentRows))
+      setCandles(normalizeRows(recentRows, inv, isFutures))
 
       if (totalStart >= initialStart) return
 
       try {
-        const olderRows = await fetchRange(totalStart, initialStart)
+        const olderRows = await fetchChartRange(sym, inv, isFutures, totalStart, initialStart, end)
         if (historyRequestIdRef.current !== requestId) return
-        setCandles(normalizeRows([...olderRows, ...recentRows]))
+        setCandles(normalizeRows([...olderRows, ...recentRows], inv, isFutures))
       } catch (e) {
         console.warn('Failed to fetch older chart history:', e)
       }
@@ -110,13 +123,68 @@ export default function Monitor() {
       setError(e.message)
       setCandles([])
     }
-  }, [])
+  }, [fetchChartRange, normalizeRows])
+
+  const refreshRecentHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
+    const seconds = intervalSeconds(inv)
+    if (seconds < 60 || inv === '1d' || inv === '1w') return
+
+    const requestId = ++recentRefreshRequestIdRef.current
+    const end = new Date()
+    const lookbackMs = Math.max(RECENT_HISTORY_REFRESH_BARS * seconds * 1000, 2 * 3600_000)
+    const start = new Date(end.getTime() - lookbackMs)
+
+    try {
+      const rows = await fetchChartRange(sym, inv, isFutures, start, end, end)
+      if (recentRefreshRequestIdRef.current !== requestId) return
+      const normalizedRows = normalizeRows(rows, inv, isFutures)
+      if (normalizedRows.length === 0) return
+
+      setCandles(prev => dedupeAndSortCandles([...prev, ...normalizedRows]))
+    } catch (e) {
+      console.warn('Failed to refresh recent chart history:', e)
+    }
+  }, [fetchChartRange, normalizeRows])
 
   useEffect(() => {
     if (activeSymbol) {
       fetchHistory(activeSymbol, chartInterval, isActiveFutures)
     }
   }, [activeSymbol, fetchHistory, chartInterval, isActiveFutures, activeRollState?.active?.con_id])
+
+  useEffect(() => {
+    lastLiveBucketRef.current = null
+    recentRefreshRequestIdRef.current += 1
+    for (const timer of recentRefreshTimersRef.current) {
+      clearTimeout(timer)
+    }
+    recentRefreshTimersRef.current = []
+  }, [activeSymbol, chartInterval, isActiveFutures])
+
+  useEffect(() => {
+    if (!activeSymbol || !chartLiveTick?.price) return
+
+    const seconds = intervalSeconds(chartInterval)
+    if (seconds < 60 || chartInterval === '1d' || chartInterval === '1w') return
+
+    const tickTimeSec = chartLiveTick.time
+      ? Math.floor(new Date(chartLiveTick.time).getTime() / 1000)
+      : Math.floor(Date.now() / 1000)
+    const liveBucket = tickTimeSec - (tickTimeSec % seconds)
+    const previousBucket = lastLiveBucketRef.current
+    lastLiveBucketRef.current = liveBucket
+
+    if (previousBucket == null || liveBucket <= previousBucket) return
+
+    const timers = RECENT_HISTORY_REFRESH_DELAYS_MS.map(delayMs => {
+      const timer = setTimeout(() => {
+        recentRefreshTimersRef.current = recentRefreshTimersRef.current.filter(current => current !== timer)
+        void refreshRecentHistory(activeSymbol, chartInterval, isActiveFutures)
+      }, delayMs)
+      return timer
+    })
+    recentRefreshTimersRef.current.push(...timers)
+  }, [activeSymbol, chartInterval, chartLiveTick, isActiveFutures, refreshRecentHistory])
 
   useEffect(() => {
     if (!activeSymbol || !isActiveFutures) {
