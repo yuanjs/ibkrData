@@ -8,7 +8,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="${PROJECT_DIR}/.env"
 
 BACKUP_DIR="${BACKUP_DIR:-${PROJECT_DIR}/backups}"
-RETENTION_DAYS="${RETENTION_DAYS:-10}"
+RETENTION_DAYS="${RETENTION_DAYS:-2}"
 LOG_FILE="${BACKUP_DIR}/backup.log"
 
 DB_HOST="localhost"
@@ -46,9 +46,10 @@ _log() {
 
 _cleanup_old() {
   local count
-  count="$(find "$BACKUP_DIR" -name 'ibkrdata_*.sql.gz' -mtime "+${RETENTION_DAYS}" -type f | wc -l)"
+  local retention_minutes=$((RETENTION_DAYS * 1440))
+  count="$(find "$BACKUP_DIR" -name 'ibkrdata_*.sql.gz' -mmin "+${retention_minutes}" -type f | wc -l)"
   if [ "$count" -gt 0 ]; then
-    find "$BACKUP_DIR" -name 'ibkrdata_*.sql.gz' -mtime "+${RETENTION_DAYS}" -type f -delete
+    find "$BACKUP_DIR" -name 'ibkrdata_*.sql.gz' -mmin "+${retention_minutes}" -type f -delete
     _log "Cleaned up ${count} old backups (over ${RETENTION_DAYS} days)"
   fi
 }
