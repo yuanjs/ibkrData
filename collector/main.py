@@ -745,6 +745,30 @@ async def startup_minute_gap_backfill(client: IBKRClient, pool, symbols: list[di
             )
 
 
+async def reconnect_backfill_worker(event, client, pool, symbols):
+    """重连成功后回填 minute gap，复用启动期的 gap 检测逻辑。
+
+    用 asyncio.Event 驱动：Event 天然合并 gateway 半开风暴期的多次触发；
+    若回填在途时又有新触发，下一轮 wait() 会立即返回再跑一次，不丢事件、不重叠。
+    覆盖 gateway 断线重连与 10197 数据恢复两条路径（均经 _fire_reconnect_callbacks）。
+    注：startup_minute_gap_backfill 内含 _repair_futures_startup_minute_gaps，
+    因此期货 minute gap 也在此补齐；期货 live 重订阅仍由 LiveFuturesRuntime 负责。
+    历史请求经 client._historical_lock 串行化，避免与周期性 daily 刷新循环并发触发 pacing。
+    """
+    while True:
+        await event.wait()
+        event.clear()
+        try:
+            if client.is_connected:
+                logger.info("Reconnect detected: scanning for minute gaps to backfill")
+                async with client._historical_lock:
+                    await startup_minute_gap_backfill(client, pool, symbols)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Reconnect backfill error: {e}")
+
+
 async def _load_latest_raw_futures_contract(pool, symbol: str) -> dict | None:
     """Return the newest raw futures contract available in local storage."""
     try:
@@ -1035,7 +1059,8 @@ async def live_futures_daily_loop(runtime, interval: int):
     while True:
         try:
             if runtime.client.is_connected:
-                await runtime.refresh_daily_bars()
+                async with runtime.client._historical_lock:
+                    await runtime.refresh_daily_bars()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1249,14 +1274,16 @@ async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_trac
 async def daily_bar_refresh_loop(client, writer, pool, daily_tracker):
     """Periodically refresh daily bars for non-futures active subscriptions."""
     # Run first backfill immediately
-    await backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=daily_tracker)
+    async with client._historical_lock:
+        await backfill_daily_bars(client, writer, pool, duration="100 D", daily_tracker=daily_tracker)
 
     while True:
         await asyncio.sleep(4 * 3600)  # Refresh every 4 hours
         try:
             # Refresh a wider window so late IBKR daily settlement/CONTFUT
             # revisions overwrite any live-tick partial bars saved earlier.
-            await backfill_daily_bars(client, writer, pool, duration="30 D", daily_tracker=daily_tracker)
+            async with client._historical_lock:
+                await backfill_daily_bars(client, writer, pool, duration="30 D", daily_tracker=daily_tracker)
             logger.info("Periodic daily bar refresh completed")
         except asyncio.CancelledError:
             raise
@@ -1472,6 +1499,11 @@ async def main():
     await futures_runtime.ensure_market_data()
     await futures_runtime.refresh_daily_bars()
 
+    # 重连回填：注册晚于首次 startup_minute_gap_backfill，确保启动期回填与
+    # 重连回填不并发（首连时回调尚未注册，_has_connected_once 作冗余第二道闸）。
+    reconnect_backfill_event = asyncio.Event()
+    client.register_reconnect_handler(reconnect_backfill_event.set)
+
     for s in symbols:
         if s["sec_type"] == "FUT":
             # Futures are managed by LiveFuturesRuntime so active/next concrete
@@ -1586,6 +1618,12 @@ async def main():
         asyncio.create_task(
             order_command_listener(client, pub, channel="order:command:live"),
             name="live_order_listener",
+        ),
+        asyncio.create_task(
+            reconnect_backfill_worker(
+                reconnect_backfill_event, client, pool, symbols
+            ),
+            name="reconnect_backfill",
         ),
     ]
 

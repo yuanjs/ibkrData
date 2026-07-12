@@ -40,6 +40,10 @@ class IBKRClient:
         self.port = port
         self.client_id = client_id
         self.ib = IB()
+        # 一次性请求（reqHistoricalData/reqContractDetails 等）超时秒数，对齐 backfiller。
+        # 关键：历史请求经 _historical_lock 串行化，若无超时则一个卡死的历史请求会
+        # 永久持锁、拖死所有 daily 刷新循环；有超时则会抛 TimeoutError 释放锁并继续。
+        self.ib.RequestTimeout = 60
         self._tickers: dict[object, Ticker] = {}
         self._ticker_roles: dict[object, str] = {}
         self._symbol_map: dict[int, str] = {}  # conId -> symbol mapping
@@ -61,6 +65,12 @@ class IBKRClient:
         self._reconnect_task = None
         self._data_suspended = False
         self._gateway_reconnect_task = None  # gateway 重连去重句柄，避免指数级协程泄漏
+        self._reconnect_callbacks = []       # 重连成功后触发的回调（仿 _tick_callbacks）
+        self._has_connected_once = False     # 首连 vs 重连：首连不触发回填，由 main() 显式跑
+        self._resubscribe_lock = asyncio.Lock()  # 串行化 _resubscribe_all，防半开风暴并发重入
+        # 串行化所有历史 bar 请求（reqHistoricalDataAsync）：重连回填与周期性 daily 刷新
+        # 循环共用同一 IB 连接，并发发历史请求会触发 IBKR pacing 限制（error 162）。
+        self._historical_lock = asyncio.Lock()
 
     def _is_new_trade(self, key, price: float) -> bool:
         """Check if this is a genuine new trade, not a bid/ask update with stale last."""
@@ -84,10 +94,23 @@ class IBKRClient:
             await asyncio.sleep(15)
             logger.info("Auto-reconnecting market data (Code: 10197 recovery)...")
             await self._resubscribe_all()
+        # 数据恢复（10197 挂起窗口结束）→ 触发 gap 回填，补齐挂起期缺失的 minute
+        self._fire_reconnect_callbacks()
 
     def register_tick_handler(self, callback):
         """Register a callback for individual trade ticks: callback(symbol, price, size, time)"""
         self._tick_callbacks.append(callback)
+
+    def register_reconnect_handler(self, callback):
+        """Register a callback fired after a successful *re*connect (not first connect)."""
+        self._reconnect_callbacks.append(callback)
+
+    def _fire_reconnect_callbacks(self):
+        for cb in self._reconnect_callbacks:
+            try:
+                cb()
+            except Exception as e:
+                logger.error(f"Reconnect callback error: {e}")
 
     async def connect(self):
         await self.ib.connectAsync(self.host, self.port, clientId=self.client_id)
@@ -147,7 +170,16 @@ class IBKRClient:
 
     def _on_connect(self):
         logger.info("Connected to IB Gateway")
-        asyncio.ensure_future(self._resubscribe_all())
+        asyncio.ensure_future(self._handle_reconnect())
+
+    async def _handle_reconnect(self):
+        """重订阅行情后，重连（非首连）触发一次 minute gap 回填。"""
+        await self._resubscribe_all()
+        if self._has_connected_once:
+            self._fire_reconnect_callbacks()
+        else:
+            # 首连：回填由 main() 启动序列显式执行，这里只标记，避免重复
+            self._has_connected_once = True
 
     def _clear_market_data_state(self):
         for key, ticker in list(self._tickers.items()):
@@ -161,19 +193,22 @@ class IBKRClient:
         self._last_trade_prices.clear()
 
     async def _resubscribe_all(self):
-        if not self._subscriptions:
-            return
+        # 加锁串行化：半开风暴下 connectedEvent 与 10197 恢复可能并发触发本方法，
+        # 若并发进入会对同一 contract 双重 reqMktData，泄漏无法 cancel 的 ticker 句柄。
+        async with self._resubscribe_lock:
+            if not self._subscriptions:
+                return
 
-        logger.info(f"Re-subscribing to {len(self._subscriptions)} symbols...")
-        self._clear_market_data_state()
+            logger.info(f"Re-subscribing to {len(self._subscriptions)} symbols...")
+            self._clear_market_data_state()
 
-        # Deep copy the subscriptions to avoid mutation during iteration
-        subs = list(self._subscriptions.values())
-        for params in subs:
-            try:
-                await self.subscribe(**params)
-            except Exception as e:
-                logger.error(f"Failed to re-subscribe to {params.get('symbol')}: {e}")
+            # Deep copy the subscriptions to avoid mutation during iteration
+            subs = list(self._subscriptions.values())
+            for params in subs:
+                try:
+                    await self.subscribe(**params)
+                except Exception as e:
+                    logger.error(f"Failed to re-subscribe to {params.get('symbol')}: {e}")
 
     async def subscribe(
         self,

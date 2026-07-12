@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import types
@@ -105,6 +106,7 @@ async def test_resubscribe_all_cancels_old_market_data_before_replacing_tickers(
 
     client = IBKRClient.__new__(IBKRClient)
     client.ib = FakeIB()
+    client._resubscribe_lock = asyncio.Lock()
     client._tickers = {
         "AUD.USD": SimpleNamespace(contract="cash-contract"),
         ("SPI", 123): SimpleNamespace(contract="futures-contract"),
