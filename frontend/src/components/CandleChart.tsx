@@ -419,7 +419,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       const syncLoop = () => {
         if (!chartRef.current || !kdjChartRef.current) return
         const mr = chartRef.current.timeScale().getVisibleLogicalRange()
-        if (!mr) return
+        if (!mr) {
+          rafId = requestAnimationFrame(syncLoop)
+          return
+        }
         const kdjK = kdjDataRef.current.k
         if (kdjK.length === 0) {
           rafId = requestAnimationFrame(syncLoop)
@@ -435,7 +438,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             if (idx !== -1) {
               cachedOffset = idx
               lastKdjK0Time = currentKdjK0Time
+            } else {
+              cachedOffset = -1
             }
+          } else {
+            cachedOffset = -1
           }
         }
 
