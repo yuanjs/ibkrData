@@ -411,8 +411,6 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       // Continuous polling sync: read main chart's logical range each frame
       // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
       // events, which may not fire reliably during drag-to-pan gestures.
-      let lastFrom = -1
-      let lastTo = -1
       let cachedOffset = -1
       let lastKdjK0Time = -1
 
@@ -449,10 +447,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         if (cachedOffset !== -1) {
           const from = mr.from - cachedOffset
           const to = mr.to - cachedOffset
-          if (from !== lastFrom || to !== lastTo) {
-            lastFrom = from
-            lastTo = to
-            try { kdjChartRef.current.timeScale().setVisibleLogicalRange({ from, to }) } catch { }
+          const kdjTimeScale = kdjChartRef.current.timeScale()
+          const currentKdjRange = kdjTimeScale.getVisibleLogicalRange()
+          if (!currentKdjRange || Math.abs(currentKdjRange.from - from) > 0.01 || Math.abs(currentKdjRange.to - to) > 0.01) {
+            try { kdjTimeScale.setVisibleLogicalRange({ from, to }) } catch { }
           }
         }
         rafId = requestAnimationFrame(syncLoop)
