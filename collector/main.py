@@ -44,6 +44,7 @@ from config import (
     STARTUP_MINUTE_BACKFILL_MAX_GAPS_PER_SYMBOL,
     STARTUP_MINUTE_BACKFILL_REQUEST_INTERVAL_SECONDS,
     STARTUP_MINUTE_BACKFILL_STABLE_DELAY_MINUTES,
+    DAILY_BAR_BACKFILL_REQUEST_INTERVAL_SECONDS,
 )
 from daily_tracker import DailyBarTracker
 from data_writer import DataWriter
@@ -1264,6 +1265,9 @@ async def backfill_daily_bars(client, writer, pool, duration="100 D", daily_trac
                 if daily_tracker is not None:
                     latest = max(b["date_str"] for b in bars)
                     daily_tracker.update_latest_bar_date(symbol, latest)
+            
+            # Rate limit backfills to prevent hitting IB API pacing limits and pinning disk I/O
+            await asyncio.sleep(DAILY_BAR_BACKFILL_REQUEST_INTERVAL_SECONDS)
 
 
         logger.info("Daily bar backfill completed")
