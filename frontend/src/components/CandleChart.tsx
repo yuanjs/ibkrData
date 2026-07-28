@@ -149,6 +149,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
 
   const kdjDataRef = useRef<{ k: any[]; d: any[]; j: any[] }>({ k: [], d: [], j: [] })
   const lastDataRef = useRef<any[]>([])
+  // Whether the default/restored view has already been applied to the current
+  // chart instance. Background refreshes must not re-apply it, or the user's
+  // zoom/pan gets reset every time a new candle arrives.
+  const didInitialViewRef = useRef(false)
 
   /** Read a CSS custom property from :root */
   const cssVar = useCallback((name: string): string => {
@@ -625,6 +629,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     // Clear data refs on chart recreation to prevent stale sync during interval switch
     lastDataRef.current = []
     kdjDataRef.current = { k: [], d: [], j: [] }
+    didInitialViewRef.current = false
 
     return () => {
       cancelAnimationFrame(rafId)
@@ -682,6 +687,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       ...d,
       time: typeof d.time === 'string' ? Math.floor(new Date(d.time as string).getTime() / 1000) : d.time,
     }))
+
+    // Capture the pre-refresh view so a background refresh can keep the user's
+    // zoom/pan. Must be read before lastDataRef is overwritten below.
+    const prevLen = lastDataRef.current.length
+    const prevRange = chartRef.current?.timeScale().getVisibleLogicalRange() ?? null
+
     lastDataRef.current = normalizedData.map((d) => ({ ...d }))
 
     if (isLineChart) {
@@ -725,7 +736,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     }
 
     // Set visible range for both Line and Candle charts
-    if (chartRef.current) {
+    if (chartRef.current && !didInitialViewRef.current) {
       // Fit KDJ chart if applicable
       if (!isLineChart && kdjChartRef.current && kdjDataRef.current.k.length > 0) {
         kdjChartRef.current.timeScale().fitContent()
@@ -760,6 +771,22 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         chartRef.current.timeScale().fitContent()
       }
     } catch(e) { chartRef.current.timeScale().fitContent() }
+      didInitialViewRef.current = true
+    } else if (chartRef.current && prevRange && prevLen > 0) {
+      // Background refresh: setData() already preserves the logical range, so
+      // leave the user's zoom/pan alone. Only shift it when the user was
+      // pinned to the right edge, so newly appended candles stay in view.
+      const delta = normalizedData.length - prevLen
+      if (delta !== 0 && prevRange.to >= prevLen - 1.5) {
+        try {
+          chartRef.current.timeScale().setVisibleLogicalRange({
+            from: prevRange.from + delta,
+            to: prevRange.to + delta,
+          })
+        } catch {
+          // Range rejected by the chart — keep whatever view it settled on.
+        }
+      }
     }
   }, [data, isLineChart, interval, symbol])
 

@@ -54,6 +54,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   var intervalSec = 86400;
   var rafId = null;
   var chartGen = 0;  // Incremented on every destroy(); stale syncLoops bail out
+  // Whether the default/restored view was already applied to the current chart.
+  // Background refreshes must not re-apply it, or the user's zoom/pan is reset.
+  var didInitialView = false;
+  var lastThemeKey = '';
   var currentInterval = '1d';
   var decPlaces = 2;
   // KDJ/main chart sync offset
@@ -197,6 +201,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   }
 
   function setData(data) {
+    // Capture the pre-refresh view before currentCandles is replaced, so a
+    // background refresh can keep the user's zoom/pan.
+    var prevLen = currentCandles.length;
+    var prevRange = null;
+    if (chart && didInitialView) {
+      try { prevRange = chart.timeScale().getVisibleLogicalRange(); } catch(e) {}
+    }
     currentCandles = data;
     if (!mainSeries) return;
     document.getElementById('no-data').style.display = 'none';
@@ -215,6 +226,24 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         jSeries.setData(kdjData.j);
       }
     }
+    if (didInitialView) {
+      // Background refresh: setData() already preserves the logical range, so
+      // leave the user's zoom/pan alone. Only shift it when the user was
+      // pinned to the right edge, so newly appended candles stay in view.
+      if (prevRange && prevLen > 0) {
+        var _delta = currentCandles.length - prevLen;
+        if (_delta !== 0 && prevRange.to >= prevLen - 1.5) {
+          try {
+            chart.timeScale().setVisibleLogicalRange({ from: prevRange.from + _delta, to: prevRange.to + _delta });
+          } catch(e) {}
+        }
+      }
+      // Invalidate the KDJ alignment cache: the candle window may have shifted,
+      // so syncLoop must recompute the offset on its next frame.
+      kdjOffset = -1; lastKdjK0Time = -1; lastSyncFrom = -1; lastSyncTo = -1;
+      return;
+    }
+    didInitialView = true;
     // Restore zoom state: use logical range (candle count from end) for
     // consistent behavior across intervals with different granularity.
     try {
@@ -223,7 +252,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       if (_sr && _sr.fromEnd != null) {
         var _len = currentCandles.length;
         var _from = Math.max(0, _len - 1 - _sr.fromEnd);
-        chart.timeScale().setVisibleLogicalRange({ from: _from, to: _len - 1 });
+        // Preserve the saved width; anchoring `to` at the last candle would
+        // silently widen the range and undo the user's zoom level.
+        var _to = _sr.width != null ? _from + _sr.width : _len - 1;
+        chart.timeScale().setVisibleLogicalRange({ from: _from, to: _to });
       } else if (intervalSec >= 60 && intervalSec <= 3600) {
         // Minute-level charts: default to showing last 2 hours
         var _c = Math.floor(7200 / intervalSec);
@@ -326,6 +358,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     // Bump generation first so any in-flight syncLoop stops on its next frame,
     // even if cancelAnimationFrame below fails to catch it.
     chartGen++;
+    didInitialView = false;
     if (rafId) { try { cancelAnimationFrame(rafId); } catch(e) {} rafId = null; }
     // Each teardown step must run independently: if one throws, the remaining
     // references would otherwise stay pointing at disposed objects.
@@ -555,8 +588,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       var m = typeof s === 'string' ? JSON.parse(s) : s;
       switch (m.type) {
         case 'candles':
+          var _newInterval = m.interval || currentInterval;
+          var _themeKey = m.theme ? JSON.stringify(m.theme) : lastThemeKey;
+          // Only a real interval/symbol/theme change needs a rebuilt chart. A
+          // plain data refresh must reuse it, otherwise the user's zoom/pan is
+          // destroyed along with the chart every time a new candle arrives.
+          var _needRecreate = !chart
+            || _newInterval !== currentInterval
+            || (m.symbol && m.symbol !== window._kdjSymbol)
+            || _themeKey !== lastThemeKey;
+
           // Save logical range (candle index) BEFORE updating interval
-          if (chart) {
+          if (chart && _needRecreate) {
             try {
               if (!window._chartRanges) window._chartRanges = {};
               var _lr = chart.timeScale().getVisibleLogicalRange();
@@ -569,16 +612,21 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
               }
             } catch(e) {}
           }
-          currentInterval = m.interval || currentInterval;
+          currentInterval = _newInterval;
           intervalSec = invToSec(currentInterval);
-          currentCandles = m.data || [];
           if (m.symbol) window._kdjSymbol = m.symbol;
           if (m.timezone) exchangeTimezone = m.timezone;
           if (m.rollHour != null) rollHour = m.rollHour;
           if (m.rollMinute != null) rollMinute = m.rollMinute;
           if (m.decimalPlaces != null) decPlaces = m.decimalPlaces;
           if (m.theme) { for (var k in m.theme) { if (m.theme.hasOwnProperty(k)) colors[k] = m.theme[k]; } }
-          create();
+          lastThemeKey = _themeKey;
+          if (_needRecreate) {
+            currentCandles = m.data || [];
+            create();
+          } else {
+            setData(m.data || []);
+          }
           buildIntervalBtns();
           break;
         case 'tick':
@@ -604,6 +652,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
             } catch(e) {}
           }
           for (var k in m.colors) { if (m.colors.hasOwnProperty(k)) colors[k] = m.colors[k]; }
+          // Keep in sync so the next 'candles' message doesn't see a phantom
+          // theme change and rebuild the chart again.
+          lastThemeKey = JSON.stringify(m.colors);
           create();
           buildIntervalBtns();
           if (currentCandles.length > 0) setData(currentCandles);
