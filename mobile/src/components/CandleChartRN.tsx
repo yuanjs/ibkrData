@@ -25,9 +25,11 @@ interface Props {
   liveTick: TickData | null
   interval: string
   onIntervalChange: (inv: string) => void
+  /** Called when the user pans close to the oldest loaded bar. */
+  onLoadMoreHistory?: () => void
 }
 
-export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChange }: Props) {
+export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChange, onLoadMoreHistory }: Props) {
   const webViewRef = useRef<WebView>(null)
   const { colors, theme } = useTheme()
   const readyRef = useRef(false)
@@ -180,11 +182,13 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
         flushCurrentState()
       } else if (msg.type === 'intervalChange') {
         onIntervalChange(msg.interval)
+      } else if (msg.type === 'loadMore') {
+        onLoadMoreHistory?.()
       } else if (msg.type === 'log') {
         console.log('[WebView]', msg.text)
       }
     } catch {}
-  }, [onIntervalChange, flushCurrentState])
+  }, [onIntervalChange, onLoadMoreHistory, flushCurrentState])
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>

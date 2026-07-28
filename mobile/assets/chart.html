@@ -62,6 +62,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   var decPlaces = 2;
   // KDJ/main chart sync offset
   var kdjOffset = -1, lastKdjK0Time = -1, lastSyncFrom = -1, lastSyncTo = -1;
+  // Throttles the load-more request: the range callback fires every frame while
+  // panning, and each postMessage costs a bridge hop.
+  var lastLoadMoreAt = 0;
 
   var colors = {
     bg: '#0f1117', text: '#e2e8f0', grid: '#1f2937',
@@ -200,10 +203,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     return { k: kv, d: dv, j: jv };
   }
 
+  function timeKey(t) {
+    return (t && typeof t === 'object') ? Number(t._timestamp) : Number(t);
+  }
+
   function setData(data) {
     // Capture the pre-refresh view before currentCandles is replaced, so a
     // background refresh can keep the user's zoom/pan.
     var prevLen = currentCandles.length;
+    var prevFirstTime = prevLen > 0 ? timeKey(currentCandles[0].time) : null;
     var prevRange = null;
     if (chart && didInitialView) {
       try { prevRange = chart.timeScale().getVisibleLogicalRange(); } catch(e) {}
@@ -227,15 +235,30 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       }
     }
     if (didInitialView) {
-      // Background refresh: setData() already preserves the logical range, so
-      // leave the user's zoom/pan alone. Only shift it when the user was
-      // pinned to the right edge, so newly appended candles stay in view.
       if (prevRange && prevLen > 0) {
-        var _delta = currentCandles.length - prevLen;
-        if (_delta !== 0 && prevRange.to >= prevLen - 1.5) {
+        // Older bars prepended by a history page: every logical index shifts
+        // right by that many bars, so shift the view too or the user gets
+        // thrown further back in time instead of staying on the same candles.
+        var _prepend = 0;
+        if (prevFirstTime !== null) {
+          for (var _i = 0; _i < currentCandles.length; _i++) {
+            if (timeKey(currentCandles[_i].time) === prevFirstTime) { _prepend = _i; break; }
+          }
+        }
+        if (_prepend > 0) {
           try {
-            chart.timeScale().setVisibleLogicalRange({ from: prevRange.from + _delta, to: prevRange.to + _delta });
+            chart.timeScale().setVisibleLogicalRange({ from: prevRange.from + _prepend, to: prevRange.to + _prepend });
           } catch(e) {}
+        } else {
+          // Background refresh: setData() already preserves the logical range,
+          // so leave the user's zoom/pan alone. Only shift it when the user was
+          // pinned to the right edge, so appended candles stay in view.
+          var _delta = currentCandles.length - prevLen;
+          if (_delta !== 0 && prevRange.to >= prevLen - 1.5) {
+            try {
+              chart.timeScale().setVisibleLogicalRange({ from: prevRange.from + _delta, to: prevRange.to + _delta });
+            } catch(e) {}
+          }
         }
       }
       // Invalidate the KDJ alignment cache: the candle window may have shifted,
@@ -424,6 +447,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       ma5Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma5, lineWidth: 2, crosshairMarkerVisible: false, lastValueVisible: true, priceLineVisible: false });
       ma10Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma10, lineWidth: 1, lineStyle: 0, crosshairMarkerVisible: false, lastValueVisible: true, priceLineVisible: false });
     }
+
+    // Ask RN for older bars once the user pans within ~10 candles of the left edge.
+    chart.timeScale().subscribeVisibleLogicalRangeChange(function(range) {
+      if (!range || !didInitialView || range.from > 10) return;
+      var _now = Date.now();
+      if (_now - lastLoadMoreAt < 500) return;
+      lastLoadMoreAt = _now;
+      postToRN({ type: 'loadMore' });
+    });
 
     chart.subscribeCrosshairMove(function(param) {
       var tip = document.getElementById('tooltip');
