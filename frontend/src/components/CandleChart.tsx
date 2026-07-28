@@ -8,6 +8,8 @@ interface Props {
   liveTick?: any
   interval: string
   onIntervalChange: (v: string) => void
+  /** Called when the user pans close to the oldest loaded bar. */
+  onLoadMoreHistory?: () => void
 }
 
 // Helper to calculate KDJ matching candlestack.js logic
@@ -115,7 +117,7 @@ function getEffectiveBucketTime(tickTimeSec: number, sym?: string): number {
   return Math.floor(Date.UTC(y, m - 1, day, 12) / 1000)
 }
 
-export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange }: Props) {
+export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange, onLoadMoreHistory }: Props) {
   const mainContainerRef = useRef<HTMLDivElement>(null)
   const kdjContainerRef = useRef<HTMLDivElement>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -153,6 +155,11 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   // chart instance. Background refreshes must not re-apply it, or the user's
   // zoom/pan gets reset every time a new candle arrives.
   const didInitialViewRef = useRef(false)
+  // Held in a ref so a changing callback identity never rebuilds the chart.
+  const onLoadMoreHistoryRef = useRef(onLoadMoreHistory)
+  useEffect(() => {
+    onLoadMoreHistoryRef.current = onLoadMoreHistory
+  }, [onLoadMoreHistory])
 
   /** Read a CSS custom property from :root */
   const cssVar = useCallback((name: string): string => {
@@ -600,6 +607,13 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       tt.style.top = `${y}px`
     })
 
+    // Pull older bars once the user pans within ~10 candles of the left edge.
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || !didInitialViewRef.current) return
+      if (range.from > 10) return
+      onLoadMoreHistoryRef.current?.()
+    })
+
     const resizeObserver = new ResizeObserver((entries) => {
       if (entries.length === 0 || !entries[0].contentRect) return
       const { width } = entries[0].contentRect
@@ -691,6 +705,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     // Capture the pre-refresh view so a background refresh can keep the user's
     // zoom/pan. Must be read before lastDataRef is overwritten below.
     const prevLen = lastDataRef.current.length
+    const prevFirstTime = prevLen > 0 ? lastDataRef.current[0].time : null
     const prevRange = chartRef.current?.timeScale().getVisibleLogicalRange() ?? null
 
     lastDataRef.current = normalizedData.map((d) => ({ ...d }))
@@ -773,18 +788,36 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     } catch(e) { chartRef.current.timeScale().fitContent() }
       didInitialViewRef.current = true
     } else if (chartRef.current && prevRange && prevLen > 0) {
-      // Background refresh: setData() already preserves the logical range, so
-      // leave the user's zoom/pan alone. Only shift it when the user was
-      // pinned to the right edge, so newly appended candles stay in view.
-      const delta = normalizedData.length - prevLen
-      if (delta !== 0 && prevRange.to >= prevLen - 1.5) {
+      // Older bars prepended by a history page: logical indices all shift right
+      // by that many bars, so shift the view too or the user gets thrown back
+      // in time instead of staying on the candles they were looking at.
+      const prependCount = prevFirstTime == null
+        ? 0
+        : normalizedData.findIndex((d) => d.time === prevFirstTime)
+
+      if (prependCount > 0) {
         try {
           chartRef.current.timeScale().setVisibleLogicalRange({
-            from: prevRange.from + delta,
-            to: prevRange.to + delta,
+            from: prevRange.from + prependCount,
+            to: prevRange.to + prependCount,
           })
         } catch {
           // Range rejected by the chart — keep whatever view it settled on.
+        }
+      } else {
+        // Background refresh: setData() already preserves the logical range, so
+        // leave the user's zoom/pan alone. Only shift it when the user was
+        // pinned to the right edge, so newly appended candles stay in view.
+        const delta = normalizedData.length - prevLen
+        if (delta !== 0 && prevRange.to >= prevLen - 1.5) {
+          try {
+            chartRef.current.timeScale().setVisibleLogicalRange({
+              from: prevRange.from + delta,
+              to: prevRange.to + delta,
+            })
+          } catch {
+            // Range rejected by the chart — keep whatever view it settled on.
+          }
         }
       }
     }

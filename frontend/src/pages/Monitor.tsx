@@ -6,9 +6,15 @@ import { useMarketStore } from '../store/marketStore'
 import { aggregateCandles, getFuturesDailyAsOf, intervalSeconds, normalizeCandles, type CandleLike } from '../utils/chartData'
 
 const DAILY_CHART_LIMIT = 120
+const DAILY_CHART_PAGE_BARS = 120
+const MAX_DAILY_CHART_BARS = 5000
 const RECENT_HISTORY_REFRESH_BARS = 30
 const RECENT_HISTORY_REFRESH_DELAYS_MS = [3_000, 80_000]
 const historyCache = new Map<string, CandleLike[]>()
+// Daily bars are paged by growing `limit` while keeping `as_of` fixed, so the
+// back-adjusted price series stays continuous across pages.
+const dailyLimitCache = new Map<string, number>()
+const dailyExhausted = new Set<string>()
 
 function cloneCandles(rows: CandleLike[]) {
   return rows.map(row => ({ ...row }))
@@ -19,7 +25,8 @@ function getHistoryLookbackHours(interval: string) {
   if (interval === '1m') return 24 * 30
   if (interval.endsWith('m')) return 24 * 90
   if (interval.endsWith('h')) return 24 * 180
-  if (interval === '1d') return 24 * 365
+  // Daily history is bounded by the request limit, not by the lookback window.
+  if (interval === '1d') return 24 * 365 * 10
   if (interval === '1w') return 24 * 365 * 2
   return 24
 }
@@ -65,6 +72,7 @@ export function Monitor() {
   const historyRequestIdRef = useRef(0)
   const recentRefreshRequestIdRef = useRef(0)
   const recentRefreshTimersRef = useRef<number[]>([])
+  const loadingMoreRef = useRef(false)
   const lastLiveBucketRef = useRef<number | null>(null)
 
   const getCacheKey = useCallback((sym: string, inv: string, isFutures: boolean) => {
@@ -83,10 +91,11 @@ export function Monitor() {
     start: Date,
     rangeEnd: Date,
     asOfBase: Date = rangeEnd,
+    dailyLimit: number = DAILY_CHART_LIMIT,
   ) => {
     if (isFutures) {
       if (inv === '1d') {
-        return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true, DAILY_CHART_LIMIT)
+        return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true, dailyLimit)
       }
       return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString())
     }
@@ -120,7 +129,10 @@ export function Monitor() {
       // of tomorrow, with UTC noon as its time field).
       const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
 
-      const recentRows = await fetchChartRange(sym, inv, isFutures, initialStart, queryEnd, end)
+      const recentRows = await fetchChartRange(
+        sym, inv, isFutures, initialStart, queryEnd, end,
+        dailyLimitCache.get(cacheKey) ?? DAILY_CHART_LIMIT,
+      )
       if (historyRequestIdRef.current !== requestId) return
       const normalizedRecentRows = normalizeRows(recentRows, inv, isFutures)
       historyCache.set(cacheKey, cloneCandles(normalizedRecentRows))
@@ -145,6 +157,47 @@ export function Monitor() {
       }
     }
   }, [fetchChartRange, getCacheKey, normalizeRows])
+
+  // Called when the chart is panned close to its oldest bar: pull one more page
+  // of daily bars from the backend and replace the series with the longer one.
+  const loadMoreDailyHistory = useCallback(async () => {
+    const sym = activeSymbol
+    if (!sym || chartInterval !== '1d' || !isActiveFutures) return
+
+    const cacheKey = getCacheKey(sym, chartInterval, isActiveFutures)
+    if (loadingMoreRef.current || dailyExhausted.has(cacheKey)) return
+
+    const currentLimit = dailyLimitCache.get(cacheKey) ?? DAILY_CHART_LIMIT
+    const nextLimit = Math.min(currentLimit + DAILY_CHART_PAGE_BARS, MAX_DAILY_CHART_BARS)
+    if (nextLimit <= currentLimit) {
+      dailyExhausted.add(cacheKey)
+      return
+    }
+
+    loadingMoreRef.current = true
+    const requestId = historyRequestIdRef.current
+    try {
+      const end = new Date()
+      const start = new Date(end.getTime() - getHistoryLookbackHours(chartInterval) * 3600 * 1000)
+      const queryEnd = new Date(end.getTime() + 24 * 3600 * 1000)
+      const rows = await fetchChartRange(sym, chartInterval, isActiveFutures, start, queryEnd, end, nextLimit)
+      // Bail out if the user switched symbol/interval while the page was in flight.
+      if (historyRequestIdRef.current !== requestId) return
+
+      dailyLimitCache.set(cacheKey, nextLimit)
+      // Fewer rows than asked for means the backend has nothing older left.
+      if (rows.length < nextLimit) dailyExhausted.add(cacheKey)
+
+      const normalizedRows = normalizeRows(rows, chartInterval, isActiveFutures)
+      if (normalizedRows.length === 0) return
+      historyCache.set(cacheKey, cloneCandles(normalizedRows))
+      setCandles(normalizedRows)
+    } catch (e) {
+      console.warn('Failed to load older daily history:', e)
+    } finally {
+      loadingMoreRef.current = false
+    }
+  }, [activeSymbol, chartInterval, isActiveFutures, fetchChartRange, getCacheKey, normalizeRows])
 
   const refreshRecentHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
     const seconds = intervalSeconds(inv)
@@ -281,6 +334,7 @@ export function Monitor() {
                 liveTick={chartLiveTick}
                 interval={chartInterval}
                 onIntervalChange={handleIntervalChange}
+                onLoadMoreHistory={loadMoreDailyHistory}
               />
             ) : (
               <div className="h-64 flex items-center justify-center border border-dashed rounded-lg" style={{
