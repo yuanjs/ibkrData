@@ -53,6 +53,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   var kdjData = { k: [], d: [], j: [] };
   var intervalSec = 86400;
   var rafId = null;
+  var chartGen = 0;  // Incremented on every destroy(); stale syncLoops bail out
   var currentInterval = '1d';
   var decPlaces = 2;
   // KDJ/main chart sync offset
@@ -322,10 +323,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   var kdjOverlay = null;  // Transparent overlay for KDJ reference line drag
 
   function destroy() {
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (kdjChart) { kdjChart.remove(); kdjChart = null; }
-    if (chart) { chart.remove(); chart = null; }
-    if (kdjOverlay && kdjOverlay.parentNode) { kdjOverlay.parentNode.removeChild(kdjOverlay); kdjOverlay = null; }
+    // Bump generation first so any in-flight syncLoop stops on its next frame,
+    // even if cancelAnimationFrame below fails to catch it.
+    chartGen++;
+    if (rafId) { try { cancelAnimationFrame(rafId); } catch(e) {} rafId = null; }
+    // Each teardown step must run independently: if one throws, the remaining
+    // references would otherwise stay pointing at disposed objects.
+    if (kdjChart) { try { kdjChart.remove(); } catch(e) {} kdjChart = null; }
+    if (chart) { try { chart.remove(); } catch(e) {} chart = null; }
+    if (kdjOverlay && kdjOverlay.parentNode) { try { kdjOverlay.parentNode.removeChild(kdjOverlay); } catch(e) {} }
+    kdjOverlay = null;
     mainSeries = null; ma3Series = null; ma5Series = null; ma10Series = null;
     kSeries = null; dSeries = null; jSeries = null;
   }
@@ -495,8 +502,20 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         }
       });
 
+      var myGen = chartGen;
       function syncLoop() {
-        var mr = chart.timeScale().getVisibleLogicalRange();
+        // A destroy() happened since this loop started — the charts it captured
+        // are gone. Stop instead of touching disposed objects every frame.
+        if (myGen !== chartGen || !chart || !kdjChart) return;
+        var mr;
+        try {
+          mr = chart.timeScale().getVisibleLogicalRange();
+        } catch(e) {
+          // Unexpected disposed/invalid chart: report once and stop the loop
+          // rather than throwing on every animation frame.
+          postToRN({ type: 'log', text: 'KDJ sync stopped: ' + (e.message || e) });
+          return;
+        }
         if (!mr || kdjData.k.length === 0) {
           rafId = requestAnimationFrame(syncLoop);
           return;
