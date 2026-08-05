@@ -706,6 +706,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     // zoom/pan. Must be read before lastDataRef is overwritten below.
     const prevLen = lastDataRef.current.length
     const prevFirstTime = prevLen > 0 ? lastDataRef.current[0].time : null
+    const prevLastTime = prevLen > 0 ? lastDataRef.current[prevLen - 1].time : null
     const prevRange = chartRef.current?.timeScale().getVisibleLogicalRange() ?? null
 
     lastDataRef.current = normalizedData.map((d) => ({ ...d }))
@@ -750,52 +751,79 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       }
     }
 
-    // Set visible range for both Line and Candle charts
-    if (chartRef.current && !didInitialViewRef.current) {
+    // Applies the default / restored view for the current interval. Always ends
+    // pinned to the newest bar: entering an interval must land on live data.
+    const applyInitialView = (rows: typeof normalizedData) => {
+      const chart = chartRef.current
+      if (!chart) return
+
       // Fit KDJ chart if applicable
       if (!isLineChart && kdjChartRef.current && kdjDataRef.current.k.length > 0) {
         kdjChartRef.current.timeScale().fitContent()
       }
 
       // Restore saved visible range for this product+interval, or fit content
-    try {
-      const ranges = (window as any).__chartRanges || {}
-      const sr = ranges[(symbol || '') + '_' + interval]
-      if (sr && sr.fromEnd != null) {
-        const len = normalizedData.length
-        const from = Math.max(0, len - 1 - sr.fromEnd)
-        chartRef.current.timeScale().setVisibleLogicalRange({ from, to: len - 1 })
-      } else if (interval.endsWith('m')) {
-        // Minute-level charts: default to last 2 hours
-        const invSec = getIntervalSeconds(interval)
-        const twoHourCandles = Math.floor(7200 / invSec)
-        if (normalizedData.length > twoHourCandles) {
-          chartRef.current.timeScale().setVisibleLogicalRange({ from: normalizedData.length - twoHourCandles, to: normalizedData.length - 1 })
+      try {
+        const ranges = (window as any).__chartRanges || {}
+        const sr = ranges[(symbol || '') + '_' + interval]
+        const len = rows.length
+        const savedWidth = sr ? (sr.width ?? sr.fromEnd) : null
+        if (savedWidth != null) {
+          // Keep the zoom level (bar count) this interval was left at; anchoring
+          // `from` at the saved offset instead would silently widen the range.
+          chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, len - 1 - savedWidth), to: len - 1 })
+        } else if (interval.endsWith('m')) {
+          // Minute-level charts: default to last 2 hours
+          const invSec = getIntervalSeconds(interval)
+          const twoHourCandles = Math.floor(7200 / invSec)
+          if (len > twoHourCandles) {
+            chart.timeScale().setVisibleLogicalRange({ from: len - twoHourCandles, to: len - 1 })
+          } else {
+            chart.timeScale().fitContent()
+          }
+        } else if (interval === '1d') {
+          // Daily charts: default to last 2 months (~60 trading days)
+          const twoMonthCandles = 60
+          if (len > twoMonthCandles) {
+            chart.timeScale().setVisibleLogicalRange({ from: len - twoMonthCandles, to: len - 1 })
+          } else {
+            chart.timeScale().fitContent()
+          }
         } else {
-          chartRef.current.timeScale().fitContent()
+          chart.timeScale().fitContent()
         }
-      } else if (interval === '1d') {
-        // Daily charts: default to last 2 months (~60 trading days)
-        const twoMonthCandles = 60
-        if (normalizedData.length > twoMonthCandles) {
-          chartRef.current.timeScale().setVisibleLogicalRange({ from: normalizedData.length - twoMonthCandles, to: normalizedData.length - 1 })
-        } else {
-          chartRef.current.timeScale().fitContent()
-        }
-      } else {
-        chartRef.current.timeScale().fitContent()
-      }
-    } catch(e) { chartRef.current.timeScale().fitContent() }
+      } catch(e) { chart.timeScale().fitContent() }
+    }
+
+    // Set visible range for both Line and Candle charts
+    if (chartRef.current && !didInitialViewRef.current) {
+      applyInitialView(normalizedData)
       didInitialViewRef.current = true
     } else if (chartRef.current && prevRange && prevLen > 0) {
       // Older bars prepended by a history page: logical indices all shift right
       // by that many bars, so shift the view too or the user gets thrown back
       // in time instead of staying on the candles they were looking at.
-      const prependCount = prevFirstTime == null
-        ? 0
+      const anchorIdx = prevFirstTime == null
+        ? -1
         : normalizedData.findIndex((d) => d.time === prevFirstTime)
+      // A history page only ever grows the series, leaving the old bars in place.
+      // Requiring the old last bar to still sit `prevLen - 1` slots after the
+      // anchor rules out a stale timestamp matching by coincidence — a daily
+      // bar's UTC-noon time can equal a minute bar's time.
+      const prependCount = anchorIdx >= 0
+        && normalizedData[anchorIdx + prevLen - 1]?.time === prevLastTime
+        ? anchorIdx
+        : -1
 
-      if (prependCount > 0) {
+      if (prependCount < 0) {
+        // The series was replaced wholesale rather than extended: this is the
+        // first real batch for a newly picked interval/symbol, and the initial
+        // view was already burned on the previous interval's bars (which are
+        // still in `data` for one render after the interval button is pressed).
+        // Re-apply it, or the view stays on meaningless logical indices instead
+        // of the latest candles.
+        applyInitialView(normalizedData)
+      } else if (prependCount > 0) {
         try {
           chartRef.current.timeScale().setVisibleLogicalRange({
             from: prevRange.from + prependCount,
