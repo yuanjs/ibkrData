@@ -66,11 +66,7 @@ export function Account() {
   const pnlColor = (v: number | undefined) => v == null ? '' : v >= 0 ? '#26a641' : '#d32f2f'
 
   // ===== 实时 PnL：用 tick 价格推算持仓市值变化 =====
-  // 用 ref 持有最新 quotes，避免每 1s tick 触发重渲染
-  const quotes = useMarketStore(s => s.quotes)
-  const quotesRef = useRef(quotes)
-  quotesRef.current = quotes
-
+  // 从 useMarketStore.getState().quotes 读取，阻断高频全局重渲染
   interface PnlRef {
     refPnl: number
     refMarketValue: number
@@ -92,7 +88,7 @@ export function Account() {
     if (positionsKey === prevPositionsRef.current) return
     prevPositionsRef.current = positionsKey
     const refs: Record<string, PnlRef> = {}
-    const liveQuotes = quotesRef.current
+    const liveQuotes = useMarketStore.getState().quotes
     for (const pos of (positions as Array<Record<string, unknown>>)) {
       const sym = pos.symbol as string
       const mv = pos.market_value as number | undefined
@@ -105,7 +101,7 @@ export function Account() {
     if (Object.keys(refs).length) pnlRefs.current = refs
   }, [positionsKey])  // 不再依赖 quotes — 用 ref 读取最新值
 
-  function getQuote(sym: string) { return (quotesRef.current as Record<string, any>)?.[sym] }
+  function getQuote(sym: string) { return useMarketStore.getState().quotes[sym] }
 
   /**
    * 计算市值和 PnL。

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { createChart, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type CandlestickData } from 'lightweight-charts'
+import { createChart, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type CandlestickData, type LogicalRange } from 'lightweight-charts'
 import { getProductConfig, getSymbolDecimalPlaces } from '../config/productConfig'
 
 interface Props {
@@ -11,6 +11,8 @@ interface Props {
   /** Called when the user pans close to the oldest loaded bar. */
   onLoadMoreHistory?: () => void
 }
+const MAX_CHART_BARS = 3000
+const MAX_SAVED_CHART_RANGES = 30
 
 // Helper to calculate KDJ matching candlestack.js logic
 function calculateKDJData(candles: any[]) {
@@ -150,7 +152,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   const jSeriesRef = useRef<ISeriesApi<any> | undefined>(undefined)
 
   const kdjDataRef = useRef<{ k: any[]; d: any[]; j: any[] }>({ k: [], d: [], j: [] })
+  const kdjMapRef = useRef<Map<number, { k?: number; d?: number; j?: number }>>(new Map())
   const lastDataRef = useRef<any[]>([])
+  const syncKdjRangeRef = useRef<((mr: LogicalRange | null) => void) | null>(null)
   // Whether the default/restored view has already been applied to the current
   // chart instance. Background refreshes must not re-apply it, or the user's
   // zoom/pan gets reset every time a new candle arrives.
@@ -201,7 +205,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
   useEffect(() => {
     if (!mainContainerRef.current) return
 
-    let rafId = 0
+
 
     const tz = getTimezone()
 
@@ -326,6 +330,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
 
     // KDJ chart (only for candle charts)
     let kdjChart: IChartApi | undefined
+    let kdjOverlay: HTMLDivElement | undefined
+    let onOverlayDown: ((e: PointerEvent | TouchEvent) => void) | undefined
+    let onOverlayMove: ((e: PointerEvent | TouchEvent) => void) | undefined
+    let onOverlayEnd: (() => void) | undefined
     if (!isLineChart && kdjContainerRef.current) {
       kdjChart = createChart(kdjContainerRef.current, {
         layout: { background: { color: bgColor }, textColor },
@@ -384,9 +392,13 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       }
       setKdjRefLine(50)
       // Transparent overlay on KDJ chart for independent pointer/touch drag
-      const kdjOverlay = document.createElement('div')
       const kdjContainer = kdjContainerRef.current
       if (kdjContainer) {
+        const prevOverlay = kdjContainer.querySelector('div[data-kdj-ref]')
+        if (prevOverlay?.parentNode) {
+          prevOverlay.parentNode.removeChild(prevOverlay)
+        }
+        kdjOverlay = document.createElement('div')
         kdjContainer.style.position = 'relative'
         kdjOverlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;touch-action:none;'
         kdjContainer.appendChild(kdjOverlay)
@@ -397,14 +409,14 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         const cy = 'touches' in e ? e.touches[0].clientY : (e as PointerEvent).clientY
         return cy - rect.top
       }
-      const onOverlayDown = (e: PointerEvent | TouchEvent) => {
+      onOverlayDown = (e: PointerEvent | TouchEvent) => {
         dragging = true
         const ks = kSeriesRef.current
         if (!ks) return
         const p = ks.coordinateToPrice(getY(e))
         if (p != null) setKdjRefLine(p)
       }
-      const onOverlayMove = (e: PointerEvent | TouchEvent) => {
+      onOverlayMove = (e: PointerEvent | TouchEvent) => {
         if (!dragging) return
         e.preventDefault()
         const ks = kSeriesRef.current
@@ -412,38 +424,30 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         const p = ks.coordinateToPrice(getY(e))
         if (p != null) setKdjRefLine(p)
       }
-      const onOverlayEnd = () => { dragging = false }
-      kdjOverlay.dataset.kdjRef = '1'
-      kdjOverlay.addEventListener('pointerdown', onOverlayDown)
-      kdjOverlay.addEventListener('pointermove', onOverlayMove)
-      kdjOverlay.addEventListener('pointerup', onOverlayEnd)
-      kdjOverlay.addEventListener('pointerleave', onOverlayEnd)
+      onOverlayEnd = () => { dragging = false }
+      if (kdjOverlay) {
+        kdjOverlay.dataset.kdjRef = '1'
+        kdjOverlay.addEventListener('pointerdown', onOverlayDown)
+        kdjOverlay.addEventListener('pointermove', onOverlayMove)
+        kdjOverlay.addEventListener('pointerup', onOverlayEnd)
+        kdjOverlay.addEventListener('pointerleave', onOverlayEnd)
+      }
 
-      // Continuous polling sync: read main chart's logical range each frame
-      // and apply to KDJ with bar-index offset. Does NOT depend on LWTC
-      // events, which may not fire reliably during drag-to-pan gestures.
+      // Event-driven KDJ logical range sync with bar-index offset
       let cachedOffset = -1
       let lastKdjK0Time = -1
 
-      const syncLoop = () => {
-        if (!chartRef.current || !kdjChartRef.current) return
-        const mr = chartRef.current.timeScale().getVisibleLogicalRange()
-        if (!mr) {
-          rafId = requestAnimationFrame(syncLoop)
-          return
-        }
+      const syncKdjRange = (mr: LogicalRange | null) => {
+        if (!mr || !kdjChartRef.current) return
         const kdjK = kdjDataRef.current.k
-        if (kdjK.length === 0) {
-          rafId = requestAnimationFrame(syncLoop)
-          return
-        }
+        if (kdjK.length === 0) return
 
         // Cache offset calculation: only re-calculate if KDJ first point time or data changes
         const currentKdjK0Time = kdjK[0].time
         if (cachedOffset === -1 || currentKdjK0Time !== lastKdjK0Time) {
           const mainData = lastDataRef.current
           if (mainData.length > 0) {
-            const idx = mainData.findIndex(x => x.time === currentKdjK0Time)
+            const idx = mainData.findIndex((x) => x.time === currentKdjK0Time)
             if (idx !== -1) {
               cachedOffset = idx
               lastKdjK0Time = currentKdjK0Time
@@ -464,10 +468,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             try { kdjTimeScale.setVisibleLogicalRange({ from, to }) } catch { }
           }
         }
-        rafId = requestAnimationFrame(syncLoop)
       }
-      rafId = requestAnimationFrame(syncLoop)
-
+      syncKdjRangeRef.current = syncKdjRange
       // Sync crosshair vertical line from main chart to KDJ chart
       chart.subscribeCrosshairMove((param) => {
         const kdjChart = kdjChartRef.current
@@ -475,8 +477,8 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         if (!kdjChart || !kSeries) return
         if (param.time) {
           const timeSec = typeof param.time === 'number' ? param.time : Math.floor(new Date(param.time as string).getTime() / 1000)
-          const kPoint = kdjDataRef.current.k.find(x => x.time === timeSec)
-          const price = kPoint?.value ?? 50
+          const kPoint = kdjMapRef.current.get(timeSec)
+          const price = kPoint?.k ?? 50
           try { kdjChart.setCrosshairPosition(price, param.time, kSeries) } catch { }
         } else {
           try { kdjChart.clearCrosshairPosition() } catch { }
@@ -524,9 +526,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       const ma10Val = ma10SeriesRef.current ? (param.seriesData.get(ma10SeriesRef.current) as any)?.value : undefined
 
       // Lookup KDJ values
-      const kVal = kdjDataRef.current.k.find((x) => x.time === timeSec)?.value
-      const dVal = kdjDataRef.current.d.find((x) => x.time === timeSec)?.value
-      const jVal = kdjDataRef.current.j.find((x) => x.time === timeSec)?.value
+      const kdjPoint = kdjMapRef.current.get(timeSec)
+      const kVal = kdjPoint?.k
+      const dVal = kdjPoint?.d
+      const jVal = kdjPoint?.j
 
       const tp = 'color:var(--text-primary)'
       const ts = 'color:var(--text-secondary)'
@@ -607,12 +610,16 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       tt.style.top = `${y}px`
     })
 
-    // Pull older bars once the user pans within ~10 candles of the left edge.
-    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    // Sync visible logical range to KDJ and pull older bars when panning left
+    const handleVisibleLogicalRangeChange = (range: LogicalRange | null) => {
+      if (!isLineChart && kdjChartRef.current) {
+        syncKdjRangeRef.current?.(range)
+      }
       if (!range || !didInitialViewRef.current) return
       if (range.from > 10) return
       onLoadMoreHistoryRef.current?.()
-    })
+    }
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange)
 
     const resizeObserver = new ResizeObserver((entries) => {
       if (entries.length === 0 || !entries[0].contentRect) return
@@ -643,23 +650,38 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
     // Clear data refs on chart recreation to prevent stale sync during interval switch
     lastDataRef.current = []
     kdjDataRef.current = { k: [], d: [], j: [] }
+    kdjMapRef.current.clear()
     didInitialViewRef.current = false
 
     return () => {
-      cancelAnimationFrame(rafId)
+      syncKdjRangeRef.current = null
       themeObserver.disconnect()
       resizeObserver.disconnect()
       if (tooltipRef.current) tooltipRef.current.style.display = 'none'
       if (mobileInfoRef.current) mobileInfoRef.current.style.display = 'none'
+      try {
+        chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange)
+      } catch {}
       chart.remove()
       chartRef.current = undefined
       seriesRef.current = undefined
       ma3SeriesRef.current = undefined
       ma5SeriesRef.current = undefined
       ma10SeriesRef.current = undefined
-      // Cleanup KDJ overlay
+      // Cleanup KDJ overlay and listeners
+      if (kdjOverlay) {
+        if (onOverlayDown) kdjOverlay.removeEventListener('pointerdown', onOverlayDown)
+        if (onOverlayMove) kdjOverlay.removeEventListener('pointermove', onOverlayMove)
+        if (onOverlayEnd) {
+          kdjOverlay.removeEventListener('pointerup', onOverlayEnd)
+          kdjOverlay.removeEventListener('pointerleave', onOverlayEnd)
+        }
+        if (kdjOverlay.parentNode) {
+          kdjOverlay.parentNode.removeChild(kdjOverlay)
+        }
+      }
       const oldOverlay = kdjContainerRef.current?.querySelector('div[data-kdj-ref]')
-      if (oldOverlay) oldOverlay.parentNode?.removeChild(oldOverlay)
+      if (oldOverlay?.parentNode) oldOverlay.parentNode.removeChild(oldOverlay)
       if (kdjChart) {
         kdjChart.remove()
       }
@@ -667,6 +689,7 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       kSeriesRef.current = undefined
       dSeriesRef.current = undefined
       jSeriesRef.current = undefined
+      kdjMapRef.current.clear()
     }
   }, [interval, symbol, isLineChart, getTimezone, formatTime, cssVar])
 
@@ -678,11 +701,20 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       try {
         const lr = chartRef.current.timeScale().getVisibleLogicalRange()
         if (lr) {
-          const ranges = (window as any).__chartRanges || {}
+          const ranges: Record<string, any> = (window as any).__chartRanges || {}
           const total = lastDataRef.current.length
-          ranges[(symbol || '') + '_' + prevInterval.current] = {
+          const key = (symbol || '') + '_' + prevInterval.current
+          delete ranges[key]
+          ranges[key] = {
             fromEnd: Math.max(0, total - 1 - lr.from),
             width: lr.to - lr.from,
+          }
+          const keys = Object.keys(ranges)
+          if (keys.length > MAX_SAVED_CHART_RANGES) {
+            const excess = keys.length - MAX_SAVED_CHART_RANGES
+            for (let i = 0; i < excess; i++) {
+              delete ranges[keys[i]]
+            }
           }
           ;(window as any).__chartRanges = ranges
         }
@@ -745,6 +777,24 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
       if (kSeriesRef.current && dSeriesRef.current && jSeriesRef.current) {
         const kdj = calculateKDJData(normalizedData)
         kdjDataRef.current = kdj
+        const nextKdjMap = new Map<number, { k?: number; d?: number; j?: number }>()
+        for (let i = 0; i < kdj.k.length; i++) {
+          const item = kdj.k[i]
+          nextKdjMap.set(item.time, { k: item.value })
+        }
+        for (let i = 0; i < kdj.d.length; i++) {
+          const item = kdj.d[i]
+          const entry = nextKdjMap.get(item.time)
+          if (entry) entry.d = item.value
+          else nextKdjMap.set(item.time, { d: item.value })
+        }
+        for (let i = 0; i < kdj.j.length; i++) {
+          const item = kdj.j[i]
+          const entry = nextKdjMap.get(item.time)
+          if (entry) entry.j = item.value
+          else nextKdjMap.set(item.time, { j: item.value })
+        }
+        kdjMapRef.current = nextKdjMap
         kSeriesRef.current.setData(kdj.k)
         dSeriesRef.current.setData(kdj.d)
         jSeriesRef.current.setData(kdj.j)
@@ -849,6 +899,14 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
         }
       }
     }
+
+    // Align KDJ range after data update
+    if (!isLineChart && kdjChartRef.current && chartRef.current) {
+      try {
+        const mr = chartRef.current.timeScale().getVisibleLogicalRange()
+        if (mr) syncKdjRangeRef.current?.(mr)
+      } catch {}
+    }
   }, [data, isLineChart, interval, symbol])
 
   // Process live ticks (skip for weekly — no meaningful real-time bucketing)
@@ -886,7 +944,12 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
           seriesRef.current.update(newCandle as any)
         }
         currentData.push(newCandle)
-      } else {
+        if (currentData.length > MAX_CHART_BARS) {
+          const removed = currentData.shift()
+          if (removed) {
+            kdjMapRef.current.delete(removed.time)
+          }
+        }
         // currentBucketTime < lastCandle.time: tick belongs to a past candle
         // (e.g., last candle is tomorrow's rolled bar, tick is today's pre-roll data).
         // Update internal data silently — chart already has correct OHLC from DB.
@@ -950,6 +1013,10 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             kdjDataRef.current.k[len - 1] = lastK
           } else {
             kdjDataRef.current.k.push(lastK)
+            if (kdjDataRef.current.k.length > MAX_CHART_BARS) {
+              const old = kdjDataRef.current.k.shift()
+              if (old) kdjMapRef.current.delete(old.time)
+            }
           }
         }
         if (lastD) {
@@ -959,6 +1026,9 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             kdjDataRef.current.d[len - 1] = lastD
           } else {
             kdjDataRef.current.d.push(lastD)
+            if (kdjDataRef.current.d.length > MAX_CHART_BARS) {
+              kdjDataRef.current.d.shift()
+            }
           }
         }
         if (lastJ) {
@@ -968,7 +1038,17 @@ export function CandleChart({ symbol, data, liveTick, interval, onIntervalChange
             kdjDataRef.current.j[len - 1] = lastJ
           } else {
             kdjDataRef.current.j.push(lastJ)
+            if (kdjDataRef.current.j.length > MAX_CHART_BARS) {
+              kdjDataRef.current.j.shift()
+            }
           }
+        }
+        if (lastK) {
+          const entry = kdjMapRef.current.get(lastK.time) || {}
+          entry.k = lastK.value
+          if (lastD && lastD.time === lastK.time) entry.d = lastD.value
+          if (lastJ && lastJ.time === lastK.time) entry.j = lastJ.value
+          kdjMapRef.current.set(lastK.time, entry)
         }
       }
     }

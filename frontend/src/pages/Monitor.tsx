@@ -10,7 +10,54 @@ const DAILY_CHART_PAGE_BARS = 120
 const MAX_DAILY_CHART_BARS = 5000
 const RECENT_HISTORY_REFRESH_BARS = 30
 const RECENT_HISTORY_REFRESH_DELAYS_MS = [3_000, 80_000]
-const historyCache = new Map<string, CandleLike[]>()
+class SimpleLRUCache<K, V> {
+  private max: number
+  private map: Map<K, V>
+
+  constructor(max = 20) {
+    this.max = max
+    this.map = new Map()
+  }
+
+  get(key: K): V | undefined {
+    const val = this.map.get(key)
+    if (val !== undefined) {
+      this.map.delete(key)
+      this.map.set(key, val)
+    }
+    return val
+  }
+
+  set(key: K, val: V): void {
+    if (this.map.has(key)) {
+      this.map.delete(key)
+    } else if (this.map.size >= this.max) {
+      const oldestKey = this.map.keys().next().value
+      if (oldestKey !== undefined) {
+        this.map.delete(oldestKey)
+      }
+    }
+    this.map.set(key, val)
+  }
+
+  has(key: K): boolean {
+    return this.map.has(key)
+  }
+
+  delete(key: K): boolean {
+    return this.map.delete(key)
+  }
+
+  clear(): void {
+    this.map.clear()
+  }
+
+  get size(): number {
+    return this.map.size
+  }
+}
+
+const historyCache = new SimpleLRUCache<string, CandleLike[]>(20)
 // Daily bars are paged by growing `limit` while keeping `as_of` fixed, so the
 // back-adjusted price series stays continuous across pages.
 const dailyLimitCache = new Map<string, number>()
@@ -263,6 +310,13 @@ export function Monitor() {
       return timer
     })
     recentRefreshTimersRef.current.push(...timers)
+
+    return () => {
+      for (const timer of timers) {
+        window.clearTimeout(timer)
+      }
+      recentRefreshTimersRef.current = recentRefreshTimersRef.current.filter(current => !timers.includes(current))
+    }
   }, [activeSymbol, chartInterval, chartLiveTick, isActiveFutures, refreshRecentHistory])
 
   useEffect(() => {

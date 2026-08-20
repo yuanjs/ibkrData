@@ -1,4 +1,5 @@
-import { useMarketStore } from '../store/marketStore'
+import { useRef, useEffect, useCallback } from 'react'
+import { useMarketStore, type Tick } from '../store/marketStore'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -26,9 +27,49 @@ export function WebSocketProvider() {
     onClose: () => setConnected(false),
   })
 
-  useWebSocket('/ws/tick', (data: unknown) => {
-    if (isRecord(data) && typeof data.symbol === 'string') updateTick(data as any)
-  })
+  const pendingTickRef = useRef<Tick | null>(null)
+  const lastTickTimeRef = useRef<number>(0)
+  const tickTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (tickTimerRef.current != null) {
+        window.clearTimeout(tickTimerRef.current)
+      }
+    }
+  }, [])
+
+  const handleTick = useCallback((data: unknown) => {
+    if (!isRecord(data) || typeof data.symbol !== 'string') return
+    pendingTickRef.current = data as unknown as Tick
+    const now = performance.now()
+    const elapsed = now - lastTickTimeRef.current
+
+    if (elapsed >= 100) {
+      if (tickTimerRef.current != null) {
+        window.clearTimeout(tickTimerRef.current)
+        tickTimerRef.current = null
+      }
+      lastTickTimeRef.current = now
+      const tickToFlush = pendingTickRef.current
+      pendingTickRef.current = null
+      if (tickToFlush) {
+        updateTick(tickToFlush)
+      }
+    } else if (tickTimerRef.current == null) {
+      tickTimerRef.current = window.setTimeout(() => {
+        tickTimerRef.current = null
+        lastTickTimeRef.current = performance.now()
+        if (pendingTickRef.current) {
+          const tickToFlush = pendingTickRef.current
+          pendingTickRef.current = null
+          updateTick(tickToFlush)
+        }
+      }, 100 - elapsed)
+    }
+  }, [updateTick])
+
+  useWebSocket('/ws/tick', handleTick)
   useWebSocket('/ws/account', (data: unknown) => {
     if (isRecord(data)) setAccount(data)
   })

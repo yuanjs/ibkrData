@@ -482,18 +482,26 @@ class DataWriter:
             logger.error(f"write_positions error: {e}")
 
     async def upsert_order(self, trade):
-        """Insert or update an order using proper ON CONFLICT with the order_id PRIMARY KEY."""
+        """Insert or update an order using proper ON CONFLICT with the perm_id PRIMARY KEY."""
         o = trade.order
         s = trade.orderStatus
         now = datetime.now(timezone.utc)
+        # permId 由 IBKR 分配，是订单跨 client 的唯一标识。刚提交、IBKR 尚未回执时
+        # 为 0，此时跳过——随后的 openOrder/orderStatus 事件会带上 permId 再写入。
+        if not o.permId:
+            logger.debug(
+                f"Skip order upsert without permId: orderId={o.orderId} status={s.status}"
+            )
+            return
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO orders(order_id,account_id,symbol,con_id,local_symbol,"
-                    "contract_month,trading_class,exchange,currency,multiplier,action,order_type,"
-                    "quantity,limit_price,status,filled_qty,avg_fill_price,created_at,updated_at) "
-                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) "
-                    "ON CONFLICT(order_id) DO UPDATE SET "
+                    "INSERT INTO orders(perm_id,order_id,client_id,account_id,symbol,con_id,"
+                    "local_symbol,contract_month,trading_class,exchange,currency,multiplier,"
+                    "action,order_type,quantity,limit_price,status,filled_qty,avg_fill_price,"
+                    "created_at,updated_at) "
+                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) "
+                    "ON CONFLICT(perm_id) DO UPDATE SET "
                     "status=EXCLUDED.status, filled_qty=EXCLUDED.filled_qty, "
                     "avg_fill_price=EXCLUDED.avg_fill_price, updated_at=EXCLUDED.updated_at, "
                     "con_id=COALESCE(EXCLUDED.con_id, orders.con_id), "
@@ -503,7 +511,9 @@ class DataWriter:
                     "exchange=COALESCE(EXCLUDED.exchange, orders.exchange), "
                     "currency=COALESCE(EXCLUDED.currency, orders.currency), "
                     "multiplier=COALESCE(EXCLUDED.multiplier, orders.multiplier)",
+                    _clean_int(o.permId),
                     o.orderId,
+                    _clean_int(getattr(o, "clientId", None)),
                     o.account,
                     trade.contract.symbol,
                     _clean_int(getattr(trade.contract, "conId", None)),
@@ -594,6 +604,11 @@ class DataWriter:
                     )
         except Exception as e:
             logger.error(f"sync_executions error: {e}")
+
+    async def sync_orders(self, trades: list):
+        """批量写入订单（来自 reqAllOpenOrdersAsync）。"""
+        for trade in trades:
+            await self.upsert_order(trade)
 
     async def upsert_daily_bars(self, bars: list[dict], update_open: bool = True):
         if not bars:

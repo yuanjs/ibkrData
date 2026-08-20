@@ -49,8 +49,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   var rollHour = 16;
   var rollMinute = 0;
   var kSeries, dSeries, jSeries;
+  var MAX_CHART_BARS = 3000;
   var currentCandles = [];
   var kdjData = { k: [], d: [], j: [] };
+  var kdjMap = new Map();
   var intervalSec = 86400;
   var rafId = null;
   var chartGen = 0;  // Incremented on every destroy(); stale syncLoops bail out
@@ -65,6 +67,29 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
   // Throttles the load-more request: the range callback fires every frame while
   // panning, and each postMessage costs a bridge hop.
   var lastLoadMoreAt = 0;
+
+  function syncKdjRange(mr) {
+    if (!chart || !kdjChart || !mr || !kdjData || !kdjData.k || kdjData.k.length === 0) return;
+    var k0ts = kdjData.k[0].time;
+    if (kdjOffset === -1 || Number(k0ts) !== lastKdjK0Time) {
+      for (var ci = 0; ci < currentCandles.length; ci++) {
+        if (Number(currentCandles[ci].time) === Number(k0ts)) {
+          kdjOffset = ci;
+          lastKdjK0Time = Number(k0ts);
+          break;
+        }
+      }
+    }
+    if (kdjOffset !== -1) {
+      var from = mr.from - kdjOffset;
+      var to = mr.to - kdjOffset;
+      if (from !== lastSyncFrom || to !== lastSyncTo) {
+        lastSyncFrom = from;
+        lastSyncTo = to;
+        try { kdjChart.timeScale().setVisibleLogicalRange({ from: from, to: to }); } catch(e) {}
+      }
+    }
+  }
 
   var colors = {
     bg: '#0f1117', text: '#e2e8f0', grid: '#1f2937',
@@ -273,6 +298,25 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       if (ma10Series && data.length >= 10) ma10Series.setData(calcMA(data, 10));
       if (kSeries && data.length >= 8) {
         kdjData = calcKDJ(data);
+        kdjMap.clear();
+        for (var _ki = 0; _ki < kdjData.k.length; _ki++) {
+          var _kp = kdjData.k[_ki];
+          kdjMap.set(timeKey(_kp.time), { k: _kp.value });
+        }
+        for (var _di = 0; _di < kdjData.d.length; _di++) {
+          var _dp = kdjData.d[_di];
+          var _t = timeKey(_dp.time);
+          var _entry = kdjMap.get(_t) || {};
+          _entry.d = _dp.value;
+          kdjMap.set(_t, _entry);
+        }
+        for (var _ji = 0; _ji < kdjData.j.length; _ji++) {
+          var _jp = kdjData.j[_ji];
+          var _t = timeKey(_jp.time);
+          var _entry = kdjMap.get(_t) || {};
+          _entry.j = _jp.value;
+          kdjMap.set(_t, _entry);
+        }
         kSeries.setData(kdjData.k);
         dSeries.setData(kdjData.d);
         jSeries.setData(kdjData.j);
@@ -320,12 +364,24 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         }
       }
       // Invalidate the KDJ alignment cache: the candle window may have shifted,
-      // so syncLoop must recompute the offset on its next frame.
+      // so syncKdjRange must recompute the offset.
       kdjOffset = -1; lastKdjK0Time = -1; lastSyncFrom = -1; lastSyncTo = -1;
+      if (kdjChart && chart) {
+        try {
+          var _mr = chart.timeScale().getVisibleLogicalRange();
+          if (_mr) syncKdjRange(_mr);
+        } catch(e) {}
+      }
       return;
     }
     didInitialView = true;
     applyInitialView();
+    if (kdjChart && chart) {
+      try {
+        var _mr2 = chart.timeScale().getVisibleLogicalRange();
+        if (_mr2) syncKdjRange(_mr2);
+      } catch(e) {}
+    }
   }
 
   function updateTick(tick) {
@@ -346,7 +402,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         upd = { time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price };
       }
       currentCandles.push({ time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price });
-      if (currentCandles.length > 500) currentCandles.shift();
+      if (currentCandles.length > MAX_CHART_BARS) {
+        var _removed = currentCandles.shift();
+        if (_removed) kdjMap.delete(timeKey(_removed.time));
+      }
       mainSeries.update(upd);
     } else if (bucket === lastTime) {
       // Update current (latest) candle
@@ -391,9 +450,51 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     }
     if (!isLineInterval(currentInterval) && kSeries && currentCandles.length >= 8) {
       var lastKdj = calcKDJ(currentCandles.slice(-30));
-      if (lastKdj.k.length > 0) kSeries.update(lastKdj.k[lastKdj.k.length - 1]);
-      if (lastKdj.d.length > 0) dSeries.update(lastKdj.d[lastKdj.d.length - 1]);
-      if (lastKdj.j.length > 0) jSeries.update(lastKdj.j[lastKdj.j.length - 1]);
+      var _lastK = lastKdj.k[lastKdj.k.length - 1];
+      var _lastD = lastKdj.d[lastKdj.d.length - 1];
+      var _lastJ = lastKdj.j[lastKdj.j.length - 1];
+      if (_lastK) {
+        kSeries.update(_lastK);
+        var _t = timeKey(_lastK.time);
+        var _entry = kdjMap.get(_t) || {};
+        _entry.k = _lastK.value;
+        if (_lastD && timeKey(_lastD.time) === _t) _entry.d = _lastD.value;
+        if (_lastJ && timeKey(_lastJ.time) === _t) _entry.j = _lastJ.value;
+        kdjMap.set(_t, _entry);
+
+        var _klen = kdjData.k.length;
+        if (_klen > 0 && timeKey(kdjData.k[_klen - 1].time) === _t) {
+          kdjData.k[_klen - 1] = _lastK;
+        } else {
+          kdjData.k.push(_lastK);
+          if (kdjData.k.length > MAX_CHART_BARS) {
+            var _oldK = kdjData.k.shift();
+            if (_oldK) kdjMap.delete(timeKey(_oldK.time));
+          }
+        }
+      }
+      if (_lastD) {
+        dSeries.update(_lastD);
+        var _t = timeKey(_lastD.time);
+        var _dlen = kdjData.d.length;
+        if (_dlen > 0 && timeKey(kdjData.d[_dlen - 1].time) === _t) {
+          kdjData.d[_dlen - 1] = _lastD;
+        } else {
+          kdjData.d.push(_lastD);
+          if (kdjData.d.length > MAX_CHART_BARS) kdjData.d.shift();
+        }
+      }
+      if (_lastJ) {
+        jSeries.update(_lastJ);
+        var _t = timeKey(_lastJ.time);
+        var _jlen = kdjData.j.length;
+        if (_jlen > 0 && timeKey(kdjData.j[_jlen - 1].time) === _t) {
+          kdjData.j[_jlen - 1] = _lastJ;
+        } else {
+          kdjData.j.push(_lastJ);
+          if (kdjData.j.length > MAX_CHART_BARS) kdjData.j.shift();
+        }
+      }
     }
   }
 
@@ -413,6 +514,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
     kdjOverlay = null;
     mainSeries = null; ma3Series = null; ma5Series = null; ma10Series = null;
     kSeries = null; dSeries = null; jSeries = null;
+    if (kdjMap) { try { kdjMap.clear(); } catch(e) {} }
   }
 
   function create() {
@@ -470,8 +572,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       ma10Series = chart.addSeries(LightweightCharts.LineSeries, { color: colors.ma10, lineWidth: 1, lineStyle: 0, crosshairMarkerVisible: false, lastValueVisible: true, priceLineVisible: false });
     }
 
-    // Ask RN for older bars once the user pans within ~10 candles of the left edge.
+    // Ask RN for older bars once the user pans within ~10 candles of the left edge, and sync KDJ range.
     chart.timeScale().subscribeVisibleLogicalRangeChange(function(range) {
+      if (range && kdjChart) {
+        syncKdjRange(range);
+      }
       if (!range || !didInitialView || range.from > 10) return;
       var _now = Date.now();
       if (_now - lastLoadMoreAt < 500) return;
@@ -501,16 +606,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
         if (m10) html += '<span class="tt-item" style="color:' + colors.ma10 + '">MA10: ' + m10.value.toFixed(decPlaces) + '</span>';
       }
       var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
-      var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
-      if (kp && kdjData.d.length > 0) {
-        var kk = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
-        var dd = kdjData.d.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
-        var jj = kdjData.j.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
-        if (kk && dd && jj) {
-          html += '<span class="tt-item" style="color:' + colors.kLine + '">K: ' + kk.value.toFixed(1) + '</span>';
-          html += '<span class="tt-item" style="color:' + colors.dLine + '">D: ' + dd.value.toFixed(1) + '</span>';
-          html += '<span class="tt-item" style="color:' + colors.jLine + '">J: ' + jj.value.toFixed(1) + '</span>';
-        }
+      var kdjEntry = kdjMap.get(ts);
+      if (kdjEntry && kdjEntry.k !== undefined && kdjEntry.d !== undefined && kdjEntry.j !== undefined) {
+        html += '<span class="tt-item" style="color:' + colors.kLine + '">K: ' + kdjEntry.k.toFixed(1) + '</span>';
+        html += '<span class="tt-item" style="color:' + colors.dLine + '">D: ' + kdjEntry.d.toFixed(1) + '</span>';
+        html += '<span class="tt-item" style="color:' + colors.jLine + '">J: ' + kdjEntry.j.toFixed(1) + '</span>';
       }
       html += '</div>';
       tip.innerHTML = html;
@@ -582,54 +682,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
       chart.subscribeCrosshairMove(function(param) {
         if (param.time && kSeries) {
           var ts = typeof param.time === 'object' ? param.time._timestamp : Number(param.time);
-          var kp = kdjData.k.find(function(p) { return Math.abs(Number(p.time) - ts) < 5; });
-          if (kp) kdjChart.setCrosshairPosition(kp.value, param.time, kSeries);
+          var kdjEntry = kdjMap.get(ts);
+          if (kdjEntry && kdjEntry.k !== undefined) {
+            kdjChart.setCrosshairPosition(kdjEntry.k, param.time, kSeries);
+          }
         } else if (kdjChart) {
           kdjChart.clearCrosshairPosition();
         }
       });
 
-      var myGen = chartGen;
-      function syncLoop() {
-        // A destroy() happened since this loop started — the charts it captured
-        // are gone. Stop instead of touching disposed objects every frame.
-        if (myGen !== chartGen || !chart || !kdjChart) return;
-        var mr;
-        try {
-          mr = chart.timeScale().getVisibleLogicalRange();
-        } catch(e) {
-          // Unexpected disposed/invalid chart: report once and stop the loop
-          // rather than throwing on every animation frame.
-          postToRN({ type: 'log', text: 'KDJ sync stopped: ' + (e.message || e) });
-          return;
-        }
-        if (!mr || kdjData.k.length === 0) {
-          rafId = requestAnimationFrame(syncLoop);
-          return;
-        }
-        // Compute offset: index of the first KDJ point in the main candle data
-        var k0ts = kdjData.k[0].time;
-        if (kdjOffset === -1 || Number(k0ts) !== lastKdjK0Time) {
-          for (var ci = 0; ci < currentCandles.length; ci++) {
-            if (Number(currentCandles[ci].time) === Number(k0ts)) {
-              kdjOffset = ci;
-              lastKdjK0Time = Number(k0ts);
-              break;
-            }
-          }
-        }
-        if (kdjOffset !== -1) {
-          var from = mr.from - kdjOffset;
-          var to = mr.to - kdjOffset;
-          if (from !== lastSyncFrom || to !== lastSyncTo) {
-            lastSyncFrom = from;
-            lastSyncTo = to;
-            try { kdjChart.timeScale().setVisibleLogicalRange({ from: from, to: to }); } catch(e) {}
-          }
-        }
-        rafId = requestAnimationFrame(syncLoop);
-      }
-      rafId = requestAnimationFrame(syncLoop);
     } catch(e) {
       postToRN({ type: 'log', text: 'KDJ create error: ' + (e.message || e) });
     }

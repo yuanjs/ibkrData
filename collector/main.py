@@ -34,6 +34,7 @@ from config import (
     IB_CLIENT_ID,
     IB_HOST,
     IB_PORT,
+    ORDER_SYNC_INTERVAL,
     PRODUCT_ROLL_CONFIG,
     REDIS_URL,
     HAS_PAPER,
@@ -1158,6 +1159,40 @@ async def account_loop(client, writer, pub, interval, gateway="live", redis=None
             pass
 
 
+async def order_sync_loop(client, writer, interval, refresh_event, gateway="live"):
+    """周期性对账订单/成交，兜住实时事件收不到的部分。
+
+    IBKR 的 execDetails/openOrder 实时事件只推给下单的那个 client（除非 IB Gateway
+    配置了 Master API client ID），断线重连后也不会补推。reqExecutions 与
+    reqAllOpenOrders 不受 clientId 限制，能拿到账户下所有程序的记录。
+
+    注意 reqAllOpenOrders 只返回当前未完成的订单，两次轮询之间开平的短命订单抓不到；
+    订单表的完整性仍然依赖 Master API client ID 带来的实时事件。成交表不受此限。
+    """
+    while True:
+        try:
+            if client.is_connected:
+                fills = await client.ib.reqExecutionsAsync()
+                await writer.sync_executions(fills)
+                trades = await client.ib.reqAllOpenOrdersAsync()
+                await writer.sync_orders(trades)
+                if fills or trades:
+                    logger.info(
+                        f"Order sync ({gateway}): {len(fills)} fills, {len(trades)} open orders"
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Order sync loop ({gateway}) error: {e}")
+
+        # 等待 interval 或被重连事件唤醒
+        try:
+            await asyncio.wait_for(refresh_event.wait(), timeout=interval)
+            refresh_event.clear()
+        except asyncio.TimeoutError:
+            pass
+
+
 async def settings_listener(redis_client):
     pubsub = redis_client.pubsub()
     await pubsub.subscribe("settings:update")
@@ -1357,7 +1392,13 @@ async def live_tick_publish_loop(queue: asyncio.Queue, pub: Publisher):
 
 async def init_paper(pool, redis_client, writer, pub):
     try:
-        from config import PAPER_IB_HOST, PAPER_IB_PORT, PAPER_IB_CLIENT_ID, ACCOUNT_REFRESH_INTERVAL
+        from config import (
+            PAPER_IB_HOST,
+            PAPER_IB_PORT,
+            PAPER_IB_CLIENT_ID,
+            ACCOUNT_REFRESH_INTERVAL,
+            ORDER_SYNC_INTERVAL,
+        )
         paper_client = IBKRClient(PAPER_IB_HOST, PAPER_IB_PORT, PAPER_IB_CLIENT_ID)
         logger.info(f"Paper gateway connecting to {PAPER_IB_HOST}:{PAPER_IB_PORT}...")
         await paper_client.connect_with_retry()
@@ -1410,6 +1451,17 @@ async def init_paper(pool, redis_client, writer, pub):
         )
         _paper_tasks.add(task2)
         task2.add_done_callback(_paper_tasks.discard)
+        paper_order_sync_event = asyncio.Event()
+        paper_client.register_reconnect_handler(paper_order_sync_event.set)
+        task3 = asyncio.create_task(
+            order_sync_loop(
+                paper_client, writer, ORDER_SYNC_INTERVAL,
+                paper_order_sync_event, gateway="paper",
+            ),
+            name="paper_order_sync",
+        )
+        _paper_tasks.add(task3)
+        task3.add_done_callback(_paper_tasks.discard)
         logger.info("Paper gateway initialized successfully")
     except Exception as e:
         logger.error(f"Paper gateway init failed (will retry): {e}")
@@ -1507,6 +1559,10 @@ async def main():
     # 重连回填不并发（首连时回调尚未注册，_has_connected_once 作冗余第二道闸）。
     reconnect_backfill_event = asyncio.Event()
     client.register_reconnect_handler(reconnect_backfill_event.set)
+
+    # 重连后立即对账订单/成交：断线期间其他程序的成交不会被补推
+    order_sync_event = asyncio.Event()
+    client.register_reconnect_handler(order_sync_event.set)
 
     for s in symbols:
         if s["sec_type"] == "FUT":
@@ -1628,6 +1684,12 @@ async def main():
                 reconnect_backfill_event, client, pool, symbols
             ),
             name="reconnect_backfill",
+        ),
+        asyncio.create_task(
+            order_sync_loop(
+                client, writer, ORDER_SYNC_INTERVAL, order_sync_event, gateway="live"
+            ),
+            name="live_order_sync",
         ),
     ]
 

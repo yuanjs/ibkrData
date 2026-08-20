@@ -91,7 +91,10 @@ CREATE INDEX IF NOT EXISTS idx_positions_contract_identity
 
 -- 订单表（普通表，非 hypertable，以支持 UNIQUE 约束实现 UPSERT）
 CREATE TABLE orders (
-    order_id        BIGINT PRIMARY KEY,
+    -- permId 由 IBKR 全局分配，跨 client 唯一；orderId 是各 client 独立编号，不能做主键
+    perm_id         BIGINT PRIMARY KEY,
+    order_id        BIGINT,
+    client_id       BIGINT,
     account_id      TEXT,
     symbol          TEXT,
     con_id          BIGINT,
@@ -113,6 +116,7 @@ CREATE TABLE orders (
 );
 CREATE INDEX ON orders (status);
 CREATE INDEX ON orders (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_order_id ON orders (order_id);
 CREATE INDEX IF NOT EXISTS idx_orders_contract_identity
     ON orders (account_id, symbol, con_id, local_symbol, updated_at DESC);
 
