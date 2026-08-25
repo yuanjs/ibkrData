@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useCallback, useEffect, useState, useMemo } from 'react'
 import { api } from '../api/client'
 import { getSymbolDecimalPlaces } from '../config/productConfig'
 import { useAccountStore } from '../store/accountStore'
@@ -36,8 +36,11 @@ export function Orders() {
   const [pnl, setPnl] = useState<unknown[]>([])
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
+  const [appliedStart, setAppliedStart] = useState('')
+  const [appliedEnd, setAppliedEnd] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(() => new Set())
 
   const connectedGateway = useAccountStore(s => s.connectedGateway)
   const accountIds = useAccountStore(s => s.accountIds)
@@ -50,46 +53,74 @@ export function Orders() {
   }, [setGatewayMap])
 
   const fetchData = useCallback(() => {
-    const params = rangeParams(connectedGateway, start, end)
+    const controller = new AbortController()
+    const params = rangeParams(connectedGateway, appliedStart, appliedEnd)
+    const endpoint = tab === 'orders' ? '/orders' : tab === 'trades' ? '/trades' : '/pnl'
     setLoading(true)
     setError(null)
-    Promise.all([
-      api.get(`/orders${params}`),
-      api.get(`/trades${params}`),
-      api.get(`/pnl${params}`),
-    ])
-      .then(([ordersData, tradesData, pnlData]) => {
-        setOrders(Array.isArray(ordersData) ? ordersData : [])
-        setTrades(Array.isArray(tradesData) ? tradesData : [])
-        setPnl(Array.isArray(pnlData) ? pnlData : [])
+    api.get(`${endpoint}${params}`, { signal: controller.signal })
+      .then(data => {
+        const rows = Array.isArray(data) ? data : []
+        if (tab === 'orders') setOrders(rows)
+        else if (tab === 'trades') setTrades(rows)
+        else setPnl(rows)
       })
       .catch(err => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
         setError(err instanceof Error ? err.message : '订单数据加载失败')
       })
-      .finally(() => setLoading(false))
-  }, [connectedGateway, start, end])
-
-  useEffect(() => { fetchData() }, [fetchData])
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+    return () => controller.abort()
+  }, [connectedGateway, appliedStart, appliedEnd, tab])
 
   // WebSocket 有新的订单/成交推送时自动刷新
-  const prevCount = useRef(wsOrderCount)
   useEffect(() => {
-    if (wsOrderCount !== prevCount.current) {
-      prevCount.current = wsOrderCount
-      fetchData()
+    let cancelled = false
+    let abortRequest: (() => void) | undefined
+    queueMicrotask(() => {
+      if (!cancelled) abortRequest = fetchData()
+    })
+    return () => {
+      cancelled = true
+      abortRequest?.()
     }
-  }, [wsOrderCount, fetchData])
+  }, [fetchData, wsOrderCount])
 
-  const pnlGroups = (pnl as Record<string, unknown>[]).reduce<Record<string, PnlGroup>>((acc, row) => {
-    const symbol = row.symbol as string
-    const group = acc[symbol] ?? { symbol, realized_pnl: 0, trade_count: 0, rows: [] }
-    group.realized_pnl += Number(row.realized_pnl ?? 0)
-    group.trade_count += 1
-    group.rows.push(row)
-    acc[symbol] = group
-    return acc
-  }, {})
-  const pnlSummary = Object.values(pnlGroups).sort((a, b) => a.symbol.localeCompare(b.symbol))
+  const pnlSummary = useMemo(() => {
+    const groups = (pnl as Record<string, unknown>[]).reduce<Record<string, PnlGroup>>((acc, row) => {
+      const symbol = row.symbol as string
+      const group = acc[symbol] ?? { symbol, realized_pnl: 0, trade_count: 0, rows: [] }
+      group.realized_pnl += Number(row.realized_pnl ?? 0)
+      group.trade_count += 1
+      group.rows.push(row)
+      acc[symbol] = group
+      return acc
+    }, {})
+    return Object.values(groups).sort((a, b) => a.symbol.localeCompare(b.symbol))
+  }, [pnl])
+
+  const applyRange = () => {
+    setAppliedStart(start)
+    setAppliedEnd(end)
+  }
+
+  const clearRange = () => {
+    setStart('')
+    setEnd('')
+    setAppliedStart('')
+    setAppliedEnd('')
+  }
+
+  const toggleSymbol = (symbol: string) => {
+    setExpandedSymbols(current => {
+      const next = new Set(current)
+      if (next.has(symbol)) next.delete(symbol)
+      else next.add(symbol)
+      return next
+    })
+  }
 
   return (
     <div className="p-4">
@@ -123,12 +154,16 @@ export function Orders() {
             style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
         </label>
         {(start || end) && (
-          <button onClick={() => { setStart(''); setEnd('') }}
+          <button onClick={clearRange}
             className="rounded px-3 py-1.5 text-xs"
             style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-secondary)' }}>
             清除
           </button>
         )}
+        <button onClick={applyRange} disabled={start === appliedStart && end === appliedEnd}
+          className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
+          查询
+        </button>
       </div>
 
       <div className="mb-3 rounded p-3" style={{ backgroundColor: 'var(--bg-surface)' }}>
@@ -229,7 +264,10 @@ export function Orders() {
                 </td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{group.trade_count}</td>
                 <td className="py-2 px-3">
-                  <div className="space-y-1">
+                  <button onClick={() => toggleSymbol(group.symbol)} className="mb-1 text-xs text-blue-500 hover:underline">
+                    {expandedSymbols.has(group.symbol) ? '收起明细' : `展开 ${group.rows.length} 条明细`}
+                  </button>
+                  {expandedSymbols.has(group.symbol) && <div className="space-y-1">
                     {group.rows.map((p, i) => (
                       <div key={i} className="grid grid-cols-[150px_70px_1fr_90px] gap-2 text-xs">
                         <span style={{ color: 'var(--text-secondary)' }}>{formatDateTime(p.time)}</span>
@@ -242,7 +280,7 @@ export function Orders() {
                         </span>
                       </div>
                     ))}
-                  </div>
+                  </div>}
                 </td>
               </tr>
             ))}

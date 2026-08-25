@@ -24,9 +24,9 @@ function query(params: Record<string, string | number | boolean | null | undefin
 }
 
 export const api = {
-  get: <T = unknown>(path: string) => {
+  get: <T = unknown>(path: string, options?: RequestInit) => {
     const { apiUrl } = getRuntimeConfig()
-    return request<T>(`${apiUrl}/api${path}`)
+    return request<T>(`${apiUrl}/api${path}`, options)
   },
   post: <T = unknown>(path: string, body: unknown) => {
     const { apiUrl } = getRuntimeConfig()
