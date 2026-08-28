@@ -23,6 +23,7 @@ const rangeParams = (gateway: string | null, start: string, end: string) => {
 }
 
 type PnlGroup = {
+  key: string
   symbol: string
   currency: string
   realized_pnl: number
@@ -106,8 +107,9 @@ export function Orders() {
     const groups = (pnl as Record<string, unknown>[]).reduce<Record<string, PnlGroup>>((acc, row) => {
       const symbol = row.symbol as string
       const currency = String(row.currency ?? '')
-      const key = `${symbol}:${currency}`
-      const group = acc[key] ?? { symbol, currency, realized_pnl: 0, trade_count: 0, rows: [] }
+      const contractIdentity = `${row.con_id ?? ''}:${row.local_symbol ?? ''}`
+      const key = `${symbol}:${currency}:${contractIdentity}`
+      const group = acc[key] ?? { key, symbol, currency, realized_pnl: 0, trade_count: 0, rows: [] }
       group.realized_pnl += Number(row.realized_pnl ?? 0)
       group.trade_count += 1
       group.rows.push(row)
@@ -164,11 +166,11 @@ export function Orders() {
     setAppliedEnd('')
   }
 
-  const toggleSymbol = (symbol: string) => {
+  const toggleSymbol = (key: string) => {
     setExpandedSymbols(current => {
       const next = new Set(current)
-      if (next.has(symbol)) next.delete(symbol)
-      else next.add(symbol)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -342,7 +344,7 @@ export function Orders() {
               <th className="text-left py-2 px-3">明细</th>
             </tr></thead>
             <tbody>{pnlSummary.map(group => (
-              <tr key={group.symbol} className="border-b align-top" style={{ borderColor: 'var(--border-light)' }}>
+              <tr key={group.key} className="border-b align-top" style={{ borderColor: 'var(--border-light)' }}>
                 <td className="py-2 px-3 font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>{group.symbol}</td>
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-secondary)' }}>{group.currency || '-'}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: group.realized_pnl >= 0 ? '#26a641' : '#d32f2f' }}>
@@ -350,10 +352,10 @@ export function Orders() {
                 </td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{group.trade_count}</td>
                 <td className="py-2 px-3">
-                  <button onClick={() => toggleSymbol(group.symbol)} className="mb-1 text-xs text-blue-500 hover:underline">
-                    {expandedSymbols.has(group.symbol) ? '收起明细' : `展开 ${group.rows.length} 条明细`}
+                  <button onClick={() => toggleSymbol(group.key)} className="mb-1 text-xs text-blue-500 hover:underline">
+                    {expandedSymbols.has(group.key) ? '收起明细' : `展开 ${group.rows.length} 条明细`}
                   </button>
-                  {expandedSymbols.has(group.symbol) && <div className="space-y-1">
+                  {expandedSymbols.has(group.key) && <div className="space-y-1">
                     {group.rows.map((p, i) => (
                       <div key={i} className="grid grid-cols-[150px_70px_1fr_90px] gap-2 text-xs">
                         <span style={{ color: 'var(--text-secondary)' }}>{formatDateTime(p.time)}</span>
