@@ -172,7 +172,7 @@ async def get_trades(start: Optional[datetime] = None, end: Optional[datetime] =
     where, args = [], []
     if start:
         args.append(start)
-        where.append(f"time >= ${len(args)}")
+        where.append(f"e.time >= ${len(args)}")
     if end:
         args.append(end)
         where.append(f"e.time <= ${len(args)}")
@@ -185,7 +185,10 @@ async def get_trades(start: Optional[datetime] = None, end: Optional[datetime] =
             args.append(ids)
             where.append(f"e.account_id = ANY(${len(args)})")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
-    rows = await pool.fetch(f"SELECT * FROM executions {clause} ORDER BY time DESC LIMIT 1000", *args)
+    rows = await pool.fetch(
+        f"SELECT e.* FROM executions e {clause} ORDER BY e.time DESC LIMIT 1000",
+        *args,
+    )
     return [dict(r) for r in rows]
 
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo } from 'react'
+import { Fragment, useCallback, useEffect, useState, useMemo } from 'react'
 import { api } from '../api/client'
 import { getSymbolDecimalPlaces } from '../config/productConfig'
 import { useAccountStore } from '../store/accountStore'
@@ -30,6 +30,18 @@ type PnlGroup = {
   rows: Record<string, unknown>[]
 }
 
+type TradeGroup = {
+  key: string
+  order_id: string
+  time: unknown
+  symbol: string
+  side: string
+  quantity: number
+  average_price: number
+  commission: number
+  rows: Record<string, unknown>[]
+}
+
 export function Orders() {
   const [orders, setOrders] = useState<unknown[]>([])
   const [trades, setTrades] = useState<unknown[]>([])
@@ -42,6 +54,7 @@ export function Orders() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(() => new Set())
+  const [expandedTradeOrders, setExpandedTradeOrders] = useState<Set<string>>(() => new Set())
 
   const connectedGateway = useAccountStore(s => s.connectedGateway)
   const accountIds = useAccountStore(s => s.accountIds)
@@ -104,6 +117,41 @@ export function Orders() {
     return Object.values(groups).sort((a, b) => a.symbol.localeCompare(b.symbol))
   }, [pnl])
 
+  const tradeSummary = useMemo(() => {
+    const groups = new Map<string, TradeGroup & { notional: number }>()
+    for (const row of trades as Record<string, unknown>[]) {
+      const orderId = row.order_id == null ? '-' : String(row.order_id)
+      const symbol = String(row.symbol ?? '-')
+      const side = String(row.side ?? '-')
+      const identity = row.order_id == null
+        ? String(row.exec_id ?? `${symbol}:${side}:${row.time}`)
+        : `${row.account_id ?? ''}:${orderId}:${row.con_id ?? ''}:${row.local_symbol ?? ''}:${side}`
+      const quantity = Number(row.quantity ?? 0)
+      const price = Number(row.price ?? 0)
+      const group = groups.get(identity) ?? {
+        key: identity,
+        order_id: orderId,
+        time: row.time,
+        symbol,
+        side,
+        quantity: 0,
+        average_price: 0,
+        commission: 0,
+        notional: 0,
+        rows: [],
+      }
+      group.quantity += quantity
+      group.notional += quantity * price
+      group.commission += Number(row.commission ?? 0)
+      group.rows.push(row)
+      groups.set(identity, group)
+    }
+    return [...groups.values()].map(({ notional, ...group }) => ({
+      ...group,
+      average_price: group.quantity ? notional / group.quantity : 0,
+    }))
+  }, [trades])
+
   const applyRange = () => {
     setAppliedStart(start)
     setAppliedEnd(end)
@@ -121,6 +169,15 @@ export function Orders() {
       const next = new Set(current)
       if (next.has(symbol)) next.delete(symbol)
       else next.add(symbol)
+      return next
+    })
+  }
+
+  const toggleTradeOrder = (key: string) => {
+    setExpandedTradeOrders(current => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -224,26 +281,50 @@ export function Orders() {
 
       {tab === 'trades' && (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[650px] md:min-w-0">
+          <table className="w-full text-sm min-w-[850px] md:min-w-0">
             <thead><tr className="border-b" style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>
-              <th className="text-left py-2 px-3">时间</th><th className="text-left py-2 px-3">标的</th>
-              <th className="text-left py-2 px-3">方向</th><th className="text-right py-2 px-3">数量</th>
-              <th className="text-right py-2 px-3">价格</th><th className="text-right py-2 px-3">手续费</th>
+              <th className="text-left py-2 px-3">订单</th><th className="text-left py-2 px-3">时间</th>
+              <th className="text-left py-2 px-3">标的</th><th className="text-left py-2 px-3">方向</th>
+              <th className="text-right py-2 px-3">成交数量</th><th className="text-right py-2 px-3">成交均价</th>
+              <th className="text-right py-2 px-3">手续费</th><th className="text-left py-2 px-3">明细</th>
             </tr></thead>
-            <tbody>{(trades as Record<string, unknown>[]).map((t, i) => (
-              <tr key={i} className="border-b" style={{ borderColor: 'var(--border-light)' }}>
-                <td className="py-2 px-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{formatDateTime(t.time)}</td>
-                <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>
-                  {t.symbol as string}
-                </td>
-                <td className="py-2 px-3" style={{ color: t.side === 'BOT' ? '#26a641' : '#d32f2f' }}>{t.side as string}</td>
-                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{t.quantity as number}</td>
-                <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{formatNumber(t.price, getSymbolDecimalPlaces(t.symbol as string))}</td>
-                <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{t.commission as number}</td>
-              </tr>
+            <tbody>{tradeSummary.map(group => (
+              <Fragment key={group.key}>
+                <tr className="border-b" style={{ borderColor: 'var(--border-light)' }}>
+                  <td className="py-2 px-3 font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>{group.order_id}</td>
+                  <td className="py-2 px-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{formatDateTime(group.time)}</td>
+                  <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-primary)' }}>{group.symbol}</td>
+                  <td className="py-2 px-3" style={{ color: group.side === 'BOT' ? '#26a641' : '#d32f2f' }}>{group.side}</td>
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{formatNumber(group.quantity, 2)}</td>
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-primary)' }}>{formatNumber(group.average_price, getSymbolDecimalPlaces(group.symbol))}</td>
+                  <td className="py-2 px-3 text-right font-mono" style={{ color: 'var(--text-secondary)' }}>{formatNumber(group.commission, 2)}</td>
+                  <td className="py-2 px-3">
+                    <button onClick={() => toggleTradeOrder(group.key)} className="text-xs text-blue-500 hover:underline">
+                      {expandedTradeOrders.has(group.key) ? '收起明细' : `展开 ${group.rows.length} 笔`}
+                    </button>
+                  </td>
+                </tr>
+                {expandedTradeOrders.has(group.key) && (
+                  <tr key={`${group.key}:details`} className="border-b" style={{ borderColor: 'var(--border-light)', backgroundColor: 'var(--bg-surface)' }}>
+                    <td colSpan={8} className="px-6 py-3">
+                      <div className="grid grid-cols-[180px_100px_120px_100px] gap-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        <span>成交时间</span><span className="text-right">数量</span><span className="text-right">价格</span><span className="text-right">手续费</span>
+                        {group.rows.map((fill, i) => (
+                          <div key={String(fill.exec_id ?? i)} className="contents">
+                            <span>{formatDateTime(fill.time)}</span>
+                            <span className="text-right font-mono">{formatNumber(fill.quantity, 2)}</span>
+                            <span className="text-right font-mono">{formatNumber(fill.price, getSymbolDecimalPlaces(group.symbol))}</span>
+                            <span className="text-right font-mono">{formatNumber(fill.commission, 2)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
-              {!loading && trades.length === 0 && (
-                <tr><td colSpan={6} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无成交数据</td></tr>
+              {!loading && tradeSummary.length === 0 && (
+                <tr><td colSpan={8} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无成交数据</td></tr>
               )}
             </tbody>
           </table>
