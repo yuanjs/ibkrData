@@ -67,13 +67,15 @@ export default function Orders() {
   }, [fetchData, wsOrderCount])
 
   const pnlSummary = useMemo(() => {
-    const groups = new Map<string, { symbol: string; realized_pnl: number; trade_count: number }>()
+    const groups = new Map<string, { symbol: string; currency: string; realized_pnl: number; trade_count: number }>()
     for (const row of pnl as Record<string, unknown>[]) {
       const symbol = String(row.symbol ?? '-')
-      const group = groups.get(symbol) ?? { symbol, realized_pnl: 0, trade_count: 0 }
+      const currency = String(row.currency ?? '')
+      const key = `${symbol}:${currency}`
+      const group = groups.get(key) ?? { symbol, currency, realized_pnl: 0, trade_count: 0 }
       group.realized_pnl += Number(row.realized_pnl ?? 0)
       group.trade_count += 1
-      groups.set(symbol, group)
+      groups.set(key, group)
     }
     return [...groups.values()].sort((a, b) => a.symbol.localeCompare(b.symbol))
   }, [pnl])
@@ -196,8 +198,9 @@ export default function Orders() {
         { text: t.commission != null ? String(t.commission) : '', mono: false, align: 'right' },
       ])}
 
-      {tab === 'pnl' && renderTable(pnlSummary, ['标的', '已实现盈亏', '平仓次数'], colors, p => [
+      {tab === 'pnl' && renderTable(pnlSummary, ['标的', '币种', '已实现盈亏', '平仓次数'], colors, p => [
         { text: p.symbol as string, mono: true, bold: false },
+        { text: String(p.currency || '-'), mono: true },
         { text: p.realized_pnl != null ? (p.realized_pnl as number).toFixed(2) : '', mono: true, align: 'right', color: (p.realized_pnl as number) >= 0 ? '#26a641' : '#d32f2f' },
         { text: String(p.trade_count ?? ''), mono: false, align: 'right' },
       ])}

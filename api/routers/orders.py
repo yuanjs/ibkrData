@@ -52,12 +52,16 @@ def _realized_pnl_rows(rows: list[dict]) -> list[dict]:
 
     for row in rows:
         key = _contract_key(row)
+        if row.get("reset_lots"):
+            lots.pop(key, None)
         side = row.get("side")
         sign = _execution_sign(side)
         remaining = _num(row.get("quantity"))
         price = _num(row.get("price"))
         multiplier = _mult(row.get("multiplier"))
         commission = _num(row.get("commission"))
+        execution_qty = _num(row.get("quantity"))
+        commission_per_unit = commission / execution_qty if execution_qty else Decimal("0")
         open_lots = lots.setdefault(key, [])
 
         while remaining > 0 and open_lots and open_lots[0]["sign"] != sign:
@@ -67,7 +71,9 @@ def _realized_pnl_rows(rows: list[dict]) -> list[dict]:
                 pnl = (price - lot["price"]) * close_qty * multiplier
             else:
                 pnl = (lot["price"] - price) * close_qty * multiplier
-            commission_alloc = commission * (close_qty / _num(row.get("quantity"))) if row.get("quantity") else Decimal("0")
+            close_commission = commission_per_unit * close_qty
+            open_commission = lot["commission_per_unit"] * close_qty
+            commission_alloc = close_commission + open_commission
             pnl -= commission_alloc
 
             realized.append({
@@ -77,6 +83,7 @@ def _realized_pnl_rows(rows: list[dict]) -> list[dict]:
                 "con_id": row.get("con_id"),
                 "local_symbol": row.get("local_symbol"),
                 "contract_month": row.get("contract_month"),
+                "currency": row.get("currency"),
                 "side": side,
                 "quantity": float(close_qty),
                 "entry_price": float(lot["price"]),
@@ -92,7 +99,12 @@ def _realized_pnl_rows(rows: list[dict]) -> list[dict]:
                 open_lots.pop(0)
 
         if remaining > 0:
-            open_lots.append({"quantity": remaining, "price": price, "sign": sign})
+            open_lots.append({
+                "quantity": remaining,
+                "price": price,
+                "sign": sign,
+                "commission_per_unit": commission_per_unit,
+            })
 
     return sorted(realized, key=lambda r: r["time"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
@@ -163,15 +175,15 @@ async def get_trades(start: Optional[datetime] = None, end: Optional[datetime] =
         where.append(f"time >= ${len(args)}")
     if end:
         args.append(end)
-        where.append(f"time <= ${len(args)}")
+        where.append(f"e.time <= ${len(args)}")
     if symbol:
         args.append(symbol)
-        where.append(f"symbol = ${len(args)}")
+        where.append(f"e.symbol = ${len(args)}")
     if gateway:
         ids = await _gateway_account_ids(gateway)
         if ids:
             args.append(ids)
-            where.append(f"account_id = ANY(${len(args)})")
+            where.append(f"e.account_id = ANY(${len(args)})")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
     rows = await pool.fetch(f"SELECT * FROM executions {clause} ORDER BY time DESC LIMIT 1000", *args)
     return [dict(r) for r in rows]
@@ -210,9 +222,30 @@ async def get_pnl(start: Optional[datetime] = None, end: Optional[datetime] = No
     clause = ("WHERE " + " AND ".join(where)) if where else ""
     rows = await pool.fetch(
         f"""
-        SELECT *
-        FROM executions
-        {clause}
+        WITH ordered_executions AS (
+            SELECT
+                e.*,
+                LAG(e.time) OVER (
+                    PARTITION BY e.account_id, e.symbol, e.con_id, e.local_symbol
+                    ORDER BY e.time, e.exec_id
+                ) AS previous_execution_time
+            FROM executions e
+            {clause}
+        )
+        SELECT
+            oe.*,
+            EXISTS (
+                SELECT 1
+                FROM positions p
+                WHERE p.account_id = oe.account_id
+                  AND p.symbol = oe.symbol
+                  AND p.con_id IS NOT DISTINCT FROM oe.con_id
+                  AND p.local_symbol IS NOT DISTINCT FROM oe.local_symbol
+                  AND p.quantity = 0
+                  AND p.time > COALESCE(oe.previous_execution_time, '-infinity'::timestamptz)
+                  AND p.time < oe.time
+            ) AS reset_lots
+        FROM ordered_executions oe
         ORDER BY account_id, symbol, con_id NULLS LAST, local_symbol NULLS LAST, time ASC
         """,
         *args,

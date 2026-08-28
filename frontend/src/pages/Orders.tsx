@@ -24,6 +24,7 @@ const rangeParams = (gateway: string | null, start: string, end: string) => {
 
 type PnlGroup = {
   symbol: string
+  currency: string
   realized_pnl: number
   trade_count: number
   rows: Record<string, unknown>[]
@@ -91,11 +92,13 @@ export function Orders() {
   const pnlSummary = useMemo(() => {
     const groups = (pnl as Record<string, unknown>[]).reduce<Record<string, PnlGroup>>((acc, row) => {
       const symbol = row.symbol as string
-      const group = acc[symbol] ?? { symbol, realized_pnl: 0, trade_count: 0, rows: [] }
+      const currency = String(row.currency ?? '')
+      const key = `${symbol}:${currency}`
+      const group = acc[key] ?? { symbol, currency, realized_pnl: 0, trade_count: 0, rows: [] }
       group.realized_pnl += Number(row.realized_pnl ?? 0)
       group.trade_count += 1
       group.rows.push(row)
-      acc[symbol] = group
+      acc[key] = group
       return acc
     }, {})
     return Object.values(groups).sort((a, b) => a.symbol.localeCompare(b.symbol))
@@ -252,6 +255,7 @@ export function Orders() {
           <table className="w-full text-sm min-w-[900px] md:min-w-0">
             <thead><tr className="border-b" style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>
               <th className="text-left py-2 px-3">标的</th>
+              <th className="text-left py-2 px-3">币种</th>
               <th className="text-right py-2 px-3">已实现盈亏</th>
               <th className="text-right py-2 px-3">平仓次数</th>
               <th className="text-left py-2 px-3">明细</th>
@@ -259,6 +263,7 @@ export function Orders() {
             <tbody>{pnlSummary.map(group => (
               <tr key={group.symbol} className="border-b align-top" style={{ borderColor: 'var(--border-light)' }}>
                 <td className="py-2 px-3 font-mono font-semibold" style={{ color: 'var(--text-primary)' }}>{group.symbol}</td>
+                <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-secondary)' }}>{group.currency || '-'}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: group.realized_pnl >= 0 ? '#26a641' : '#d32f2f' }}>
                   {formatNumber(group.realized_pnl, 2)}
                 </td>
@@ -285,7 +290,7 @@ export function Orders() {
               </tr>
             ))}
               {!loading && pnlSummary.length === 0 && (
-                <tr><td colSpan={4} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无盈亏数据</td></tr>
+                <tr><td colSpan={5} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无盈亏数据</td></tr>
               )}
             </tbody>
           </table>
