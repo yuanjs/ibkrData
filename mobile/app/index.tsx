@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { View, Text, StyleSheet } from 'react-native'
 import { CandleChartRN } from '../src/components/CandleChartRN'
-import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../src/api/client'
+import { api, futuresApi, type FuturesActiveContract } from '../src/api/client'
 import { useMarketStore } from '../src/stores/marketStore'
 import { useTheme } from '../src/theme'
 import { aggregateCandles, getFuturesDailyAsOf, intervalSeconds, normalizeCandles, type CandleLike } from '../src/utils/chartData'
@@ -11,6 +11,7 @@ const RECENT_HISTORY_REFRESH_DELAYS_MS = [3_000, 80_000]
 const DAILY_CHART_LIMIT = 120
 const DAILY_CHART_PAGE_BARS = 120
 const MAX_DAILY_CHART_BARS = 5000
+const MAX_INTRADAY_CHART_BARS = 3000
 // Daily bars are paged by growing `limit` while keeping `as_of` fixed, so the
 // back-adjusted price series stays continuous across pages.
 const dailyLimitCache = new Map<string, number>()
@@ -29,9 +30,11 @@ function getHistoryLookbackHours(interval: string) {
 
 function getInitialHistoryLookbackHours(interval: string) {
   if (interval.endsWith('s')) return 6
-  if (interval === '1m') return 6
-  if (interval.endsWith('m')) return 24 * 7
-  if (interval.endsWith('h')) return 24 * 14
+  if (interval.endsWith('m') || interval.endsWith('h')) {
+    // Fetch enough for roughly 72 initial candles, with a minimum window that
+    // survives ordinary market breaks. Older history is appended afterwards.
+    return Math.max(12, Math.min(24 * 14, Math.ceil(72 * intervalSeconds(interval) / 3600)))
+  }
   return getHistoryLookbackHours(interval)
 }
 
@@ -67,24 +70,18 @@ export default function Monitor() {
   const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [error, setError] = useState<string | null>(null)
   const historyRequestIdRef = useRef(0)
+  const loadedChartKeyRef = useRef<string | null>(null)
   const recentRefreshRequestIdRef = useRef(0)
   const recentRefreshTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const lastLiveBucketRef = useRef<number | null>(null)
   const loadingMoreRef = useRef(false)
 
-  const initQuotes = useMarketStore(s => s.initQuotes)
-
-  useEffect(() => {
-    api.get<SymbolSubscription[]>('/symbols').then(data => {
-      if (Array.isArray(data)) {
-        initQuotes(data)
-      }
-    }).catch(err => console.error('Failed to fetch symbols:', err))
-  }, [initQuotes])
-
   const normalizeRows = useCallback((rows: CandleLike[], inv: string, isFutures: boolean) => {
     const chartRows = isFutures && inv !== '1d' ? aggregateCandles(rows, inv) : rows
-    return dedupeAndSortCandles(normalizeCandles(chartRows, inv))
+    const normalized = dedupeAndSortCandles(normalizeCandles(chartRows, inv))
+    return inv !== '1d' && inv !== '1w' && normalized.length > MAX_INTRADAY_CHART_BARS
+      ? normalized.slice(-MAX_INTRADAY_CHART_BARS)
+      : normalized
   }, [])
 
   const fetchChartRange = useCallback(async (
@@ -100,7 +97,7 @@ export default function Monitor() {
       if (inv === '1d') {
         return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true, dailyLimit)
       }
-      return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString())
+      return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString(), inv)
     }
     return api.get<{ time: string; open: number; high: number; low: number; close: number }[]>(
       `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}`
@@ -109,6 +106,7 @@ export default function Monitor() {
 
   const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
     const requestId = ++historyRequestIdRef.current
+    const chartKey = `${sym}:${inv}`
     const end = new Date()
     const totalHours = getHistoryLookbackHours(inv)
     const initialHours = Math.min(getInitialHistoryLookbackHours(inv), totalHours)
@@ -117,6 +115,10 @@ export default function Monitor() {
 
     try {
       setError(null)
+      // Do not send the previous symbol/interval's candles under the new label
+      // while this request is in flight (for example daily rows tagged as 5m).
+      loadedChartKeyRef.current = null
+      setCandles([])
       const queryEnd = inv === '1d' ? new Date(end.getTime() + 24 * 3600 * 1000) : end
 
       const recentRows = await fetchChartRange(
@@ -124,6 +126,7 @@ export default function Monitor() {
         dailyLimitCache.get(getDailyPageKey(sym, isFutures)) ?? DAILY_CHART_LIMIT,
       )
       if (historyRequestIdRef.current !== requestId) return
+      loadedChartKeyRef.current = chartKey
       setCandles(normalizeRows(recentRows, inv, isFutures))
 
       if (totalStart >= initialStart) return
@@ -131,6 +134,7 @@ export default function Monitor() {
       try {
         const olderRows = await fetchChartRange(sym, inv, isFutures, totalStart, initialStart, end)
         if (historyRequestIdRef.current !== requestId) return
+        loadedChartKeyRef.current = chartKey
         setCandles(normalizeRows([...olderRows, ...recentRows], inv, isFutures))
       } catch (e) {
         console.warn('Failed to fetch older chart history:', e)
@@ -138,6 +142,7 @@ export default function Monitor() {
     } catch (e: any) {
       if (historyRequestIdRef.current !== requestId) return
       setError(e.message)
+      loadedChartKeyRef.current = null
       setCandles([])
     }
   }, [fetchChartRange, normalizeRows])
@@ -285,7 +290,7 @@ export default function Monitor() {
           <View style={styles.chartWrap}>
             <CandleChartRN
               symbol={activeSymbol!}
-              data={candles}
+              data={loadedChartKeyRef.current === `${activeSymbol}:${chartInterval}` ? candles : []}
               liveTick={chartLiveTick}
               interval={chartInterval}
               onIntervalChange={handleIntervalChange}

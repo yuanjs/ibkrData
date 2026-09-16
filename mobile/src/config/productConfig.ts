@@ -25,6 +25,27 @@ export const SYMBOL_DESCRIPTIONS: Record<string, string> = {
   'ES': '标普',
 };
 
+// Keep chart routing available while /symbols is temporarily unreachable.
+// The server response remains authoritative for products not listed here.
+const KNOWN_FUTURES_SYMBOLS = new Set([
+  'SPI', 'AP', 'ASX200',
+  'MYM', 'YM', 'DOW', 'DOW_MINI', 'WALLSTREET',
+  'N225M', '225M', 'NIKKEI_MINI',
+  '10Y', 'US10Y',
+  'ZC', 'CORN',
+  'HG',
+  'MNQ', 'NQ', 'NAS100',
+  'MES', 'ES', 'SP500',
+])
+
+export const DEFAULT_MOBILE_SYMBOLS = [
+  '10Y', 'AUD.USD', 'HG', 'MES', 'MNQ', 'MYM', 'N225M', 'SPI', 'USD.JPY', 'ZC',
+]
+
+export function isKnownFuturesSymbol(symbol: string | null | undefined): boolean {
+  return !!symbol && KNOWN_FUTURES_SYMBOLS.has(symbol.toUpperCase())
+}
+
 export function getSymbolDescription(symbol: string): string {
   if (!symbol) return '';
   return SYMBOL_DESCRIPTIONS[symbol.toUpperCase()] || '';

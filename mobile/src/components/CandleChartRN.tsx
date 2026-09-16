@@ -4,6 +4,8 @@ import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { useTheme } from '../theme'
 import { getProductConfig, getSymbolDecimalPlaces } from '../config/productConfig'
 
+const BUNDLED_CHART_HTML = require('../../assets/chart.html') as string
+
 interface CandlestickData {
   time: number
   open: number
@@ -194,7 +196,7 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <WebView
         ref={webViewRef}
-        source={require('../../assets/chart.html')}
+        source={{ html: BUNDLED_CHART_HTML, baseUrl: 'about:blank' }}
         style={styles.webview}
         onMessage={handleMessage}
         javaScriptEnabled={true}

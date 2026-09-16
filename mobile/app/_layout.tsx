@@ -7,8 +7,8 @@ LogBox.ignoreLogs(['Failed to fetch symbols'])
 import { WebSocketProvider } from '../src/components/WebSocketProvider'
 import { useMarketStore } from '../src/stores/marketStore'
 import { ThemeProvider, useTheme } from '../src/theme'
-import { getSymbolDescription } from '../src/config/productConfig'
-import { api } from '../src/api/client'
+import { DEFAULT_MOBILE_SYMBOLS, getSymbolDescription } from '../src/config/productConfig'
+import { api, type SymbolSubscription } from '../src/api/client'
 
 function ConnectionDot() {
   const connected = useMarketStore(s => s.connected)
@@ -50,15 +50,18 @@ function AppLayout() {
   const symbols = Object.keys(quotes)
 
   useEffect(() => {
-    api.get<any[]>('/symbols').then(data => {
+    api.get<SymbolSubscription[]>('/symbols').then(data => {
       if (Array.isArray(data)) {
-        const symList = data.map((s: any) => s.symbol)
-        initQuotes(symList)
+        const symList = data.map(s => s.symbol)
+        initQuotes(data)
         if (symList.length > 0 && !useMarketStore.getState().activeSymbol) {
           useMarketStore.getState().setActiveSymbol(symList[0])
         }
       }
-    }).catch(err => console.error('Failed to fetch symbols:', err))
+    }).catch(err => {
+      initQuotes(DEFAULT_MOBILE_SYMBOLS)
+      console.warn('Using bundled symbol list because /symbols failed:', err)
+    })
   }, [initQuotes])
 
   return (

@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -276,6 +276,96 @@ async def test_futures_parameter_errors(futures_app):
 
         resp = await client.get("/api/futures/SPI/daily")
         assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_futures_daily_caches_mobile_120_bar_query(monkeypatch, futures_app):
+    now = datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc)
+    pool = FakePool(
+        fetch_rows=[
+            {
+                "time": now,
+                "date_str": "20260612",
+                "session_date": now.date(),
+                "symbol": "CACHE_TEST",
+                "open": 7000,
+                "high": 7010,
+                "low": 6990,
+                "close": 7005,
+                "volume": 100,
+            }
+        ]
+    )
+
+    async def get_pool_override():
+        return pool
+
+    async def ensure_roll_calendar_override(pool_arg, symbol, *, as_of=None):
+        return True
+
+    monkeypatch.setattr(futures, "get_pool", get_pool_override)
+    monkeypatch.setattr(
+        futures,
+        "ensure_futures_roll_calendar",
+        ensure_roll_calendar_override,
+    )
+    futures._mobile_daily_cache.clear()
+
+    params = {
+        "start": "2016-06-12",
+        "as_of": now.isoformat(),
+        "adjustment": "back_adjusted",
+        "limit": "120",
+    }
+    transport = httpx.ASGITransport(app=futures_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.get("/api/futures/CACHE_TEST/daily", params=params)
+        second = await client.get("/api/futures/CACHE_TEST/daily", params=params)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    daily_fetches = [
+        query for query, _args in pool.fetch_calls
+        if "continuous_futures_daily_asof" in query
+    ]
+    assert len(daily_fetches) == 1
+
+
+@pytest.mark.asyncio
+async def test_futures_minute_aggregates_requested_interval(monkeypatch, futures_app):
+    pool = FakePool(fetch_rows=[])
+
+    async def get_pool_override():
+        return pool
+
+    async def ensure_roll_calendar_override(pool_arg, symbol, *, as_of=None):
+        return True
+
+    monkeypatch.setattr(futures, "get_pool", get_pool_override)
+    monkeypatch.setattr(
+        futures,
+        "ensure_futures_roll_calendar",
+        ensure_roll_calendar_override,
+    )
+
+    transport = httpx.ASGITransport(app=futures_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/futures/SPI/minute",
+            params={
+                "start": "2026-06-12T00:00:00Z",
+                "end": "2026-06-12T01:00:00Z",
+                "as_of": "2026-06-12T01:00:00Z",
+                "mode": "active_raw",
+                "interval": "5m",
+            },
+        )
+
+    assert resp.status_code == 200
+    query, args = pool.fetch_calls[-1]
+    assert "time_bucket($4, time)" in query
+    assert args[-1] == timedelta(minutes=5)
 
 
 @pytest.mark.asyncio

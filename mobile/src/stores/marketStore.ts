@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { FuturesRollState, SymbolSubscription } from '../api/client'
+import { isKnownFuturesSymbol } from '../config/productConfig'
 
 export interface Quote {
   symbol: string
@@ -40,7 +41,11 @@ export const useMarketStore = create<MarketStore>((set, get) => ({
   lastTick: null,
   connected: false,
   activeSymbol: 'AUD.USD',
-  isFuturesSymbol: (sym) => !!sym && get().subscriptions[sym]?.sec_type === 'FUT',
+  isFuturesSymbol: (sym) => {
+    if (!sym) return false
+    const subscription = get().subscriptions[sym]
+    return subscription ? subscription.sec_type === 'FUT' : isKnownFuturesSymbol(sym)
+  },
   setActiveSymbol: (activeSymbol) => set({ activeSymbol }),
   setConnected: (connected) => set({ connected }),
   updateQuote: (q) => set(s => ({

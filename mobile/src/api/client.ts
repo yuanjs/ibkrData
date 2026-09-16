@@ -75,6 +75,6 @@ export const futuresApi = {
     api.get<FuturesActiveContract>(`/futures/${symbol}/active-contract${query({ as_of: asOf })}`),
   daily: (symbol: string, start: string, asOf?: string, adjustment = 'back_adjusted', includeLivePartial = false, limit?: number) =>
     api.get<any[]>(`/futures/${symbol}/daily${query({ start, as_of: asOf, adjustment, include_live_partial: includeLivePartial, limit })}`),
-  minute: (symbol: string, start: string, end: string, mode: 'active_raw' | 'adjusted' = 'active_raw', asOf?: string) =>
-    api.get<any[]>(`/futures/${symbol}/minute${query({ start, end, mode, as_of: asOf })}`),
+  minute: (symbol: string, start: string, end: string, mode: 'active_raw' | 'adjusted' = 'active_raw', asOf?: string, interval = '1m') =>
+    api.get<any[]>(`/futures/${symbol}/minute${query({ start, end, mode, as_of: asOf, interval })}`),
 }

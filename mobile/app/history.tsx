@@ -1,16 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Platform } from 'react-native'
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { File, Paths } from 'expo-file-system'
 import * as Sharing from 'expo-sharing'
-import { api, futuresApi, type FuturesActiveContract, type SymbolSubscription } from '../src/api/client'
+import { api, futuresApi, type FuturesActiveContract } from '../src/api/client'
 import { CandleChartRN } from '../src/components/CandleChartRN'
 import { useTheme } from '../src/theme'
 import { aggregateCandles, candlesToCsv, getFuturesDailyAsOf, normalizeCandles, type CandleLike } from '../src/utils/chartData'
+import { isKnownFuturesSymbol } from '../src/config/productConfig'
+import { useMarketStore } from '../src/stores/marketStore'
 
 export default function History() {
   const [symbol, setSymbol] = useState('')
-  const [subscriptions, setSubscriptions] = useState<Record<string, SymbolSubscription>>({})
+  const subscriptions = useMarketStore(s => s.subscriptions)
   const [activeContract, setActiveContract] = useState<FuturesActiveContract | null>(null)
   const [startDate, setStartDate] = useState(new Date(Date.now() - 7 * 86400_000))
   const [endDate, setEndDate] = useState(new Date())
@@ -20,15 +22,8 @@ export default function History() {
   const [showEndPicker, setShowEndPicker] = useState(false)
   const [loading, setLoading] = useState(false)
   const { colors } = useTheme()
-  const isFutures = subscriptions[symbol]?.sec_type === 'FUT'
-
-  useEffect(() => {
-    api.get<SymbolSubscription[]>('/symbols').then(rows => {
-      const next: Record<string, SymbolSubscription> = {}
-      rows.forEach(row => { next[row.symbol] = row })
-      setSubscriptions(next)
-    }).catch(err => console.error('Failed to fetch symbols:', err))
-  }, [])
+  const subscription = subscriptions[symbol]
+  const isFutures = subscription ? subscription.sec_type === 'FUT' : isKnownFuturesSymbol(symbol)
 
   const quick = (days: number) => {
     const e = new Date()
@@ -50,7 +45,7 @@ export default function History() {
         if (interval === '1d') {
           data = await futuresApi.daily(symbol, startDate.toISOString(), asOf, 'back_adjusted', true)
         } else {
-          data = await futuresApi.minute(symbol, startDate.toISOString(), endDate.toISOString(), 'active_raw', asOf)
+          data = await futuresApi.minute(symbol, startDate.toISOString(), endDate.toISOString(), 'active_raw', asOf, interval)
           data = aggregateCandles(data, interval)
         }
       } else {

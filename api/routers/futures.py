@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from auth import require_auth
@@ -13,6 +14,42 @@ router = APIRouter(prefix="/api/futures", dependencies=[Depends(require_auth)])
 
 _DAILY_ADJUSTMENTS = {"raw", "back_adjusted", "ratio_adjusted"}
 _MINUTE_MODES = {"active_raw", "adjusted"}
+_MINUTE_BUCKETS = {
+    "1m": timedelta(minutes=1),
+    "1min": timedelta(minutes=1),
+    "2m": timedelta(minutes=2),
+    "3m": timedelta(minutes=3),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+}
+_MOBILE_DAILY_CACHE_LIMIT = 120
+_MOBILE_DAILY_CACHE_TTL_SECONDS = 300
+_mobile_daily_cache: dict[tuple, tuple[float, list[dict]]] = {}
+
+
+def _get_cached_mobile_daily(key: tuple) -> list[dict] | None:
+    cached = _mobile_daily_cache.get(key)
+    if cached is None:
+        return None
+    expires_at, rows = cached
+    if expires_at <= monotonic():
+        _mobile_daily_cache.pop(key, None)
+        return None
+    # Callers may append a live partial bar, so never expose the cached list.
+    return [dict(row) for row in rows]
+
+
+def _set_cached_mobile_daily(key: tuple, rows: list[dict]) -> None:
+    now = monotonic()
+    for stale_key, (expires_at, _rows) in list(_mobile_daily_cache.items()):
+        if expires_at <= now:
+            _mobile_daily_cache.pop(stale_key, None)
+    _mobile_daily_cache[key] = (
+        now + _MOBILE_DAILY_CACHE_TTL_SECONDS,
+        [dict(row) for row in rows],
+    )
 
 
 def _parse_datetime(value: str, name: str) -> datetime:
@@ -312,7 +349,24 @@ async def get_futures_daily(
 
     pool = await get_pool()
     await ensure_futures_roll_calendar(pool, symbol, as_of=dt_as_of)
-    if limit is None:
+    cache_key = None
+    result = None
+    if limit == _MOBILE_DAILY_CACHE_LIMIT and adjustment == "back_adjusted":
+        # Mobile asks for a moving ten-year window but only displays the latest
+        # 120 rows. Normalising to dates lets repeated opens share the expensive
+        # continuous-contract calculation while live partial bars remain fresh.
+        cache_key = (
+            symbol,
+            dt_start.date(),
+            dt_as_of.date(),
+            adjustment,
+            limit,
+        )
+        result = _get_cached_mobile_daily(cache_key)
+
+    if result is not None:
+        rows = result
+    elif limit is None:
         rows = await pool.fetch(
             "SELECT * FROM continuous_futures_daily_asof($1, $2, $3, $4)",
             symbol,
@@ -338,7 +392,10 @@ async def get_futures_daily(
             adjustment,
             limit,
         )
-    result = [dict(r) for r in rows]
+    if result is None:
+        result = [dict(r) for r in rows]
+        if cache_key is not None:
+            _set_cached_mobile_daily(cache_key, result)
     if include_live_partial:
         result = await _append_live_partial_daily(
             pool,
@@ -364,9 +421,13 @@ async def get_futures_minute(
     end: str,
     mode: str = "active_raw",
     as_of: str | None = None,
+    interval: str = "1m",
 ):
     if mode not in _MINUTE_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
+    bucket = _MINUTE_BUCKETS.get(interval)
+    if bucket is None:
+        raise HTTPException(status_code=400, detail=f"Invalid interval: {interval}")
 
     dt_start = _parse_datetime(start, "start")
     dt_end = _parse_datetime(end, "end")
@@ -377,21 +438,63 @@ async def get_futures_minute(
     pool = await get_pool()
     await ensure_futures_roll_calendar(pool, symbol, as_of=dt_as_of)
     if mode == "active_raw":
-        rows = await pool.fetch(
-            "SELECT * FROM continuous_futures_minute_asof_raw($1, $2, $3)",
-            symbol,
-            dt_start,
-            dt_end,
-        )
+        if bucket == timedelta(minutes=1):
+            rows = await pool.fetch(
+                "SELECT * FROM continuous_futures_minute_asof_raw($1, $2, $3)",
+                symbol,
+                dt_start,
+                dt_end,
+            )
+        else:
+            rows = await pool.fetch(
+                """
+                SELECT time_bucket($4, time) AS time,
+                       first(open, time) AS open,
+                       max(high) AS high,
+                       min(low) AS low,
+                       last(close, time) AS close,
+                       sum(volume)::bigint AS volume,
+                       sum(bar_count)::bigint AS bar_count
+                FROM continuous_futures_minute_asof_raw($1, $2, $3)
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                symbol,
+                dt_start,
+                dt_end,
+                bucket,
+            )
     else:
-        rows = await pool.fetch(
-            "SELECT * FROM continuous_futures_minute_asof_adjusted($1, $2, $3, $4, $5)",
-            symbol,
-            dt_start,
-            dt_end,
-            dt_as_of,
-            "back_adjusted",
-        )
+        if bucket == timedelta(minutes=1):
+            rows = await pool.fetch(
+                "SELECT * FROM continuous_futures_minute_asof_adjusted($1, $2, $3, $4, $5)",
+                symbol,
+                dt_start,
+                dt_end,
+                dt_as_of,
+                "back_adjusted",
+            )
+        else:
+            rows = await pool.fetch(
+                """
+                SELECT time_bucket($6, time) AS time,
+                       first(open, time) AS open,
+                       max(high) AS high,
+                       min(low) AS low,
+                       last(close, time) AS close,
+                       sum(volume)::bigint AS volume,
+                       sum(bar_count)::bigint AS bar_count
+                FROM continuous_futures_minute_asof_adjusted($1, $2, $3, $4, $5)
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                symbol,
+                dt_start,
+                dt_end,
+                dt_as_of,
+                "back_adjusted",
+                bucket,
+            )
     return [dict(r) for r in rows]
 
 
