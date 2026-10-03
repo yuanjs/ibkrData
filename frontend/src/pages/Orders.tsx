@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { getSymbolDecimalPlaces } from '../config/productConfig'
 import { useAccountStore } from '../store/accountStore'
 import { useOrderStore } from '../store/orderStore'
+import { useMarketStore, type Quote } from '../store/marketStore'
 
 const formatNumber = (value: unknown, decimals?: number, fallback = '-') => {
   const num = typeof value === 'number' ? value : Number(value)
@@ -11,7 +12,53 @@ const formatNumber = (value: unknown, decimals?: number, fallback = '-') => {
 
 const formatDateTime = (value: unknown) => value ? new Date(value as string).toLocaleString() : '-'
 
+const quotePrice = (quote?: Quote) => {
+  if (quote?.last != null && quote.last > 0) return quote.last
+  if (quote?.bid != null && quote.bid > 0 && quote?.ask != null && quote.ask > 0) {
+    return (quote.bid + quote.ask) / 2
+  }
+  return quote?.bid != null && quote.bid > 0 ? quote.bid : quote?.ask != null && quote.ask > 0 ? quote.ask : null
+}
+
+const convertPnlToAud = (value: number, currency: string, audUsdRate: number | null, usdJpyRate: number | null) => {
+  switch (currency.toUpperCase()) {
+    case 'AUD': return value
+    case 'USD': return audUsdRate ? value / audUsdRate : null
+    case 'JPY': return audUsdRate && usdJpyRate ? value / (audUsdRate * usdJpyRate) : null
+    default: return null
+  }
+}
+
 const toApiDate = (value: string) => value ? new Date(value).toISOString() : ''
+
+type RangePreset = '24h' | '3d' | '7d' | '1m' | 'custom'
+
+const RANGE_PRESETS: { key: RangePreset; label: string }[] = [
+  { key: '24h', label: '24小时' },
+  { key: '3d', label: '3天' },
+  { key: '7d', label: '7天' },
+  { key: '1m', label: '1个月' },
+  { key: 'custom', label: '自定义' },
+]
+
+const toLocalDateTime = (date: Date) => {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+const presetRange = (preset: Exclude<RangePreset, 'custom'>) => {
+  const end = new Date()
+  const start = new Date(end)
+  if (preset === '1m') {
+    const day = start.getDate()
+    start.setDate(1)
+    start.setMonth(start.getMonth() - 1)
+    const lastDay = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()
+    start.setDate(Math.min(day, lastDay))
+  }
+  else start.setHours(start.getHours() - (preset === '24h' ? 24 : preset === '3d' ? 72 : 168))
+  return { start: toLocalDateTime(start), end: toLocalDateTime(end) }
+}
 
 const rangeParams = (gateway: string | null, start: string, end: string) => {
   const params = new URLSearchParams()
@@ -27,6 +74,7 @@ type PnlGroup = {
   symbol: string
   currency: string
   realized_pnl: number
+  realized_pnl_aud: number | null
   trade_count: number
   rows: Record<string, unknown>[]
 }
@@ -44,14 +92,16 @@ type TradeGroup = {
 }
 
 export function Orders() {
+  const [initialRange] = useState(() => presetRange('24h'))
   const [orders, setOrders] = useState<unknown[]>([])
   const [trades, setTrades] = useState<unknown[]>([])
   const [tab, setTab] = useState<'orders' | 'trades' | 'pnl'>('orders')
   const [pnl, setPnl] = useState<unknown[]>([])
-  const [start, setStart] = useState('')
-  const [end, setEnd] = useState('')
-  const [appliedStart, setAppliedStart] = useState('')
-  const [appliedEnd, setAppliedEnd] = useState('')
+  const [rangePreset, setRangePreset] = useState<RangePreset>('24h')
+  const [start, setStart] = useState(initialRange.start)
+  const [end, setEnd] = useState(initialRange.end)
+  const [appliedStart, setAppliedStart] = useState(initialRange.start)
+  const [appliedEnd, setAppliedEnd] = useState(initialRange.end)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(() => new Set())
@@ -61,6 +111,10 @@ export function Orders() {
   const accountIds = useAccountStore(s => s.accountIds)
   const setGatewayMap = useAccountStore(s => s.setGatewayMap)
   const wsOrderCount = useOrderStore(s => s.orders.length)
+  const audUsdQuote = useMarketStore(s => s.quotes['AUD.USD'] ?? s.quotes.AUDUSD)
+  const usdJpyQuote = useMarketStore(s => s.quotes['USD.JPY'] ?? s.quotes.USDJPY)
+  const audUsdRate = quotePrice(audUsdQuote)
+  const usdJpyRate = quotePrice(usdJpyQuote)
 
   // 页面刷新后通过 REST 加载 gateway map（不等 WebSocket）
   useEffect(() => {
@@ -69,7 +123,8 @@ export function Orders() {
 
   const fetchData = useCallback(() => {
     const controller = new AbortController()
-    const params = rangeParams(connectedGateway, appliedStart, appliedEnd)
+    const range = rangePreset === 'custom' ? { start: appliedStart, end: appliedEnd } : presetRange(rangePreset)
+    const params = rangeParams(connectedGateway, range.start, range.end)
     const endpoint = tab === 'orders' ? '/orders' : tab === 'trades' ? '/trades' : '/pnl'
     setLoading(true)
     setError(null)
@@ -88,7 +143,7 @@ export function Orders() {
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [connectedGateway, appliedStart, appliedEnd, tab])
+  }, [connectedGateway, appliedStart, appliedEnd, rangePreset, tab])
 
   // WebSocket 有新的订单/成交推送时自动刷新
   useEffect(() => {
@@ -109,15 +164,20 @@ export function Orders() {
       const currency = String(row.currency ?? '')
       const contractIdentity = `${row.con_id ?? ''}:${row.local_symbol ?? ''}`
       const key = `${symbol}:${currency}:${contractIdentity}`
-      const group = acc[key] ?? { key, symbol, currency, realized_pnl: 0, trade_count: 0, rows: [] }
+      const group = acc[key] ?? { key, symbol, currency, realized_pnl: 0, realized_pnl_aud: null, trade_count: 0, rows: [] }
       group.realized_pnl += Number(row.realized_pnl ?? 0)
       group.trade_count += 1
       group.rows.push(row)
       acc[key] = group
       return acc
     }, {})
-    return Object.values(groups).sort((a, b) => a.symbol.localeCompare(b.symbol))
-  }, [pnl])
+    return Object.values(groups)
+      .map(group => ({
+        ...group,
+        realized_pnl_aud: convertPnlToAud(group.realized_pnl, group.currency, audUsdRate, usdJpyRate),
+      }))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol))
+  }, [audUsdRate, pnl, usdJpyRate])
 
   const tradeSummary = useMemo(() => {
     const groups = new Map<string, TradeGroup & { notional: number }>()
@@ -159,12 +219,19 @@ export function Orders() {
     setAppliedEnd(end)
   }
 
-  const clearRange = () => {
-    setStart('')
-    setEnd('')
-    setAppliedStart('')
-    setAppliedEnd('')
+  const selectPreset = (preset: RangePreset) => {
+    setRangePreset(preset)
+    if (preset !== 'custom') {
+      const range = presetRange(preset)
+      setStart(range.start)
+      setEnd(range.end)
+      setAppliedStart(range.start)
+      setAppliedEnd(range.end)
+    }
   }
+
+  const exportRange = rangePreset === 'custom' ? { start: appliedStart, end: appliedEnd } : presetRange(rangePreset)
+  const invalidCustomRange = !start || !end || new Date(start) > new Date(end)
 
   const toggleSymbol = (key: string) => {
     setExpandedSymbols(current => {
@@ -194,7 +261,7 @@ export function Orders() {
           </button>
         ))}
         {tab === 'trades' && (
-          <a href={`/api/trades/export${rangeParams(connectedGateway, start, end)}`}
+          <a href={`/api/trades/export${rangeParams(connectedGateway, exportRange.start, exportRange.end)}`}
             className="ml-auto px-3 py-1.5 text-sm rounded hover:bg-[var(--bg-hover)]"
             style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-secondary)' }}>
             导出CSV
@@ -203,29 +270,36 @@ export function Orders() {
       </div>
 
       <div className="mb-3 flex flex-wrap items-end gap-3 rounded p-3" style={{ backgroundColor: 'var(--bg-surface)' }}>
-        <label className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-          开始
-          <input type="datetime-local" value={start} onChange={e => setStart(e.target.value)}
-            className="ml-2 rounded px-2 py-1 text-sm"
-            style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
-        </label>
-        <label className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-          结束
-          <input type="datetime-local" value={end} onChange={e => setEnd(e.target.value)}
-            className="ml-2 rounded px-2 py-1 text-sm"
-            style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
-        </label>
-        {(start || end) && (
-          <button onClick={clearRange}
-            className="rounded px-3 py-1.5 text-xs"
-            style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-secondary)' }}>
-            清除
+        <div className="flex flex-wrap gap-2">
+          {RANGE_PRESETS.map(option => (
+            <button key={option.key} onClick={() => selectPreset(option.key)}
+              className={`rounded px-3 py-1.5 text-xs ${rangePreset === option.key ? 'bg-blue-600 text-white' : ''}`}
+              style={rangePreset === option.key ? undefined : { backgroundColor: 'var(--bg-raised)', color: 'var(--text-secondary)' }}>
+              {option.label}
+            </button>
+          ))}
+        </div>
+        {rangePreset === 'custom' && <>
+          <label className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            开始
+            <input type="datetime-local" value={start} onChange={e => setStart(e.target.value)}
+              className="ml-2 rounded px-2 py-1 text-sm"
+              style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
+          </label>
+          <label className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            结束
+            <input type="datetime-local" value={end} onChange={e => setEnd(e.target.value)}
+              className="ml-2 rounded px-2 py-1 text-sm"
+              style={{ backgroundColor: 'var(--bg-raised)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
+          </label>
+          <button onClick={applyRange} disabled={invalidCustomRange || (start === appliedStart && end === appliedEnd)}
+            className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
+            查询
           </button>
-        )}
-        <button onClick={applyRange} disabled={start === appliedStart && end === appliedEnd}
-          className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
-          查询
-        </button>
+          {start && end && new Date(start) > new Date(end) && (
+            <span className="self-center text-xs" style={{ color: '#d32f2f' }}>开始时间不能晚于结束时间</span>
+          )}
+        </>}
       </div>
 
       <div className="mb-3 rounded p-3" style={{ backgroundColor: 'var(--bg-surface)' }}>
@@ -335,11 +409,12 @@ export function Orders() {
 
       {tab === 'pnl' && (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[900px] md:min-w-0">
+          <table className="w-full text-sm min-w-[1000px] md:min-w-0">
             <thead><tr className="border-b" style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>
               <th className="text-left py-2 px-3">标的</th>
               <th className="text-left py-2 px-3">币种</th>
               <th className="text-right py-2 px-3">已实现盈亏</th>
+              <th className="text-right py-2 px-3">AUD盈亏</th>
               <th className="text-right py-2 px-3">平仓次数</th>
               <th className="text-left py-2 px-3">明细</th>
             </tr></thead>
@@ -349,6 +424,9 @@ export function Orders() {
                 <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-secondary)' }}>{group.currency || '-'}</td>
                 <td className="py-2 px-3 text-right font-mono" style={{ color: group.realized_pnl >= 0 ? '#26a641' : '#d32f2f' }}>
                   {formatNumber(group.realized_pnl, 2)}
+                </td>
+                <td className="py-2 px-3 text-right font-mono" style={{ color: group.realized_pnl_aud == null ? 'var(--text-muted)' : group.realized_pnl_aud >= 0 ? '#26a641' : '#d32f2f' }}>
+                  {group.realized_pnl_aud == null ? '-' : formatNumber(group.realized_pnl_aud, 2)}
                 </td>
                 <td className="py-2 px-3 text-right" style={{ color: 'var(--text-secondary)' }}>{group.trade_count}</td>
                 <td className="py-2 px-3">
@@ -373,7 +451,7 @@ export function Orders() {
               </tr>
             ))}
               {!loading && pnlSummary.length === 0 && (
-                <tr><td colSpan={5} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无盈亏数据</td></tr>
+                <tr><td colSpan={6} className="py-6 text-center" style={{ color: 'var(--text-secondary)' }}>暂无盈亏数据</td></tr>
               )}
             </tbody>
           </table>
