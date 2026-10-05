@@ -97,6 +97,12 @@ export default function Monitor() {
       if (inv === '1d') {
         return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true, dailyLimit)
       }
+      // Match the web chart: seed second-level futures charts with continuous
+      // one-minute history, then let live ticks append 1s/5s/10s points. Raw
+      // futures ticks live in futures_ticks, while /history reads cash ticks.
+      if (inv.endsWith('s')) {
+        return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString())
+      }
       return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString(), inv)
     }
     return api.get<{ time: string; open: number; high: number; low: number; close: number }[]>(
