@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from auth import require_auth
 from dateutil import parser
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from db import get_pool
@@ -86,7 +86,13 @@ def _bucket_start(dt: datetime, bucket: timedelta) -> datetime:
 
 
 @router.get("/history/{symbol}")
-async def get_history(symbol: str, start: str, end: str, interval: str = "1min"):
+async def get_history(
+    symbol: str,
+    start: str,
+    end: str,
+    interval: str = "1min",
+    limit: int | None = Query(default=None, ge=1, le=10000),
+):
     # Robustly convert ISO strings to UTC datetime objects for asyncpg
     try:
         dt_start = parser.isoparse(start)
@@ -176,12 +182,14 @@ async def get_history(symbol: str, start: str, end: str, interval: str = "1min")
     else:
         # Second-level intervals still aggregate directly from raw ticks.
         rows = await _fetch_tick_bars(pool, bucket, symbol, dt_start, dt_end)
+    if limit is not None:
+        rows = rows[-limit:]
     return [dict(r) for r in rows]
 
 
 @router.get("/history/{symbol}/export")
 async def export_history(symbol: str, start: str, end: str, interval: str = "1min"):
-    rows = await get_history(symbol, start, end, interval)
+    rows = await get_history(symbol, start, end, interval, limit=None)
     buf = io.StringIO()
     w = csv.DictWriter(
         buf, fieldnames=["time", "open", "high", "low", "close", "volume"]

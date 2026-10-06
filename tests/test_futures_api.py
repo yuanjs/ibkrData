@@ -369,6 +369,45 @@ async def test_futures_minute_aggregates_requested_interval(monkeypatch, futures
 
 
 @pytest.mark.asyncio
+async def test_futures_minute_limit_returns_latest_rows(monkeypatch, futures_app):
+    base = datetime(2026, 6, 12, tzinfo=timezone.utc)
+    pool = FakePool(
+        fetch_rows=[
+            {"time": base + timedelta(minutes=i), "close": 7000 + i}
+            for i in range(4)
+        ]
+    )
+
+    async def get_pool_override():
+        return pool
+
+    async def ensure_roll_calendar_override(pool_arg, symbol, *, as_of=None):
+        return True
+
+    monkeypatch.setattr(futures, "get_pool", get_pool_override)
+    monkeypatch.setattr(
+        futures,
+        "ensure_futures_roll_calendar",
+        ensure_roll_calendar_override,
+    )
+
+    transport = httpx.ASGITransport(app=futures_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/futures/SPI/minute",
+            params={
+                "start": base.isoformat(),
+                "end": (base + timedelta(hours=1)).isoformat(),
+                "mode": "active_raw",
+                "limit": 2,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert [row["close"] for row in resp.json()] == [7002, 7003]
+
+
+@pytest.mark.asyncio
 async def test_futures_daily_appends_live_partial_next_session(monkeypatch, futures_app):
     friday_after_roll = datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc)
     monday_as_of = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
@@ -425,6 +464,7 @@ async def test_futures_daily_appends_live_partial_next_session(monkeypatch, futu
             ],
         ],
         fetchrow_rows=[
+            None,
             {
                 "symbol": "SPI",
                 "con_id": 123,
@@ -437,7 +477,8 @@ async def test_futures_daily_appends_live_partial_next_session(monkeypatch, futu
                 "last_trade_date": None,
                 "effective_from": None,
                 "roll_event_id": None,
-            }
+            },
+            None,
         ],
     )
 
@@ -524,6 +565,7 @@ async def test_futures_daily_appends_next_session_daily_bar_on_weekend(
             [],
         ],
         fetchrow_rows=[
+            None,
             {
                 "symbol": "SPI",
                 "con_id": 123,

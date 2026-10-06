@@ -17,6 +17,10 @@ const MAX_INTRADAY_CHART_BARS = 3000
 const dailyLimitCache = new Map<string, number>()
 const dailyExhausted = new Set<string>()
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && (error.name === 'AbortError' || /abort/i.test(error.message))
+}
+
 function getHistoryLookbackHours(interval: string) {
   if (interval.endsWith('s')) return 6
   if (interval === '1m') return 24 * 30
@@ -75,6 +79,8 @@ export default function Monitor() {
   const recentRefreshTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const lastLiveBucketRef = useRef<number | null>(null)
   const loadingMoreRef = useRef(false)
+  const historyAbortControllerRef = useRef<AbortController | null>(null)
+  const recentRefreshAbortControllerRef = useRef<AbortController | null>(null)
 
   const normalizeRows = useCallback((rows: CandleLike[], inv: string, isFutures: boolean) => {
     const chartRows = isFutures && inv !== '1d' ? aggregateCandles(rows, inv) : rows
@@ -92,25 +98,30 @@ export default function Monitor() {
     rangeEnd: Date,
     asOfBase: Date = rangeEnd,
     dailyLimit: number = DAILY_CHART_LIMIT,
+    signal?: AbortSignal,
   ) => {
     if (isFutures) {
       if (inv === '1d') {
-        return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true, dailyLimit)
+        return futuresApi.daily(sym, start.toISOString(), getFuturesDailyAsOf(sym, asOfBase), 'back_adjusted', true, dailyLimit, { signal })
       }
       // Match the web chart: seed second-level futures charts with continuous
       // one-minute history, then let live ticks append 1s/5s/10s points. Raw
       // futures ticks live in futures_ticks, while /history reads cash ticks.
       if (inv.endsWith('s')) {
-        return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString())
+        return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString(), '1m', MAX_INTRADAY_CHART_BARS, { signal })
       }
-      return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString(), inv)
+      return futuresApi.minute(sym, start.toISOString(), rangeEnd.toISOString(), 'active_raw', asOfBase.toISOString(), inv, MAX_INTRADAY_CHART_BARS, { signal })
     }
     return api.get<{ time: string; open: number; high: number; low: number; close: number }[]>(
-      `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}`
+      `/history/${sym}?start=${start.toISOString()}&end=${rangeEnd.toISOString()}&interval=${inv}&limit=${MAX_INTRADAY_CHART_BARS}`,
+      { signal },
     )
   }, [])
 
   const fetchHistory = useCallback(async (sym: string, inv: string, isFutures: boolean) => {
+    historyAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    historyAbortControllerRef.current = abortController
     const requestId = ++historyRequestIdRef.current
     const chartKey = `${sym}:${inv}`
     const end = new Date()
@@ -130,6 +141,7 @@ export default function Monitor() {
       const recentRows = await fetchChartRange(
         sym, inv, isFutures, initialStart, queryEnd, end,
         dailyLimitCache.get(getDailyPageKey(sym, isFutures)) ?? DAILY_CHART_LIMIT,
+        abortController.signal,
       )
       if (historyRequestIdRef.current !== requestId) return
       loadedChartKeyRef.current = chartKey
@@ -138,18 +150,23 @@ export default function Monitor() {
       if (totalStart >= initialStart) return
 
       try {
-        const olderRows = await fetchChartRange(sym, inv, isFutures, totalStart, initialStart, end)
+        const olderRows = await fetchChartRange(sym, inv, isFutures, totalStart, initialStart, end, DAILY_CHART_LIMIT, abortController.signal)
         if (historyRequestIdRef.current !== requestId) return
         loadedChartKeyRef.current = chartKey
         setCandles(normalizeRows([...olderRows, ...recentRows], inv, isFutures))
       } catch (e) {
-        console.warn('Failed to fetch older chart history:', e)
+        if (!isAbortError(e)) console.warn('Failed to fetch older chart history:', e)
       }
     } catch (e: any) {
+      if (isAbortError(e)) return
       if (historyRequestIdRef.current !== requestId) return
       setError(e.message)
       loadedChartKeyRef.current = null
       setCandles([])
+    } finally {
+      if (historyAbortControllerRef.current === abortController) {
+        historyAbortControllerRef.current = null
+      }
     }
   }, [fetchChartRange, normalizeRows])
 
@@ -201,33 +218,50 @@ export default function Monitor() {
     const end = new Date()
     const lookbackMs = Math.max(RECENT_HISTORY_REFRESH_BARS * seconds * 1000, 2 * 3600_000)
     const start = new Date(end.getTime() - lookbackMs)
+    recentRefreshAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    recentRefreshAbortControllerRef.current = abortController
 
     try {
-      const rows = await fetchChartRange(sym, inv, isFutures, start, end, end)
+      const rows = await fetchChartRange(sym, inv, isFutures, start, end, end, DAILY_CHART_LIMIT, abortController.signal)
       if (recentRefreshRequestIdRef.current !== requestId) return
       const normalizedRows = normalizeRows(rows, inv, isFutures)
       if (normalizedRows.length === 0) return
 
       setCandles(prev => dedupeAndSortCandles([...prev, ...normalizedRows]))
     } catch (e) {
-      console.warn('Failed to refresh recent chart history:', e)
+      if (!isAbortError(e)) console.warn('Failed to refresh recent chart history:', e)
+    } finally {
+      if (recentRefreshAbortControllerRef.current === abortController) {
+        recentRefreshAbortControllerRef.current = null
+      }
     }
   }, [fetchChartRange, normalizeRows])
 
   useEffect(() => {
     if (activeSymbol) {
       fetchHistory(activeSymbol, chartInterval, isActiveFutures)
+    } else {
+      historyAbortControllerRef.current?.abort()
+      historyAbortControllerRef.current = null
     }
   }, [activeSymbol, fetchHistory, chartInterval, isActiveFutures, activeRollState?.active?.con_id])
 
   useEffect(() => {
     lastLiveBucketRef.current = null
     recentRefreshRequestIdRef.current += 1
+    recentRefreshAbortControllerRef.current?.abort()
+    recentRefreshAbortControllerRef.current = null
     for (const timer of recentRefreshTimersRef.current) {
       clearTimeout(timer)
     }
     recentRefreshTimersRef.current = []
   }, [activeSymbol, chartInterval, isActiveFutures])
+
+  useEffect(() => () => {
+    historyAbortControllerRef.current?.abort()
+    recentRefreshAbortControllerRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (!activeSymbol || !chartLiveTick?.price) return

@@ -422,6 +422,7 @@ async def get_futures_minute(
     mode: str = "active_raw",
     as_of: str | None = None,
     interval: str = "1m",
+    limit: int | None = Query(default=None, ge=1, le=10000),
 ):
     if mode not in _MINUTE_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
@@ -495,6 +496,8 @@ async def get_futures_minute(
                 "back_adjusted",
                 bucket,
             )
+    if limit is not None:
+        rows = rows[-limit:]
     return [dict(r) for r in rows]
 
 
