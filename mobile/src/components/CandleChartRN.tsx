@@ -32,7 +32,7 @@ interface Props {
 }
 
 export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChange, onLoadMoreHistory }: Props) {
-  const webViewRef = useRef<WebView>(null)
+  const webViewRef = useRef<WebView<object>>(null)
   const { colors, theme } = useTheme()
   const readyRef = useRef(false)
 
@@ -194,7 +194,7 @@ export function CandleChartRN({ symbol, data, liveTick, interval, onIntervalChan
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <WebView
+      <WebView<object>
         ref={webViewRef}
         source={{ html: BUNDLED_CHART_HTML, baseUrl: 'about:blank' }}
         style={styles.webview}

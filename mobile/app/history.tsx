@@ -69,7 +69,7 @@ export default function History() {
       const filename = `${symbol || 'history'}_${interval}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
       const file = new File(Paths.document, filename)
       file.create({ overwrite: true })
-      file.write(candlesToCsv(candles, symbol, interval))
+      await file.write(candlesToCsv(candles, symbol, interval))
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(file.uri)
       } else {
