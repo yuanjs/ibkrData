@@ -12,11 +12,11 @@ import { api } from './api/client'
 import { getSymbolDescription } from './config/productConfig'
 
 const nav = [
-  { to: '/', label: '实时监控' },
-  { to: '/account', label: '账户' },
-  { to: '/orders', label: '订单' },
-  { to: '/history', label: '历史' },
-  { to: '/settings', label: '设置' },
+  { to: '/', label: '实时监控', mobileLabel: '监控', icon: '📊' },
+  { to: '/account', label: '账户', mobileLabel: '账户', icon: '💰' },
+  { to: '/orders', label: '订单', mobileLabel: '订单', icon: '📋' },
+  { to: '/history', label: '历史', mobileLabel: '历史', icon: '📄' },
+  { to: '/settings', label: '设置', mobileLabel: '设置', icon: '⚙️' },
 ]
 
 function ConnectionDot() {
@@ -86,7 +86,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <WebSocketProvider />
-      <div className="flex flex-col h-screen overflow-hidden" style={{ backgroundColor: 'var(--bg-base)', color: 'var(--text-primary)' }}>
+      <div className="flex flex-col h-dvh overflow-hidden" style={{ backgroundColor: 'var(--bg-base)', color: 'var(--text-primary)' }}>
 
         {/* Desktop Navigation */}
         <nav className="hidden md:flex gap-1 px-4 py-2 overflow-x-auto no-scrollbar" style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
@@ -105,7 +105,7 @@ export default function App() {
         </nav>
 
         {/* Mobile Navigation / Symbol Selector */}
-        <nav className="flex md:hidden items-center gap-2 px-2 py-1.5" style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
+        <nav className="flex md:hidden shrink-0 items-center gap-2 px-2 py-1.5" style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
           <ConnectionDot />
           <div className="flex-1 relative">
             <select
@@ -134,7 +134,7 @@ export default function App() {
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </nav>
 
-        <main className="flex-1 overflow-auto">
+        <main className="flex-1 min-h-0 overflow-auto">
           <ErrorBoundary>
             <Routes>
               <Route path="/" element={<Monitor />} />
@@ -145,6 +145,26 @@ export default function App() {
             </Routes>
           </ErrorBoundary>
         </main>
+
+        <nav
+          aria-label="底部导航"
+          className="flex md:hidden shrink-0 border-t border-[var(--border)] bg-[var(--bg-surface)] pt-1"
+          style={{ paddingBottom: 'max(4px, env(safe-area-inset-bottom))' }}
+        >
+          {nav.map(({ to, mobileLabel, icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={to === '/'}
+              className={({ isActive }) =>
+                `flex flex-1 min-w-0 min-h-12 flex-col items-center justify-center gap-0.5 py-1 focus-visible:outline-2 focus-visible:outline-blue-600 focus-visible:outline-offset-[-2px] ${isActive ? 'text-blue-600 font-semibold' : 'text-[var(--text-secondary)]'}`
+              }
+            >
+              <span aria-hidden="true" className="text-lg leading-6">{icon}</span>
+              <span className="text-[10px] leading-4">{mobileLabel}</span>
+            </NavLink>
+          ))}
+        </nav>
       </div>
     </BrowserRouter>
   )
